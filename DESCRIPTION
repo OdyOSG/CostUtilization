@@ -1,0 +1,26 @@
+Package: CostUtilization
+Title: Standardized Cost Calculation for OHDSI Cohorts
+Version: 0.0.9999
+Authors@R: c(
+    person("Gowtham", "Rao", email = "gowthamrao@gmail.com", role = c("aut", "cre")),
+    person("Observational Health Data Science and Informatics", role = c("cph"))
+  )
+Description: Calculates costs for specified patient cohorts within the OMOP CDM framework. This package allows users to compute costs based on various 
+    dimensions such as cost concepts (e.g., allowed, paid) and cost types (provenance), and optionally filter by clinical events. The output 
+    conforms to the FeatureExtraction package's object model, facilitating seamless integration into existing OHDSI study pipelines.
+License: Apache License (>= 2.0)
+Encoding: UTF-8
+RoxygenNote: 7.3.2
+Imports:
+    dplyr,
+    DBI,
+    SqlRender,
+    DatabaseConnector,
+    FeatureExtraction,
+    checkmate
+Suggests:
+    testthat (>= 3.0.0),
+    Eunomia,
+    knitr,
+    rmarkdown
+Config/testthat/edition: 3
