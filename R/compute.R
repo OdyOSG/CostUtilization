@@ -4,7 +4,7 @@
 #' cohort or aggregate costs across multiple cohorts.
 #'
 #' @param costCovariateSettings A settings object from `createCostCovariateSettings`.
-#' @param cohortId A numeric vector of one or more cohort IDs to analyze.
+#' @param cohortId A numeric vector of one or more cohort IDs to analyze. IDs only in aggregated option
 #' @param aggregateCohortId If providing multiple `cohortId`s, you must provide a
 #'   single numeric ID to label the aggregated output.
 #' @param cdm A cdm_reference object created by `CDMConnector::cdm_from_con()`.
@@ -40,10 +40,10 @@ getCostCovariateData <- function(costCovariateSettings,
   
   # Establish connection and schemas from inputs
   if (!is.null(cdm)) {
-    checkmate::assertR6(cdm, "cdm_reference")
-    connection <- cdm$connection
+    checkmate::assertClass(cdm, "cdm_reference")
+    connection <- CDMConnector::cdmCon(cdm) 
     cdmDatabaseSchema <- CDMConnector::cdmSchema(cdm)
-    cohortDatabaseSchema <- attributes(cdm[[cohortTable]])$db_schema
+    cohortDatabaseSchema <- CDMConnector::cdmWriteSchema(cdm)
   } else if (!is.null(connectionDetails)) {
     checkmate::assertClass(connectionDetails, "connectionDetails")
     connection <- DatabaseConnector::connect(connectionDetails)
@@ -60,11 +60,10 @@ getCostCovariateData <- function(costCovariateSettings,
   
   # --- Analysis Execution ---
   assertCdmConforms(connection = connection, cdmDatabaseSchema = cdmDatabaseSchema)
-  
-  sql <- SqlRender::readSql(system.file("sql/getCostCovariates.sql", package = "CostUtilization"))
-  
-  renderedSql <- SqlRender::render(
-    sql,
+  renderedSql <- SqlRender::loadRenderTranslateSql(
+    'getCostCovariates.sql',
+    'CostUtilization',
+    dbms = "sql server",
     cdm_database_schema = cdmDatabaseSchema,
     cohort_database_schema = cohortDatabaseSchema,
     cohort_table = cohortTable,
