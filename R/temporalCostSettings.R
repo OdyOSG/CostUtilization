@@ -1,5 +1,3 @@
-# R/CostTemporalCovariateSettings.R
-
 #' Create temporal covariate settings for cost analysis
 #'
 #' @description
@@ -22,18 +20,15 @@
 #'   If NULL, includes all currencies.
 #' @param aggregateMethod Method for aggregating costs: "sum", "mean", "median", "min", "max"
 #' @param includeCostConceptId Logical indicating whether to create separate covariates
-#'   for each cost concept ID
+#'   for each cost concept ID.
 #' @param includeCostTypeConceptId Logical indicating whether to create separate covariates
-#'   for each cost type concept ID
+#'   for each cost type concept ID.
 #' @param includeCostDomainId Logical indicating whether to create separate covariates
-#'   for each cost domain
-#' @param includeRevenueCodes Logical indicating whether to include revenue code analysis
-#' @param includeDrgCodes Logical indicating whether to include DRG code analysis
-#' @param covariateIdOffset An integer offset for generating unique covariate IDs
+#'   for each cost domain.
+#' @param covariateIdOffset An integer offset for generating unique covariate IDs.
 #'
 #' @return
-#' An object of type \code{costTemporalCovariateSettings}, to be used with other
-#' functions in the CostUtilization package.
+#' An object of type `costTemporalCovariateSettings`.
 #'
 #' @export
 costTemporalCovariateSettings <- function(useCostInWindow = TRUE,
@@ -49,20 +44,35 @@ costTemporalCovariateSettings <- function(useCostInWindow = TRUE,
                                           includeCostDomainId = TRUE,
                                           covariateIdOffset = 1000) {
   
-  # Input validation
-  if (length(temporalStartDays) != length(temporalEndDays)) {
-    stop("temporalStartDays and temporalEndDays must have the same length")
-  }
+  # --- Input Validation (using checkmate) ---
+  assertFlag(useCostInWindow)
+  assertIntegerish(temporalStartDays)
+  assertIntegerish(temporalEndDays)
   
-  if (any(temporalStartDays > temporalEndDays)) {
-    stop("temporalStartDays must be less than or equal to temporalEndDays")
-  }
+  # Corrected function name: test_set_equal
+  assert(test_set_equal(length(temporalStartDays), length(temporalEndDays)),
+         "The 'temporalStartDays' and 'temporalEndDays' vectors must have the same length.",
+         .var.name = "temporal window lengths")
   
-  if (!aggregateMethod %in% c("sum", "mean", "median", "min", "max")) {
-    stop("aggregateMethod must be one of: sum, mean, median, min, max")
-  }
+  # Corrected function name: test_true
+  assert(test_true(all(temporalStartDays <= temporalEndDays)),
+         "All start days must be less than or equal to their corresponding end days.",
+         .var.name = "temporal window validity")
   
-  # Create the settings object
+  assertCharacter(costDomainIds, null.ok = TRUE)
+  assertIntegerish(costConceptIds, null.ok = TRUE)
+  assertIntegerish(costTypeConceptIds, null.ok = TRUE)
+  assertIntegerish(currencyConceptIds, null.ok = TRUE)
+  assertChoice(aggregateMethod, choices = c("sum", "mean", "median", "min", "max"))
+  
+  assertFlag(includeCostConceptId)
+  assertFlag(includeCostTypeConceptId)
+  assertFlag(includeCostDomainId)
+  
+  assertCount(covariateIdOffset)
+  
+  
+  # --- Create the settings object ---
   settings <- list(
     useCostInWindow = useCostInWindow,
     temporalStartDays = temporalStartDays,
@@ -75,8 +85,6 @@ costTemporalCovariateSettings <- function(useCostInWindow = TRUE,
     includeCostConceptId = includeCostConceptId,
     includeCostTypeConceptId = includeCostTypeConceptId,
     includeCostDomainId = includeCostDomainId,
-    includeRevenueCodes = includeRevenueCodes,
-    includeDrgCodes = includeDrgCodes,
     covariateIdOffset = as.integer(covariateIdOffset)
   )
   

@@ -2,18 +2,18 @@
 % Please edit documentation in R/CostCovariateData.R
 \name{print.CostCovariateData}
 \alias{print.CostCovariateData}
-\title{Print CostCovariateData object}
+\title{Print a CostCovariateData object}
 \usage{
 \method{print}{CostCovariateData}(x, ...)
 }
 \arguments{
-\item{x}{CostCovariateData object}
+\item{x}{A CostCovariateData object.}
 
-\item{...}{Additional arguments (ignored)}
+\item{...}{Additional arguments (ignored).}
 }
 \value{
-Invisibly returns the input
+Invisibly returns the input object.
 }
 \description{
-Print CostCovariateData object
+Print a CostCovariateData object
 }

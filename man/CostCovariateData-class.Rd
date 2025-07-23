@@ -3,21 +3,20 @@
 \docType{class}
 \name{CostCovariateData-class}
 \alias{CostCovariateData-class}
-\title{CostCovariateData class}
+\title{The CostCovariateData class}
 \description{
-A class for storing cost covariate data extracted from the database.
-This class extends the standard covariate data structure with cost-specific
-functionality.
+A class for storing cost and utilization covariate data extracted from the database.
+This object uses the Andromeda package to store data on disk, which allows it
+to handle data sets that are much larger than the available RAM.
 }
 \section{Fields}{
 
 \describe{
-\item{\code{covariates}}{Data frame with cost covariates}
+\item{\code{andromeda}}{An Andromeda object containing the covariate data.}
 
-\item{\code{covariateRef}}{Reference table with covariate definitions}
-
-\item{\code{analysisRef}}{Reference table with analysis definitions}
-
-\item{\code{metaData}}{Metadata about the extraction}
+\item{\code{metaData}}{A list of metadata about the object.}
 }}
 
+\seealso{
+\code{\link{getDbCostData}}
+}

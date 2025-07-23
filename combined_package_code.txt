@@ -1,0 +1,2600 @@
+# Combined R Package Code
+
+Package: CostUtilization
+Date: 2025-07-23 13:46:18
+
+
+
+################################################################################
+# File: inst/sql/sql_server/GetAggregatedCostCovariates.sql
+################################################################################
+
+/************************************************************************
+@file GetCostCovariates.sql
+
+Updated version to extract person-level cost and utilization covariates for a cohort.
+
+- DEPENDENCY: This script requires a temporary table named #temporal_windows
+  to be created and populated by the calling R function.
+  The #temporal_windows table must have the columns: window_id, start_day, end_day.
+
+- Rationale: Moving the creation of the temporal windows to R simplifies the SQL,
+  improves cross-platform compatibility, and makes the system more robust.
+
+************************************************************************/
+
+{DEFAULT @cdm_database_schema = 'cdm'}
+{DEFAULT @cohort_database_schema = @cdm_database_schema}
+{DEFAULT @cohort_table = 'cohort'}
+{DEFAULT @cohort_id = 1}
+{DEFAULT @cost_type_concept_ids = ''}
+{DEFAULT @cost_domain_ids = ''}
+{DEFAULT @currency_concept_ids = ''}
+
+-- Note: The #temporal_windows table is no longer created here.
+-- It is expected to be created and populated by the calling R function.
+
+-- Extract and join all relevant cost records with their corresponding event dates
+WITH cost_records AS (
+  SELECT
+    c.person_id,
+    c.cost_domain_id,
+    c.cost_type_concept_id,
+    c.cost,
+    -- Determine the date of the clinical event associated with the cost
+    CASE c.cost_domain_id
+      WHEN 'Drug' THEN de.drug_exposure_start_date
+      WHEN 'Visit' THEN vo.visit_start_date
+      WHEN 'Procedure' THEN po.procedure_date
+      WHEN 'Device' THEN dev.device_exposure_start_date
+      WHEN 'Measurement' THEN m.measurement_date
+      WHEN 'Observation' THEN o.observation_date
+      WHEN 'Specimen' THEN s.specimen_date
+      ELSE NULL
+    END AS cost_date
+  FROM @cdm_database_schema.cost c
+  LEFT JOIN @cdm_database_schema.drug_exposure de
+    ON c.cost_event_id = de.drug_exposure_id AND c.cost_domain_id = 'Drug'
+  LEFT JOIN @cdm_database_schema.visit_occurrence vo
+    ON c.cost_event_id = vo.visit_occurrence_id AND c.cost_domain_id = 'Visit'
+  LEFT JOIN @cdm_database_schema.procedure_occurrence po
+    ON c.cost_event_id = po.procedure_occurrence_id AND c.cost_domain_id = 'Procedure'
+  LEFT JOIN @cdm_database_schema.device_exposure dev
+    ON c.cost_event_id = dev.device_exposure_id AND c.cost_domain_id = 'Device'
+  LEFT JOIN @cdm_database_schema.measurement m
+    ON c.cost_event_id = m.measurement_id AND c.cost_domain_id = 'Measurement'
+  LEFT JOIN @cdm_database_schema.observation o
+    ON c.cost_event_id = o.observation_id AND c.cost_domain_id = 'Observation'
+  LEFT JOIN @cdm_database_schema.specimen s
+    ON c.cost_event_id = s.specimen_id AND c.cost_domain_id = 'Specimen'
+  WHERE c.cost IS NOT NULL AND c.cost > 0
+    {@cost_type_concept_ids != ''} ? {AND c.cost_type_concept_id IN (@cost_type_concept_ids)}
+    {@currency_concept_ids != ''} ? {AND c.currency_concept_id IN (@currency_concept_ids)}
+    {@cost_domain_ids != ''} ? {AND c.cost_domain_id IN (@cost_domain_ids)}
+),
+-- Filter cost_records to only include those within the cohort
+cohort_cost_records AS (
+  SELECT
+    cs.subject_id,
+    cs.cohort_start_date,
+    cr.cost_domain_id,
+    cr.cost_type_concept_id,
+    cr.cost_date,
+    cr.cost
+  FROM @cohort_database_schema.@cohort_table cs
+  INNER JOIN cost_records cr
+    ON cs.subject_id = cr.person_id
+  WHERE cs.cohort_definition_id = @cohort_id
+)
+-- Analysis 1: Total costs per person per time window
+SELECT
+  @cohort_id AS cohort_definition_id,
+  ccr.subject_id,
+  1000 + (tw.window_id * 10) AS covariate_id,
+  SUM(ccr.cost) AS covariate_value
+FROM cohort_cost_records ccr
+CROSS JOIN #temporal_windows tw
+WHERE ccr.cost_date >= DATEADD(DAY, tw.start_day, ccr.cohort_start_date)
+  AND ccr.cost_date <= DATEADD(DAY, tw.end_day, ccr.cohort_start_date)
+GROUP BY ccr.subject_id, tw.window_id
+
+UNION ALL
+
+-- Analysis 2: Domain-specific costs per person per time window
+SELECT
+  @cohort_id AS cohort_definition_id,
+  ccr.subject_id,
+  2000 + (tw.window_id * 100) +
+  CASE ccr.cost_domain_id
+    WHEN 'Drug' THEN 1
+    WHEN 'Visit' THEN 2
+    WHEN 'Procedure' THEN 3
+    WHEN 'Device' THEN 4
+    WHEN 'Measurement' THEN 5
+    WHEN 'Observation' THEN 6
+    WHEN 'Specimen' THEN 7
+    ELSE 99
+  END AS covariate_id,
+  SUM(ccr.cost) AS covariate_value
+FROM cohort_cost_records ccr
+CROSS JOIN #temporal_windows tw
+WHERE ccr.cost_date >= DATEADD(DAY, tw.start_day, ccr.cohort_start_date)
+  AND ccr.cost_date <= DATEADD(DAY, tw.end_day, ccr.cohort_start_date)
+GROUP BY ccr.subject_id, tw.window_id, ccr.cost_domain_id
+
+UNION ALL
+
+-- Analysis 3: Cost type-specific costs per person per time window
+SELECT
+  @cohort_id AS cohort_definition_id,
+  ccr.subject_id,
+  3000 + (tw.window_id * 1000) + (ccr.cost_type_concept_id % 1000) AS covariate_id,
+  SUM(ccr.cost) AS covariate_value
+FROM cohort_cost_records ccr
+CROSS JOIN #temporal_windows tw
+WHERE ccr.cost_date >= DATEADD(DAY, tw.start_day, ccr.cohort_start_date)
+  AND ccr.cost_date <= DATEADD(DAY, tw.end_day, ccr.cohort_start_date)
+GROUP BY ccr.subject_id, tw.window_id, ccr.cost_type_concept_id
+
+UNION ALL
+
+-- Analysis 4: Utilization counts per person per time window
+-- This counts the number of distinct days a person had any kind of healthcare interaction.
+SELECT
+  @cohort_id AS cohort_definition_id,
+  ccr.subject_id,
+  4000 + (tw.window_id * 10) AS covariate_id,
+  COUNT(DISTINCT ccr.cost_date) AS covariate_value
+FROM cohort_cost_records ccr
+CROSS JOIN #temporal_windows tw
+WHERE ccr.cost_date >= DATEADD(DAY, tw.start_day, ccr.cohort_start_date)
+  AND ccr.cost_date <= DATEADD(DAY, tw.end_day, ccr.cohort_start_date)
+GROUP BY ccr.subject_id, tw.window_id;
+
+-- The #temporal_windows table is managed by DatabaseConnector in the calling R session,
+-- so it does not need to be dropped here. 
+
+
+################################################################################
+# File: inst/sql/sql_server/GetCostAnalysisRef.sql
+################################################################################
+
+-- Generates analysis reference table for cost covariates
+{DEFAULT @covariate_settings = '{}'}
+
+-- For now, we define a static set of analysis IDs.
+-- A more dynamic approach could parse the settings object if needed.
+SELECT
+    CAST(analysis_id AS INT) AS analysis_id,
+    CAST(analysis_name AS VARCHAR(255)) AS analysis_name,
+    CAST(domain_id AS VARCHAR(255)) AS domain_id,
+    CAST(start_day AS INT) AS start_day,
+    CAST(end_day AS INT) AS end_day,
+    CAST(is_binary AS CHAR(1)) as is_binary,
+    CAST(missing_means_zero AS CHAR(1)) as missing_means_zero
+FROM (
+    VALUES
+    (101, 'Total Cost',         NULL, -365, 365, 'N', 'Y'),
+    (201, 'Cost By Domain',     'Drug;Visit;Procedure;Device;Measurement;Observation;Specimen', -365, 365, 'N', 'Y'),
+    (301, 'Cost By Type',       NULL, -365, 365, 'N', 'Y'),
+    (401, 'Utilization',        NULL, -365, 365, 'N', 'Y')
+) AS t (analysis_id, analysis_name, domain_id, start_day, end_day, is_binary, missing_means_zero); 
+
+
+################################################################################
+# File: inst/sql/sql_server/GetCostCovariateRef.sql
+################################################################################
+
+-- Generates covariate reference table for cost covariates
+
+{DEFAULT @covariate_settings = '{}'}
+
+WITH covariate_definitions AS (
+  -- Total costs covariates
+  SELECT 
+    1000 + (window_id * 10) AS covariate_id,
+    CONCAT('Total costs during day ', start_day, ' to ', end_day, ' relative to index') AS covariate_name,
+    1001 AS analysis_id,
+    NULL AS concept_id
+  FROM (
+    SELECT 1 AS window_id, -365 AS start_day, -1 AS end_day
+    UNION ALL
+    SELECT 2 AS window_id, -180 AS start_day, -1 AS end_day
+    UNION ALL
+    SELECT 3 AS window_id, -30 AS start_day, -1 AS end_day
+    UNION ALL
+    SELECT 4 AS window_id, 0 AS start_day, 0 AS end_day
+  ) windows
+  
+  UNION ALL
+  
+  -- Domain-specific costs
+  SELECT 
+    2000 + (window_id * 100) + domain_id AS covariate_id,
+    CONCAT(domain_name, ' costs during day ', start_day, ' to ', end_day, ' relative to index') AS covariate_name,
+    2001 AS analysis_id,
+    NULL AS concept_id
+  FROM (
+    SELECT 1 AS window_id, -365 AS start_day, -1 AS end_day
+    UNION ALL
+    SELECT 2 AS window_id, -180 AS start_day, -1 AS end_day
+    UNION ALL
+    SELECT 3 AS window_id, -30 AS start_day, -1 AS end_day
+    UNION ALL
+    SELECT 4 AS window_id, 0 AS start_day, 0 AS end_day
+  ) windows
+  CROSS JOIN (
+    SELECT 1 AS domain_id, 'Drug' AS domain_name
+    UNION ALL
+    SELECT 2 AS domain_id, 'Visit' AS domain_name
+    UNION ALL
+    SELECT 3 AS domain_id, 'Procedure' AS domain_name
+    UNION ALL
+    SELECT 4 AS domain_id, 'Device' AS domain_name
+    UNION ALL
+        SELECT 5 AS domain_id, 'Measurement' AS domain_name
+    UNION ALL
+    SELECT 6 AS domain_id, 'Observation' AS domain_name
+    UNION ALL
+    SELECT 7 AS domain_id, 'Specimen' AS domain_name
+  ) domains
+  
+  UNION ALL
+  
+  -- Utilization counts
+  SELECT 
+    4000 + (window_id * 10) AS covariate_id,
+    CONCAT('Healthcare utilization count during day ', start_day, ' to ', end_day, ' relative to index') AS covariate_name,
+    4001 AS analysis_id,
+    NULL AS concept_id
+  FROM (
+    SELECT 1 AS window_id, -365 AS start_day, -1 AS end_day
+    UNION ALL
+    SELECT 2 AS window_id, -180 AS start_day, -1 AS end_day
+    UNION ALL
+    SELECT 3 AS window_id, -30 AS start_day, -1 AS end_day
+    UNION ALL
+    SELECT 4 AS window_id, 0 AS start_day, 0 AS end_day
+  ) windows
+)
+SELECT 
+  covariate_id,
+  covariate_name,
+  analysis_id,
+  concept_id
+FROM covariate_definitions
+ORDER BY covariate_id; 
+
+
+################################################################################
+# File: inst/sql/sql_server/GetCostCovariates.sql
+################################################################################
+
+-- Extracts person-level cost covariates for a cohort
+
+{DEFAULT @cdm_database_schema = 'main'}
+{DEFAULT @cohort_database_schema = @cdm_database_schema}
+{DEFAULT @cohort_table = 'cohort_table'}
+{DEFAULT @cohort_id = 1}
+{DEFAULT @temporal_start_days = '-365,-180,-30,0'}
+{DEFAULT @temporal_end_days = '-1,-1,-1,0'}
+{DEFAULT @cost_type_concept_ids = '44818668,44818669'}
+{DEFAULT @cost_domain_ids = NULL}
+{DEFAULT @currency_concept_ids = '44818568'}
+
+-- Create temp table with temporal windows
+DROP TABLE IF EXISTS #temporal_windows;
+
+SELECT row_number() OVER (ORDER BY start_day) AS window_id,
+       start_day,
+       end_day
+INTO #temporal_windows
+FROM (
+  SELECT CAST(value AS INT) AS start_day,
+         CAST(LEAD(value) OVER (ORDER BY ordinal) AS INT) AS end_day
+  FROM STRING_SPLIT('@temporal_start_days', ',') s1
+  CROSS APPLY (
+    SELECT value, row_number() OVER (ORDER BY (SELECT NULL)) AS ordinal
+    FROM STRING_SPLIT('@temporal_end_days', ',')
+  ) s2
+  WHERE s1.ordinal = s2.ordinal
+) t;
+
+-- Extract person-level cost data
+WITH cohort_subjects AS (
+  SELECT DISTINCT 
+    subject_id,
+    cohort_start_date,
+    cohort_end_date
+  FROM @cohort_database_schema.@cohort_table
+  WHERE cohort_definition_id = @cohort_id
+),
+cost_records AS (
+  SELECT 
+    c.cost_id,
+    c.person_id,
+    c.cost_event_id,
+    c.cost_domain_id,
+    c.cost_type_concept_id,
+    c.currency_concept_id,
+    c.cost,
+    c.cost_source_value,
+    c.cost_source_concept_id,
+    CASE 
+      WHEN c.cost_domain_id = 'Drug' THEN de.drug_exposure_start_date
+      WHEN c.cost_domain_id = 'Visit' THEN vo.visit_start_date
+      WHEN c.cost_domain_id = 'Procedure' THEN po.procedure_date
+      WHEN c.cost_domain_id = 'Device' THEN dev.device_exposure_start_date
+      WHEN c.cost_domain_id = 'Measurement' THEN m.measurement_date
+      WHEN c.cost_domain_id = 'Observation' THEN o.observation_date
+      WHEN c.cost_domain_id = 'Specimen' THEN s.specimen_date
+    END AS cost_date
+  FROM @cdm_database_schema.cost c
+  LEFT JOIN @cdm_database_schema.drug_exposure de 
+    ON c.cost_event_id = de.drug_exposure_id AND c.cost_domain_id = 'Drug'
+  LEFT JOIN @cdm_database_schema.visit_occurrence vo 
+    ON c.cost_event_id = vo.visit_occurrence_id AND c.cost_domain_id = 'Visit'
+  LEFT JOIN @cdm_database_schema.procedure_occurrence po 
+    ON c.cost_event_id = po.procedure_occurrence_id AND c.cost_domain_id = 'Procedure'
+  LEFT JOIN @cdm_database_schema.device_exposure dev 
+    ON c.cost_event_id = dev.device_exposure_id AND c.cost_domain_id = 'Device'
+  LEFT JOIN @cdm_database_schema.measurement m 
+    ON c.cost_event_id = m.measurement_id AND c.cost_domain_id = 'Measurement'
+  LEFT JOIN @cdm_database_schema.observation o 
+    ON c.cost_event_id = o.observation_id AND c.cost_domain_id = 'Observation'
+  LEFT JOIN @cdm_database_schema.specimen s 
+    ON c.cost_event_id = s.specimen_id AND c.cost_domain_id = 'Specimen'
+  WHERE c.cost IS NOT NULL
+    AND c.cost > 0
+    {@cost_type_concept_ids != ''} ? {AND c.cost_type_concept_id IN (@cost_type_concept_ids)}
+    {@currency_concept_ids != ''} ? {AND c.currency_concept_id IN (@currency_concept_ids)}
+    {@cost_domain_ids != ''} ? {AND c.cost_domain_id IN (@cost_domain_ids)}
+)
+SELECT 
+  @cohort_id AS cohort_definition_id,
+  cs.subject_id,
+  1000 + (tw.window_id * 10) AS covariate_id,
+  SUM(cr.cost) AS covariate_value
+FROM cohort_subjects cs
+INNER JOIN cost_records cr ON cs.subject_id = cr.person_id
+CROSS JOIN #temporal_windows tw
+WHERE cr.cost_date >= DATEADD(DAY, tw.start_day, cs.cohort_start_date)
+  AND cr.cost_date <= DATEADD(DAY, tw.end_day, cs.cohort_start_date)
+GROUP BY cs.subject_id, tw.window_id
+
+UNION ALL
+
+-- Domain-specific costs
+SELECT 
+  @cohort_id AS cohort_definition_id,
+  cs.subject_id,
+  2000 + (tw.window_id * 100) + 
+  CASE cr.cost_domain_id
+    WHEN 'Drug' THEN 1
+    WHEN 'Visit' THEN 2
+    WHEN 'Procedure' THEN 3
+    WHEN 'Device' THEN 4
+    WHEN 'Measurement' THEN 5
+    WHEN 'Observation' THEN 6
+    WHEN 'Specimen' THEN 7
+    ELSE 99
+  END AS covariate_id,
+  SUM(cr.cost) AS covariate_value
+FROM cohort_subjects cs
+INNER JOIN cost_records cr ON cs.subject_id = cr.person_id
+CROSS JOIN #temporal_windows tw
+WHERE cr.cost_date >= DATEADD(DAY, tw.start_day, cs.cohort_start_date)
+  AND cr.cost_date <= DATEADD(DAY, tw.end_day, cs.cohort_start_date)
+GROUP BY cs.subject_id, tw.window_id, cr.cost_domain_id
+
+UNION ALL
+
+-- Cost type-specific costs
+SELECT 
+  @cohort_id AS cohort_definition_id,
+  cs.subject_id,
+  3000 + (tw.window_id * 1000) + (cr.cost_type_concept_id % 1000) AS covariate_id,
+  SUM(cr.cost) AS covariate_value
+FROM cohort_subjects cs
+INNER JOIN cost_records cr ON cs.subject_id = cr.person_id
+CROSS JOIN #temporal_windows tw
+WHERE cr.cost_date >= DATEADD(DAY, tw.start_day, cs.cohort_start_date)
+  AND cr.cost_date <= DATEADD(DAY, tw.end_day, cs.cohort_start_date)
+GROUP BY cs.subject_id, tw.window_id, cr.cost_type_concept_id
+
+UNION ALL
+
+-- Utilization counts
+SELECT 
+  @cohort_id AS cohort_definition_id,
+  cs.subject_id,
+  4000 + (tw.window_id * 10) AS covariate_id,
+  COUNT(DISTINCT CONCAT(cr.cost_domain_id, '_', CAST(cr.cost_date AS VARCHAR))) AS covariate_value
+FROM cohort_subjects cs
+INNER JOIN cost_records cr ON cs.subject_id = cr.person_id
+CROSS JOIN #temporal_windows tw
+WHERE cr.cost_date >= DATEADD(DAY, tw.start_day, cs.cohort_start_date)
+  AND cr.cost_date <= DATEADD(DAY, tw.end_day, cs.cohort_start_date)
+GROUP BY cs.subject_id, tw.window_id;
+
+-- Clean up temp tables
+DROP TABLE IF EXISTS #temporal_windows; 
+
+
+################################################################################
+# File: man/generateCostCovariatesSql.Rd
+################################################################################
+
+% Generated by roxygen2: do not edit by hand
+% Please edit documentation in R/getDbCostData.R
+\name{generateCostCovariatesSql}
+\alias{generateCostCovariatesSql}
+\title{Generate SQL for cost covariates extraction}
+\usage{
+generateCostCovariatesSql(
+  connection,
+  cdmDatabaseSchema,
+  cohortTable,
+  cohortDatabaseSchema,
+  cohortId,
+  covariateSettings,
+  aggregated
+)
+}
+\arguments{
+\item{connection}{A \code{DatabaseConnector} connection object.}
+
+\item{cdmDatabaseSchema}{The schema holding the OMOP CDM data.}
+
+\item{cohortTable}{The table containing the cohorts.}
+
+\item{cohortDatabaseSchema}{The schema where the cohort table resides.}
+
+\item{cohortId}{The ID of the cohort for which to extract data.}
+
+\item{covariateSettings}{An object of type \code{costCovariateSettings}.}
+
+\item{aggregated}{A logical value indicating whether to compute aggregated statistics
+or extract person-level data.}
+}
+\value{
+A list containing the rendered and translated SQL queries for covariates,
+covariate reference, and analysis reference.
+}
+\description{
+This internal function constructs the necessary SQL queries to extract cost and
+utilization covariates. It creates and uploads a temporary table for temporal
+windows to avoid complex string parsing in SQL, making the queries more robust
+and efficient.
+}
+\keyword{internal} 
+
+
+################################################################################
+# File: R/conceptSetCostSettings.R
+################################################################################
+
+#' Create cost covariate settings from concept set
+#'
+#' @description
+#' Creates cost covariate settings based on a specific concept set, useful for
+#' analyzing costs associated with specific conditions, procedures, or drugs.
+#'
+#' @param conceptSetId Unique identifier for the concept set
+#' @param conceptSetName Name of the concept set
+#' @param conceptIds Vector of concept IDs to include
+#' @param excludeDescendants Whether to exclude descendant concepts
+#' @param includedCovariateIds Vector of covariate IDs to generate
+#' @param temporalStartDays Start days for temporal windows
+#' @param temporalEndDays End days for temporal windows
+#' @param aggregateMethod Method for aggregating costs
+#' @param stratifyByCostType Whether to stratify by cost type
+#' @param analysisName Optional custom name for the analysis
+#'
+#' @return
+#' An object of type \code{costCovariateSettings}
+#'
+#' @export
+createCostCovariateSettingsFromConceptSet <- function(conceptSetId,
+                                                      conceptSetName,
+                                                      conceptIds,
+                                                      excludeDescendants = FALSE,
+                                                      includedCovariateIds = NULL,
+                                                      temporalStartDays = c(-365, -180, -30, 0),
+                                                      temporalEndDays = c(-1, -1, -1, 0),
+                                                      aggregateMethod = "sum",
+                                                      stratifyByCostType = FALSE,
+                                                      analysisName = NULL) {
+  if (is.null(analysisName)) {
+    analysisName <- paste("Costs for", conceptSetName)
+  }
+
+  # Create analyses for each temporal window
+  analyses <- data.frame(
+    analysisId = seq_along(temporalStartDays),
+    analysisName = paste(
+      analysisName,
+      ifelse(temporalStartDays < 0,
+        paste(abs(temporalStartDays), "days prior"),
+        ifelse(temporalStartDays == 0 & temporalEndDays == 0,
+          "on index",
+          paste(temporalEndDays, "days after")
+        )
+      )
+    ),
+    startDay = temporalStartDays,
+    endDay = temporalEndDays,
+    isBinary = FALSE,
+    missingMeansZero = TRUE,
+    aggregateMethod = aggregateMethod,
+    stringsAsFactors = FALSE
+  )
+
+  # Create concept set
+  conceptSet <- list(
+    conceptSetId = conceptSetId,
+    conceptSetName = conceptSetName,
+    conceptIds = conceptIds,
+    excludeDescendants = excludeDescendants
+  )
+
+  # Generate covariate IDs if not provided
+  if (is.null(includedCovariateIds)) {
+    baseId <- conceptSetId * 10000
+    includedCovariateIds <- baseId + analyses$analysisId
+
+    if (stratifyByCostType) {
+      # Add additional IDs for cost type stratification
+      costTypeOffset <- 1000
+      includedCovariateIds <- c(
+        includedCovariateIds,
+        includedCovariateIds + costTypeOffset
+      )
+    }
+  }
+
+  settings <- list(
+    useCosts = TRUE,
+    analyses = analyses,
+    covariateIds = includedCovariateIds,
+    conceptSets = list(conceptSet),
+    includedCovariateConceptIds = conceptIds,
+    temporalStartDays = temporalStartDays,
+    temporalEndDays = temporalEndDays,
+    aggregateMethod = aggregateMethod,
+    stratifyByCostType = stratifyByCostType,
+    addDescendantsToIncludedCovariateConceptIds = !excludeDescendants
+  )
+
+  class(settings) <- "costCovariateSettings"
+  return(settings)
+}
+
+#' Combine multiple cost covariate settings
+#'
+#' @description
+#' Combines multiple cost covariate settings objects into a single settings object.
+#'
+#' @param ... Multiple costCovariateSettings objects to combine
+#'
+#' @return
+#' A combined costCovariateSettings object
+#'
+#' @export
+combineCostCovariateSettings <- function(...) {
+  settingsList <- list(...)
+
+  # Verify all inputs are costCovariateSettings
+  if (!all(sapply(settingsList, isCostCovariateSettings))) {
+    stop("All inputs must be costCovariateSettings objects")
+  }
+
+  # Initialize combined settings with first object
+  combinedSettings <- settingsList[[1]]
+
+  if (length(settingsList) > 1) {
+    for (i in 2:length(settingsList)) {
+      currentSettings <- settingsList[[i]]
+
+      # Combine analyses
+      if (!is.null(currentSettings$analyses)) {
+        maxId <- max(combinedSettings$analyses$analysisId, na.rm = TRUE)
+        currentSettings$analyses$analysisId <- currentSettings$analyses$analysisId + maxId
+        combinedSettings$analyses <- rbind(
+          combinedSettings$analyses,
+          currentSettings$analyses
+        )
+      }
+
+      # Combine covariate IDs
+      combinedSettings$covariateIds <- c(
+        combinedSettings$covariateIds,
+        currentSettings$covariateIds
+      )
+
+      # Combine concept sets
+      if (!is.null(currentSettings$conceptSets)) {
+        combinedSettings$conceptSets <- c(
+          combinedSettings$conceptSets,
+          currentSettings$conceptSets
+        )
+      }
+
+      # Combine included/excluded concept IDs
+      combinedSettings$includedCovariateConceptIds <- unique(c(
+        combinedSettings$includedCovariateConceptIds,
+        currentSettings$includedCovariateConceptIds
+      ))
+
+      combinedSettings$excludedCovariateConceptIds <- unique(c(
+        combinedSettings$excludedCovariateConceptIds,
+        currentSettings$excludedCovariateConceptIds
+      ))
+
+      # Combine temporal windows (take union of unique combinations)
+      allStartDays <- unique(c(
+        combinedSettings$temporalStartDays,
+        currentSettings$temporalStartDays
+      ))
+      allEndDays <- unique(c(
+        combinedSettings$temporalEndDays,
+        currentSettings$temporalEndDays
+      ))
+
+      # Create all combinations
+      temporalCombos <- expand.grid(start = allStartDays, end = allEndDays)
+      temporalCombos <- temporalCombos[temporalCombos$start <= temporalCombos$end, ]
+
+      combinedSettings$temporalStartDays <- temporalCombos$start
+      combinedSettings$temporalEndDays <- temporalCombos$end
+
+      # Combine flags (use OR logic)
+      booleanFields <- c(
+        "useCosts", "useCostDemographics", "useCostVisitCounts",
+        "useCostUtilization", "includeMedicalCosts", "includePharmacyCosts",
+        "includeProcedureCosts", "includeDrugCosts", "includeVisitCosts",
+        "includeDeviceCosts", "stratifyByAgeGroup", "stratifyByGender",
+        "stratifyByCostDomain", "stratifyByCostType", "includeTimeDistribution",
+        "includeOutlierAnalysis"
+      )
+
+      for (field in booleanFields) {
+        if (!is.null(combinedSettings[[field]]) && !is.null(currentSettings[[field]])) {
+          combinedSettings[[field]] <- combinedSettings[[field]] || currentSettings[[field]]
+        }
+      }
+    }
+  }
+
+  class(combinedSettings) <- "costCovariateSettings"
+  return(combinedSettings)
+}
+
+#' Validate cost covariate settings
+#'
+#' @description
+#' Validates cost covariate settings to ensure they are properly configured.
+#'
+#' @param settings A costCovariateSettings object
+#' @param connection Optional database connection for checking concept validity
+#' @param cdmDatabaseSchema Optional CDM database schema
+#'
+#' @return
+#' TRUE if valid, otherwise throws an error with details
+#'
+#' @export
+validateCostCovariateSettings <- function(settings,
+                                          connection = NULL,
+                                          cdmDatabaseSchema = NULL) {
+  if (!isCostCovariateSettings(settings)) {
+    stop("Input must be a costCovariateSettings object")
+  }
+
+  # Check temporal windows
+  if (length(settings$temporalStartDays) != length(settings$temporalEndDays)) {
+    stop("temporalStartDays and temporalEndDays must have the same length")
+  }
+
+  if (any(settings$temporalStartDays > settings$temporalEndDays)) {
+    stop("All temporalStartDays must be <= corresponding temporalEndDays")
+  }
+
+  # Check analyses if present
+  if (!is.null(settings$analyses)) {
+    requiredColumns <- c("analysisId", "analysisName", "startDay", "endDay")
+    missingColumns <- setdiff(requiredColumns, names(settings$analyses))
+    if (length(missingColumns) > 0) {
+      stop(paste("analyses missing required columns:", paste(missingColumns, collapse = ", ")))
+    }
+
+    if (any(duplicated(settings$analyses$analysisId))) {
+      stop("Duplicate analysis IDs found")
+    }
+  }
+
+  # Check concept IDs if database connection provided
+  if (!is.null(connection) && !is.null(cdmDatabaseSchema)) {
+    # Check cost type concept IDs
+    if (!is.null(settings$costTypeConceptIds)) {
+      sql <- "SELECT concept_id
+              FROM @cdm_database_schema.concept
+              WHERE concept_id IN (@concept_ids)
+              AND domain_id = 'Cost Type'
+              AND invalid_reason IS NULL"
+
+      sql <- SqlRender::render(sql,
+        cdm_database_schema = cdmDatabaseSchema,
+        concept_ids = settings$costTypeConceptIds
+      )
+
+      validConceptIds <- DatabaseConnector::querySql(connection, sql)
+      invalidIds <- setdiff(settings$costTypeConceptIds, validConceptIds$CONCEPT_ID)
+
+      if (length(invalidIds) > 0) {
+        warning(paste("Invalid cost type concept IDs:", paste(invalidIds, collapse = ", ")))
+      }
+    }
+
+    # Check currency concept IDs
+    if (!is.null(settings$currencyConceptIds)) {
+      sql <- "SELECT concept_id
+              FROM @cdm_database_schema.concept
+              WHERE concept_id IN (@concept_ids)
+              AND domain_id = 'Currency'
+              AND invalid_reason IS NULL"
+
+      sql <- SqlRender::render(sql,
+        cdm_database_schema = cdmDatabaseSchema,
+        concept_ids = settings$currencyConceptIds
+      )
+
+      validConceptIds <- DatabaseConnector::querySql(connection, sql)
+      invalidIds <- setdiff(settings$currencyConceptIds, validConceptIds$CONCEPT_ID)
+
+      if (length(invalidIds) > 0) {
+        warning(paste("Invalid currency concept IDs:", paste(invalidIds, collapse = ", ")))
+      }
+    }
+  }
+
+  message("Cost covariate settings validated successfully")
+  return(TRUE)
+} 
+
+
+################################################################################
+# File: R/CostCovariateData.R
+################################################################################
+
+# R/CostCovariateData.R
+
+#' The CostCovariateData class
+#'
+#' @description
+#' A class for storing cost and utilization covariate data extracted from the database.
+#' This object uses the Andromeda package to store data on disk, which allows it
+#' to handle data sets that are much larger than the available RAM.
+#'
+#' @field andromeda An Andromeda object containing the covariate data.
+#' @field metaData A list of metadata about the object.
+#'
+#' @seealso \code{\link{getDbCostData}}
+#' @export
+#' @importFrom methods setClass
+setClass("CostCovariateData",
+         slots = list(
+           andromeda = "ANY",
+           metaData = "list"
+         ))
+
+#' Print a CostCovariateData object
+#'
+#' @param x A CostCovariateData object.
+#' @param ... Additional arguments (ignored).
+#'
+#' @return Invisibly returns the input object.
+#' @export
+print.CostCovariateData <- function(x, ...) {
+  writeLines("CostCovariateData object")
+  writeLines("")
+  writeLines(paste("Database ID:", x$metaData$databaseId))
+  writeLines(paste("Cohort ID:", x_getMetaData("cohortId", x, "...") ))
+  writeLines(paste("Aggregated:", x_getMetaData("aggregated", x, "...") ))
+  writeLines("")
+  
+  if (x_getMetaData("aggregated", x, FALSE )) {
+    covariateCount <- x$andromeda$covariates %>% count() %>% pull()
+    nonZeroCount <- x$andromeda$covariates %>% filter(.data$meanValue > 0) %>% count() %>% pull()
+    writeLines(paste("Number of covariates:", covariateCount))
+    writeLines(paste("Number of non-zero covariates:", nonZeroCount))
+  } else {
+    subjectCount <- x$andromeda$covariates %>% distinct(.data$subjectId) %>% count() %>% pull()
+    covariateDefCount <- x$andromeda$covariateRef %>% count() %>% pull()
+    valueCount <- x$andromeda$covariates %>% count() %>% pull()
+    
+    writeLines(paste("Number of subjects:", subjectCount))
+    writeLines(paste("Number of covariates:", covariateDefCount))
+    writeLines(paste("Number of covariate values:", valueCount))
+  }
+  invisible(x)
+}
+
+#' Summary of CostCovariateData
+#'
+#' @description
+#' Provides a summary of the covariates. This function executes a query on the
+#' Andromeda object and returns an in-memory data frame.
+#'
+#' @param object A CostCovariateData object.
+#' @param ... Additional arguments (ignored).
+#'
+#' @return A tibble with the summary statistics.
+#' @export
+summary.CostCovariateData <- function(object, ...) {
+  if (object$metaData$aggregated) {
+    # For aggregated data, just join and collect
+    summary_data <- object$andromeda$covariates %>%
+      inner_join(object$andromeda$covariateRef, by = "covariateId") %>%
+      arrange(desc(.data$meanValue)) %>%
+      select("covariateName", "meanValue", "sdValue", "minValue", "medianValue", "maxValue") %>%
+      collect() # Bring result into memory
+  } else {
+    # For person-level data, compute summary stats using dplyr, then join and collect
+    summary_stats <- object$andromeda$covariates %>%
+      group_by(.data$covariateId) %>%
+      summarise(
+        n = n(),
+        mean = mean(.data$covariateValue, na.rm = TRUE),
+        sd = sd(.data$covariateValue, na.rm = TRUE),
+        min = min(.data$covariateValue, na.rm = TRUE),
+        median = median(.data$covariateValue, na.rm = TRUE),
+        max = max(.data$covariateValue, na.rm = TRUE)
+      )
+    
+    summary_data <- summary_stats %>%
+      inner_join(object$andromeda$covariateRef, by = "covariateId") %>%
+      arrange(desc(.data$mean)) %>%
+      select("covariateName", "n", "mean", "sd", "min", "median", "max") %>%
+      collect() # Bring result into memory
+  }
+  return(summary_data)
+}
+
+#' Convert CostCovariateData to a standard Andromeda table
+#'
+#' @param costCovariateData A CostCovariateData object.
+#'
+#' @return
+#' A `tbl_Andromeda` object. This is a pointer to the data on disk and can be
+#' manipulated using `dplyr` verbs. Use `collect()` to bring the data into memory.
+#' @export
+toAndromedaTable <- function(costCovariateData) {
+  if (!inherits(costCovariateData, "CostCovariateData")) {
+    stop("Input must be a CostCovariateData object")
+  }
+  return(costCovariateData$andromeda$covariates)
+}
+
+#' Save CostCovariateData to a file
+#'
+#' @description
+#' Saves the `CostCovariateData` object to a file. The Andromeda data is saved in a
+#' zip file in the specified folder.
+#'
+#' @param costCovariateData A CostCovariateData object.
+#' @param file The path to the file where the data should be saved.
+#'
+#' @export
+saveCostCovariateData <- function(costCovariateData, file) {
+  if (!inherits(costCovariateData, "CostCovariateData")) {
+    stop("Input must be a CostCovariateData object")
+  }
+  # The metaData is already an attribute of the andromeda object
+  Andromeda::saveAndromeda(costCovariateData$andromeda, fileName = file)
+  invisible(TRUE)
+}
+
+#' Load CostCovariateData from a file
+#'
+#' @param file The path to the file where the data was saved.
+#'
+#' @return A CostCovariateData object.
+#' @export
+loadCostCovariateData <- function(file) {
+  if (!file.exists(file)) {
+    stop("File does not exist: ", file)
+  }
+  andromeda <- Andromeda::loadAndromeda(file)
+  metaData <- attr(andromeda, "metaData")
+  
+  result <- new("CostCovariateData",
+                andromeda = andromeda,
+                metaData = metaData)
+  return(result)
+}
+
+# Helper function to safely get metadata
+x_getMetaData <- function(key, costCovariateData, default) {
+  if (is.null(costCovariateData$metaData[[key]])) default else costCovariateData$metaData[[key]]
+} 
+
+
+################################################################################
+# File: R/costSettings.R
+################################################################################
+
+# R/CostCovariateSettings.R
+
+#' Create covariate settings for cost analysis
+#'
+#' @description
+#' Creates comprehensive settings for extracting cost-based covariates. These settings
+#' can be used to analyze various cost metrics across different dimensions and time windows.
+#'
+#' @param useCosts Logical indicating whether to extract cost covariates
+#' @param useCostDemographics Logical indicating whether to include demographic-stratified costs
+#' @param useCostVisitCounts Logical indicating whether to include visit count-based cost metrics
+#' @param useCostUtilization Logical indicating whether to include utilization-based cost metrics
+#' @param temporalStartDays A vector of integers specifying the start of time windows
+#'   (days relative to cohort start date). Negative values indicate days before.
+#' @param temporalEndDays A vector of integers specifying the end of time windows
+#'   (days relative to cohort start date). Must be same length as temporalStartDays.
+#' @param includedCovariateConceptIds A vector of concept IDs to specifically include.
+#'   If NULL, includes all concepts.
+#' @param excludedCovariateConceptIds A vector of concept IDs to specifically exclude.
+#' @param includedCovariateIds A vector of covariate IDs to specifically include.
+#' @param costDomainIds A vector of strings specifying which cost domains to include
+#'   (e.g., "Drug", "Procedure", "Visit", "Device", "Measurement", "Observation").
+#' @param costTypeConceptIds A vector of concept IDs specifying cost types to include
+#'   (e.g., 44818668 for allowed amount, 44818669 for paid amount).
+#' @param currencyConceptIds A vector of concept IDs for specific currencies
+#'   (e.g., 44818568 for USD). If NULL, includes all currencies.
+#' @param includeMedicalCosts Logical indicating whether to include medical costs
+#' @param includePharmacyCosts Logical indicating whether to include pharmacy costs
+#' @param includeProcedureCosts Logical indicating whether to include procedure-specific costs
+#' @param includeDrugCosts Logical indicating whether to include drug-specific costs
+#' @param includeVisitCosts Logical indicating whether to include visit-specific costs
+#' @param includeDeviceCosts Logical indicating whether to include device-specific costs
+#' @param aggregateMethod Method for aggregating costs: "sum", "mean", "median", "min", "max"
+#' @param stratifyByAgeGroup Logical indicating whether to stratify costs by age groups
+#' @param stratifyByGender Logical indicating whether to stratify costs by gender
+#' @param stratifyByCostDomain Logical indicating whether to create separate covariates by domain
+#' @param stratifyByCostType Logical indicating whether to create separate covariates by cost type
+#' @param includeTimeDistribution Logical indicating whether to include temporal distribution metrics
+#' @param includeOutlierAnalysis Logical indicating whether to include outlier detection metrics
+#' @param outlierLowerQuantile Lower quantile for outlier detection (default 0.01)
+#' @param outlierUpperQuantile Upper quantile for outlier detection (default 0.99)
+#' @param addDescendantsToIncludedCovariateConceptIds Logical indicating whether to include
+#'   descendant concepts
+#' @param addDescendantsToExcludedCovariateConceptIds Logical indicating whether to exclude
+#'   descendant concepts
+#'
+#' @return
+#' An object of type \code{costCovariateSettings}, to be used with other functions
+#' in the CostUtilization package.
+#'
+#' @examples
+#' \dontrun{
+#' # Create settings for basic cost analysis
+#' settings <- costCovariateSettings(
+#'   useCosts = TRUE,
+#'   temporalStartDays = c(-365, -180, -30, 0),
+#'   temporalEndDays = c(-1, -1, -1, 0),
+#'   includeMedicalCosts = TRUE,
+#'   includePharmacyCosts = TRUE
+#' )
+#'
+#' # Create settings for specific cost types
+#' settings <- costCovariateSettings(
+#'   useCosts = TRUE,
+#'   costTypeConceptIds = c(44818668, 44818669), # allowed and paid amounts
+#'   stratifyByCostDomain = TRUE,
+#'   aggregateMethod = "sum"
+#' )
+#' }
+#'
+#' @export
+costCovariateSettings <- function(useCosts = TRUE,
+                                  useCostDemographics = FALSE,
+                                  useCostVisitCounts = FALSE,
+                                  useCostUtilization = FALSE,
+                                  temporalStartDays = c(-365, -180, -30, 0, 1),
+                                  temporalEndDays = c(-1, -1, -1, 0, 365),
+                                  includedCovariateConceptIds = NULL,
+                                  excludedCovariateConceptIds = NULL,
+                                  includedCovariateIds = NULL,
+                                  costDomainIds = NULL,
+                                  costTypeConceptIds = NULL,
+                                  currencyConceptIds = NULL,
+                                  includeMedicalCosts = TRUE,
+                                  includePharmacyCosts = TRUE,
+                                  includeProcedureCosts = TRUE,
+                                  includeDrugCosts = TRUE,
+                                  includeVisitCosts = TRUE,
+                                  includeDeviceCosts = FALSE,
+                                  aggregateMethod = "sum",
+                                  stratifyByAgeGroup = FALSE,
+                                  stratifyByGender = FALSE,
+                                  stratifyByCostDomain = TRUE,
+                                  stratifyByCostType = FALSE,
+                                  includeTimeDistribution = FALSE,
+                                  includeOutlierAnalysis = FALSE,
+                                  outlierLowerQuantile = 0.01,
+                                  outlierUpperQuantile = 0.99,
+                                  addDescendantsToIncludedCovariateConceptIds = FALSE,
+                                  addDescendantsToExcludedCovariateConceptIds = FALSE) {
+  # Input validation
+  if (length(temporalStartDays) != length(temporalEndDays)) {
+    stop("temporalStartDays and temporalEndDays must have the same length")
+  }
+
+  if (any(temporalStartDays > temporalEndDays)) {
+    stop("temporalStartDays must be less than or equal to temporalEndDays")
+  }
+
+  if (!aggregateMethod %in% c("sum", "mean", "median", "min", "max")) {
+    stop("aggregateMethod must be one of: sum, mean, median, min, max")
+  }
+
+  if (includeOutlierAnalysis) {
+    if (outlierLowerQuantile < 0 || outlierLowerQuantile > 1) {
+      stop("outlierLowerQuantile must be between 0 and 1")
+    }
+    if (outlierUpperQuantile < 0 || outlierUpperQuantile > 1) {
+      stop("outlierUpperQuantile must be between 0 and 1")
+    }
+    if (outlierLowerQuantile >= outlierUpperQuantile) {
+      stop("outlierLowerQuantile must be less than outlierUpperQuantile")
+    }
+  }
+
+  # Create covariate concept sets based on settings
+  covariateConceptSets <- list()
+
+  # Medical costs
+  if (includeMedicalCosts) {
+    covariateConceptSets$medicalCosts <- list(
+      covariateId = 1001,
+      covariateName = "Medical costs",
+      conceptIds = NULL, # Will be filtered by domain
+      domains = c("Visit", "Procedure", "Measurement", "Observation")
+    )
+  }
+
+  # Pharmacy costs
+  if (includePharmacyCosts) {
+    covariateConceptSets$pharmacyCosts <- list(
+      covariateId = 1002,
+      covariateName = "Pharmacy costs",
+      conceptIds = NULL,
+      domains = c("Drug")
+    )
+  }
+
+  # Procedure costs
+  if (includeProcedureCosts) {
+    covariateConceptSets$procedureCosts <- list(
+      covariateId = 1003,
+      covariateName = "Procedure costs",
+      conceptIds = NULL,
+      domains = c("Procedure")
+    )
+  }
+
+  # Drug costs
+  if (includeDrugCosts) {
+    covariateConceptSets$drugCosts <- list(
+      covariateId = 1004,
+      covariateName = "Drug costs",
+      conceptIds = NULL,
+      domains = c("Drug")
+    )
+  }
+
+  # Visit costs
+  if (includeVisitCosts) {
+    covariateConceptSets$visitCosts <- list(
+      covariateId = 1005,
+      covariateName = "Visit costs",
+      conceptIds = NULL,
+      domains = c("Visit")
+    )
+  }
+
+  # Device costs
+  if (includeDeviceCosts) {
+    covariateConceptSets$deviceCosts <- list(
+      covariateId = 1006,
+      covariateName = "Device costs",
+      conceptIds = NULL,
+      domains = c("Device")
+    )
+  }
+
+  # Create the settings object
+  settings <- list(
+    useCosts = useCosts,
+    useCostDemographics = useCostDemographics,
+    useCostVisitCounts = useCostVisitCounts,
+    useCostUtilization = useCostUtilization,
+    temporalStartDays = temporalStartDays,
+    temporalEndDays = temporalEndDays,
+    includedCovariateConceptIds = includedCovariateConceptIds,
+    excludedCovariateConceptIds = excludedCovariateConceptIds,
+    includedCovariateIds = includedCovariateIds,
+    costDomainIds = costDomainIds,
+    costTypeConceptIds = costTypeConceptIds,
+    currencyConceptIds = currencyConceptIds,
+    covariateConceptSets = covariateConceptSets,
+    aggregateMethod = aggregateMethod,
+    stratifyByAgeGroup = stratifyByAgeGroup,
+    stratifyByGender = stratifyByGender,
+    stratifyByCostDomain = stratifyByCostDomain,
+    stratifyByCostType = stratifyByCostType,
+    includeTimeDistribution = includeTimeDistribution,
+    includeOutlierAnalysis = includeOutlierAnalysis,
+    outlierLowerQuantile = outlierLowerQuantile,
+    outlierUpperQuantile = outlierUpperQuantile,
+    addDescendantsToIncludedCovariateConceptIds = addDescendantsToIncludedCovariateConceptIds,
+    addDescendantsToExcludedCovariateConceptIds = addDescendantsToExcludedCovariateConceptIds
+  )
+
+  class(settings) <- "costCovariateSettings"
+  return(settings)
+}
+
+#' Check if settings are cost covariate settings
+#'
+#' @param object Object to check
+#' @return Logical indicating if object is costCovariateSettings
+#' @export
+isCostCovariateSettings <- function(object) {
+  inherits(object, "costCovariateSettings")
+}
+
+#' Print cost covariate settings
+#'
+#' @param x costCovariateSettings object
+#' @param ... Additional arguments (ignored)
+#' @return Invisibly returns the input
+#' @export
+print.costCovariateSettings <- function(x, ...) {
+  writeLines("Cost Covariate Settings:")
+  writeLines(paste("  Use costs:", x$useCosts))
+  writeLines(paste("  Use cost demographics:", x$useCostDemographics))
+  writeLines(paste("  Use cost visit counts:", x$useCostVisitCounts))
+  writeLines(paste("  Use cost utilization:", x$useCostUtilization))
+  
+  if (length(x$temporalStartDays) > 0) {
+    writeLines("\nTemporal windows:")
+    for (i in seq_along(x$temporalStartDays)) {
+      writeLines(paste0("  Window ", i, ": [", x$temporalStartDays[i], ", ", x$temporalEndDays[i], "]"))
+    }
+  }
+  
+  if (length(x$covariateConceptSets) > 0) {
+    writeLines(paste("\nCost categories included:", length(x$covariateConceptSets)))
+  }
+  
+  writeLines(paste("\nAggregation method:", x$aggregateMethod))
+  
+  if (any(x$stratifyByAgeGroup, x$stratifyByGender, x$stratifyByCostDomain, x$stratifyByCostType)) {
+    writeLines("\nStratification:")
+    if (x$stratifyByAgeGroup) writeLines("  - By age group")
+    if (x$stratifyByGender) writeLines("  - By gender")
+    if (x$stratifyByCostDomain) writeLines("  - By cost domain")
+    if (x$stratifyByCostType) writeLines("  - By cost type")
+  }
+  
+  invisible(x)
+} 
+
+
+################################################################################
+# File: R/CostUtilization-package.R
+################################################################################
+
+#' @keywords internal
+"_PACKAGE"
+
+# The following block is used by usethis to automatically manage
+# roxygen namespace tags. Modify with care!
+## usethis namespace: start
+
+#' @importFrom Andromeda andromeda loadAndromeda saveAndromeda close
+#' @importFrom DatabaseConnector connect disconnect querySqlToAndromeda insertTable
+#' @importFrom SqlRender loadRenderTranslateSql render translate
+#' @importFrom ParallelLogger logInfo
+#' @importFrom checkmate assertFlag assertIntegerish assertChoice assert assertCharacter assertCount
+#' @importFrom checkmate test_true test_set_equal
+#' @importFrom methods setClass
+#' @importFrom utils read.csv write.csv
+#' @import dplyr
+#' @import rlang
+
+## usethis namespace: end
+NULL 
+
+
+################################################################################
+# File: R/defaultAnalysis.R
+################################################################################
+
+#' Get default cost analyses
+#'
+#' @description
+#' Returns a data frame with predefined cost analyses commonly used in 
+#' healthcare cost studies.
+#'
+#' @param includeUtilization Whether to include utilization-based analyses
+#' @param includeDistribution Whether to include distribution analyses
+#'
+#' @return
+#' A data frame with analysis definitions
+#'
+#' @export
+getDefaultCostAnalyses <- function(includeUtilization = TRUE,
+                                   includeDistribution = FALSE) {
+  
+  # Base cost analyses
+  analyses <- data.frame(
+    analysisId = integer(),
+    analysisName = character(),
+    domainIds = character(),
+    startDay = integer(),
+    endDay = integer(),
+    isBinary = logical(),
+    missingMeansZero = logical(),
+    aggregateMethod = character(),
+    stringsAsFactors = FALSE
+  )
+  
+  # Total costs across time windows
+  totalCostAnalyses <- data.frame(
+    analysisId = 1:7,
+    analysisName = c(
+      "Total costs 365d prior",
+      "Total costs 180d prior",
+      "Total costs 30d prior",
+      "Total costs on index",
+      "Total costs 30d after",
+      "Total costs 180d after",
+      "Total costs 365d after"
+    ),
+    domainIds = "",
+    startDay = c(-365, -180, -30, 0, 1, 1, 1),
+    endDay = c(-1, -1, -1, 0, 30, 180, 365),
+    isBinary = FALSE,
+    missingMeansZero = TRUE,
+    aggregateMethod = "sum",
+    stringsAsFactors = FALSE
+  )
+  analyses <- rbind(analyses, totalCostAnalyses)
+  
+  # Domain-specific costs
+  domainAnalyses <- data.frame(
+    analysisId = 11:16,
+    analysisName = c(
+      "Medical costs 365d prior",
+      "Pharmacy costs 365d prior",
+      "Procedure costs 365d prior",
+      "Visit costs 365d prior",
+      "Device costs 365d prior",
+      "Other costs 365d prior"
+    ),
+    domainIds = c(
+      "Visit,Procedure,Measurement,Observation",
+      "Drug",
+      "Procedure",
+      "Visit",
+      "Device",
+      "Condition,Specimen"
+    ),
+    startDay = -365,
+    endDay = -1,
+    isBinary = FALSE,
+    missingMeansZero = TRUE,
+    aggregateMethod = "sum",
+    stringsAsFactors = FALSE
+  )
+  analyses <- rbind(analyses, domainAnalyses)
+  
+  # Cost type analyses (allowed vs paid)
+  costTypeAnalyses <- data.frame(
+    analysisId = 21:24,
+    analysisName = c(
+      "Allowed amount 365d prior",
+      "Paid amount 365d prior",
+      "Allowed amount on index",
+      "Paid amount on index"
+    ),
+    domainIds = "",
+    startDay = c(-365, -365, 0, 0),
+    endDay = c(-1, -1, 0, 0),
+    isBinary = FALSE,
+    missingMeansZero = TRUE,
+    aggregateMethod = "sum",
+    costTypeConceptIds = c("44818668", "44818669", "44818668", "44818669"),
+    stringsAsFactors = FALSE
+  )
+  analyses <- rbind(analyses, costTypeAnalyses)
+  
+  if (includeUtilization) {
+    utilizationAnalyses <- data.frame(
+      analysisId = 31:36,
+      analysisName = c(
+        "Any costs 365d prior",
+        "Any medical costs 365d prior",
+        "Any pharmacy costs 365d prior",
+        "High cost patient (>$10k) 365d prior",
+        "High cost patient (>$50k) 365d prior",
+        "High cost patient (>$100k) 365d prior"
+      ),
+      domainIds = c("", "Visit,Procedure,Measurement,Observation", "Drug", "", "", ""),
+      startDay = -365,
+      endDay = -1,
+      isBinary = c(TRUE, TRUE, TRUE, FALSE, FALSE, FALSE),
+      missingMeansZero = TRUE,
+      aggregateMethod = c("max", "max", "max", "sum", "sum", "sum"),
+      threshold = c(NA, NA, NA, 10000, 50000, 100000),
+      stringsAsFactors = FALSE
+    )
+    analyses <- rbind(analyses, utilizationAnalyses)
+  }
+  
+  if (includeDistribution) {
+    distributionAnalyses <- data.frame(
+      analysisId = 41:46,
+      analysisName = c(
+        "Cost variance 365d prior",
+        "Cost coefficient of variation 365d prior",
+        "Cost 25th percentile 365d prior",
+        "Cost median 365d prior",
+        "Cost 75th percentile 365d prior",
+        "Cost 95th percentile 365d prior"
+      ),
+      domainIds = "",
+      startDay = -365,
+      endDay = -1,
+      isBinary = FALSE,
+      missingMeansZero = FALSE,
+      aggregateMethod = c("variance", "cv", "p25", "median", "p75", "p95"),
+      stringsAsFactors = FALSE
+    )
+    analyses <- rbind(analyses, distributionAnalyses)
+  }
+  
+  return(analyses)
+} 
+
+
+################################################################################
+# File: R/defaultCostSettings.R
+################################################################################
+
+# R/DefaultCostSettings.R
+
+#' Get default cost covariate settings
+#'
+#' @description
+#' Returns pre-configured cost covariate settings for common use cases in healthcare
+#' cost analysis. These settings can be used directly or modified as needed.
+#'
+#' @param analysisType Type of default analysis. Options are:
+#'   \itemize{
+#'     \item{"simple"}{Basic total cost analysis across standard time windows}
+#'     \item{"comprehensive"}{Detailed analysis including all cost domains and types}
+#'     \item{"medical"}{Medical costs only (excludes pharmacy)}
+#'     \item{"pharmacy"}{Pharmacy costs only}
+#'     \item{"highCost"}{Analysis focused on high-cost patients}
+#'     \item{"temporal"}{Detailed temporal analysis with multiple time windows}
+#'     \item{"utilization"}{Cost utilization patterns and indicators}
+#'     \item{"stratified"}{Costs stratified by demographics and domains}
+#'   }
+#' @param temporalStartDays Custom start days for temporal windows (overrides defaults)
+#' @param temporalEndDays Custom end days for temporal windows (overrides defaults)
+#' @param costTypeConceptIds Specific cost type concept IDs to include
+#' @param currencyConceptId Currency concept ID (defaults to USD: 44818568)
+#' @param includeOutliers Whether to include outlier analysis
+#'
+#' @return
+#' A costCovariateSettings object configured for the specified analysis type
+#'
+#' @examples
+#' \dontrun{
+#' # Get simple default settings
+#' settings <- getDefaultCostSettings("simple")
+#'
+#' # Get comprehensive analysis settings
+#' settings <- getDefaultCostSettings("comprehensive")
+#'
+#' # Get medical costs only with custom time windows
+#' settings <- getDefaultCostSettings(
+#'   "medical",
+#'   temporalStartDays = c(-180, -90, -30),
+#'   temporalEndDays = c(-1, -1, -1)
+#' )
+#' }
+#'
+#' @export
+getDefaultCostSettings <- function(analysisType = "simple",
+                                   temporalStartDays = NULL,
+                                   temporalEndDays = NULL,
+                                   costTypeConceptIds = NULL,
+                                   currencyConceptId = 44818568,
+                                   includeOutliers = FALSE) {
+  validTypes <- c(
+    "simple", "comprehensive", "medical", "pharmacy",
+    "highCost", "temporal", "utilization", "stratified"
+  )
+
+  if (!analysisType %in% validTypes) {
+    stop(paste("analysisType must be one of:", paste(validTypes, collapse = ", ")))
+  }
+
+  # Default cost type concept IDs if not specified
+  if (is.null(costTypeConceptIds)) {
+    costTypeConceptIds <- c(
+      44818668, # Allowed amount
+      44818669, # Paid amount
+      44818670, # Patient paid amount
+      44818671 # Primary payer paid amount
+    )
+  }
+
+  # Base settings that apply to all types
+  baseSettings <- list(
+    useCosts = TRUE,
+    currencyConceptIds = currencyConceptId,
+    aggregateMethod = "sum",
+    addDescendantsToIncludedCovariateConceptIds = FALSE,
+    addDescendantsToExcludedCovariateConceptIds = FALSE
+  )
+
+  # Configure settings based on analysis type
+  settings <- switch(analysisType,
+    simple = {
+      if (is.null(temporalStartDays)) {
+        temporalStartDays <- c(-365, 0, 1)
+        temporalEndDays <- c(-1, 0, 365)
+      }
+
+      c(baseSettings, list(
+        temporalStartDays = temporalStartDays,
+        temporalEndDays = temporalEndDays,
+        costTypeConceptIds = costTypeConceptIds[1], # Allowed amount only
+        includeMedicalCosts = TRUE,
+        includePharmacyCosts = TRUE,
+        includeProcedureCosts = FALSE,
+        includeDrugCosts = FALSE,
+        includeVisitCosts = FALSE,
+        includeDeviceCosts = FALSE,
+        stratifyByAgeGroup = FALSE,
+        stratifyByGender = FALSE,
+        stratifyByCostDomain = FALSE,
+        stratifyByCostType = FALSE,
+        useCostDemographics = FALSE,
+        useCostVisitCounts = FALSE,
+        useCostUtilization = FALSE,
+        includeTimeDistribution = FALSE,
+        includeOutlierAnalysis = includeOutliers
+      ))
+    },
+    comprehensive = {
+      if (is.null(temporalStartDays)) {
+        temporalStartDays <- c(-365, -180, -90, -30, 0, 1, 30, 90, 180, 365)
+        temporalEndDays <- c(-181, -91, -31, -1, 0, 30, 90, 180, 365, 730)
+      }
+
+      c(baseSettings, list(
+        temporalStartDays = temporalStartDays,
+        temporalEndDays = temporalEndDays,
+        costTypeConceptIds = costTypeConceptIds,
+        includeMedicalCosts = TRUE,
+        includePharmacyCosts = TRUE,
+        includeProcedureCosts = TRUE,
+        includeDrugCosts = TRUE,
+        includeVisitCosts = TRUE,
+        includeDeviceCosts = TRUE,
+        stratifyByAgeGroup = TRUE,
+        stratifyByGender = TRUE,
+        stratifyByCostDomain = TRUE,
+        stratifyByCostType = TRUE,
+        useCostDemographics = TRUE,
+        useCostVisitCounts = TRUE,
+        useCostUtilization = TRUE,
+        includeTimeDistribution = TRUE,
+        includeOutlierAnalysis = TRUE,
+        outlierLowerQuantile = 0.01,
+        outlierUpperQuantile = 0.99
+      ))
+    },
+    medical = {
+      if (is.null(temporalStartDays)) {
+        temporalStartDays <- c(-365, -180, -30, 0)
+        temporalEndDays <- c(-1, -1, -1, 0)
+      }
+
+      c(baseSettings, list(
+        temporalStartDays = temporalStartDays,
+        temporalEndDays = temporalEndDays,
+        costTypeConceptIds = costTypeConceptIds[1:2], # Allowed and paid
+        costDomainIds = c("Visit", "Procedure", "Measurement", "Observation"),
+        includeMedicalCosts = TRUE,
+        includePharmacyCosts = FALSE,
+        includeProcedureCosts = TRUE,
+        includeDrugCosts = FALSE,
+        includeVisitCosts = TRUE,
+        includeDeviceCosts = FALSE,
+        stratifyByAgeGroup = FALSE,
+        stratifyByGender = FALSE,
+        stratifyByCostDomain = TRUE,
+        stratifyByCostType = FALSE,
+        useCostDemographics = FALSE,
+        useCostVisitCounts = TRUE,
+        useCostUtilization = FALSE,
+        includeTimeDistribution = FALSE,
+        includeOutlierAnalysis = includeOutliers
+      ))
+    },
+    pharmacy = {
+      if (is.null(temporalStartDays)) {
+        temporalStartDays <- c(-365, -180, -30, 0)
+        temporalEndDays <- c(-1, -1, -1, 0)
+      }
+
+      c(baseSettings, list(
+        temporalStartDays = temporalStartDays,
+        temporalEndDays = temporalEndDays,
+        costTypeConceptIds = costTypeConceptIds[1:2], # Allowed and paid
+        costDomainIds = c("Drug"),
+        includeMedicalCosts = FALSE,
+        includePharmacyCosts = TRUE,
+        includeProcedureCosts = FALSE,
+        includeDrugCosts = TRUE,
+        includeVisitCosts = FALSE,
+        includeDeviceCosts = FALSE,
+        stratifyByAgeGroup = FALSE,
+        stratifyByGender = FALSE,
+        stratifyByCostDomain = FALSE,
+        stratifyByCostType = TRUE,
+        useCostDemographics = FALSE,
+        useCostVisitCounts = FALSE,
+        useCostUtilization = TRUE,
+        includeTimeDistribution = FALSE,
+        includeOutlierAnalysis = includeOutliers
+      ))
+    },
+    highCost = {
+      if (is.null(temporalStartDays)) {
+        temporalStartDays <- c(-365, 0, 1)
+        temporalEndDays <- c(-1, 0, 365)
+      }
+
+      c(baseSettings, list(
+        temporalStartDays = temporalStartDays,
+        temporalEndDays = temporalEndDays,
+        costTypeConceptIds = costTypeConceptIds[1], # Allowed amount
+        includeMedicalCosts = TRUE,
+        includePharmacyCosts = TRUE,
+        includeProcedureCosts = TRUE,
+        includeDrugCosts = TRUE,
+        includeVisitCosts = TRUE,
+        includeDeviceCosts = TRUE,
+        stratifyByAgeGroup = TRUE,
+        stratifyByGender = TRUE,
+        stratifyByCostDomain = TRUE,
+        stratifyByCostType = FALSE,
+        useCostDemographics = TRUE,
+        useCostVisitCounts = TRUE,
+        useCostUtilization = TRUE,
+        includeTimeDistribution = TRUE,
+        includeOutlierAnalysis = TRUE,
+        outlierLowerQuantile = 0.90,
+        outlierUpperQuantile = 0.99
+      ))
+    },
+    temporal = {
+      if (is.null(temporalStartDays)) {
+        # Detailed temporal windows
+        temporalStartDays <- c(
+          -730, -365, -180, -90, -60, -30, -14, -7, 0,
+          1, 8, 15, 31, 61, 91, 181, 366
+        )
+        temporalEndDays <- c(
+          -366, -181, -91, -61, -31, -15, -8, -1, 0,
+          7, 14, 30, 60, 90, 180, 365, 730
+        )
+      }
+
+      c(baseSettings, list(
+        temporalStartDays = temporalStartDays,
+        temporalEndDays = temporalEndDays,
+        costTypeConceptIds = costTypeConceptIds[1], # Allowed amount
+        includeMedicalCosts = TRUE,
+        includePharmacyCosts = TRUE,
+        includeProcedureCosts = FALSE,
+        includeDrugCosts = FALSE,
+        includeVisitCosts = FALSE,
+        includeDeviceCosts = FALSE,
+        stratifyByAgeGroup = FALSE,
+        stratifyByGender = FALSE,
+        stratifyByCostDomain = TRUE,
+        stratifyByCostType = FALSE,
+        useCostDemographics = FALSE,
+        useCostVisitCounts = FALSE,
+        useCostUtilization = FALSE,
+        includeTimeDistribution = TRUE,
+        includeOutlierAnalysis = FALSE
+      ))
+    },
+    utilization = {
+      if (is.null(temporalStartDays)) {
+        temporalStartDays <- c(-365, -180, -30, 0, 1, 30, 180)
+        temporalEndDays <- c(-1, -1, -1, 0, 30, 180, 365)
+      }
+
+      c(baseSettings, list(
+        temporalStartDays = temporalStartDays,
+        temporalEndDays = temporalEndDays,
+        costTypeConceptIds = costTypeConceptIds,
+        includeMedicalCosts = TRUE,
+        includePharmacyCosts = TRUE,
+        includeProcedureCosts = TRUE,
+        includeDrugCosts = TRUE,
+        includeVisitCosts = TRUE,
+        includeDeviceCosts = FALSE,
+        stratifyByAgeGroup = FALSE,
+        stratifyByGender = FALSE,
+        stratifyByCostDomain = TRUE,
+        stratifyByCostType = TRUE,
+        useCostDemographics = FALSE,
+        useCostVisitCounts = TRUE,
+        useCostUtilization = TRUE,
+        includeTimeDistribution = FALSE,
+        includeOutlierAnalysis = includeOutliers,
+        aggregateMethod = "sum"
+      ))
+    },
+    stratified = {
+      if (is.null(temporalStartDays)) {
+        temporalStartDays <- c(-365, -180, -30, 0)
+        temporalEndDays <- c(-1, -1, -1, 0)
+      }
+
+      c(baseSettings, list(
+        temporalStartDays = temporalStartDays,
+        temporalEndDays = temporalEndDays,
+        costTypeConceptIds = costTypeConceptIds[1:2],
+        includeMedicalCosts = TRUE,
+        includePharmacyCosts = TRUE,
+        includeProcedureCosts = TRUE,
+        includeDrugCosts = TRUE,
+        includeVisitCosts = TRUE,
+        includeDeviceCosts = FALSE,
+        stratifyByAgeGroup = TRUE,
+        stratifyByGender = TRUE,
+        stratifyByCostDomain = TRUE,
+        stratifyByCostType = TRUE,
+        useCostDemographics = TRUE,
+        useCostVisitCounts = FALSE,
+        useCostUtilization = FALSE,
+        includeTimeDistribution = FALSE,
+        includeOutlierAnalysis = includeOutliers
+      ))
+    }
+  )
+
+  # Convert to costCovariateSettings object
+  do.call(costCovariateSettings, settings)
+}
+
+#' Get predefined cost analysis templates
+#'
+#' @description
+#' Returns a list of predefined analysis templates for common cost analysis scenarios.
+#' These templates can be used as starting points for custom analyses.
+#'
+#' @param templateName Name of the template. Options are:
+#'   \itemize{
+#'     \item{"episodeOfCare"}{Cost analysis for episodes of care}
+#'     \item{"chronicDisease"}{Long-term cost tracking for chronic conditions}
+#'     \item{"acuteEvent"}{Short-term cost analysis around acute events}
+#'     \item{"preventiveCare"}{Cost analysis for preventive care services}
+#'     \item{"emergencyDepartment"}{ED visit cost analysis}
+#'     \item{"hospitalization"}{Inpatient stay cost analysis}
+#'     \item{"specialty"}{Specialty care cost analysis}
+#'     \item{"valueBasedCare"}{Cost and utilization for value-based contracts}
+#'   }
+#'
+#' @return
+#' A list containing:
+#'   \itemize{
+#'     \item{settings}{costCovariateSettings object}
+#'     \item{description}{Description of the template}
+#'     \item{recommendedCohorts}{Suggested cohort types for this analysis}
+#'   }
+#'
+#' @export
+getCostAnalysisTemplate <- function(templateName = "episodeOfCare") {
+  validTemplates <- c(
+    "episodeOfCare", "chronicDisease", "acuteEvent",
+    "preventiveCare", "emergencyDepartment", "hospitalization",
+    "specialty", "valueBasedCare"
+  )
+
+  if (!templateName %in% validTemplates) {
+    stop(paste("templateName must be one of:", paste(validTemplates, collapse = ", ")))
+  }
+
+  template <- switch(templateName,
+    episodeOfCare = list(
+      settings = costCovariateSettings(
+        useCosts = TRUE,
+        temporalStartDays = c(-30, 0, 1, 31, 91),
+        temporalEndDays = c(-1, 0, 30, 90, 180),
+        includeMedicalCosts = TRUE,
+        includePharmacyCosts = TRUE,
+        includeProcedureCosts = TRUE,
+        includeVisitCosts = TRUE,
+        stratifyByCostDomain = TRUE,
+        stratifyByCostType = FALSE,
+        aggregateMethod = "sum"
+      ),
+      description = "Analyzes costs before, during, and after an episode of care",
+      recommendedCohorts = c("Surgical procedures", "Chemotherapy", "Dialysis")
+    ),
+    chronicDisease = list(
+      settings = costCovariateSettings(
+        useCosts = TRUE,
+        temporalStartDays = c(-365, -180, 0, 1, 181, 366),
+        temporalEndDays = c(-181, -1, 0, 180, 365, 730),
+        includeMedicalCosts = TRUE,
+        includePharmacyCosts = TRUE,
+        stratifyByAgeGroup = TRUE,
+        stratifyByCostDomain = TRUE,
+        useCostUtilization = TRUE,
+        includeTimeDistribution = TRUE,
+        aggregateMethod = "sum"
+      ),
+      description = "Long-term cost tracking for chronic disease management",
+      recommendedCohorts = c("Diabetes", "COPD", "Heart failure", "CKD")
+    ),
+    acuteEvent = list(
+      settings = costCovariateSettings(
+        useCosts = TRUE,
+        temporalStartDays = c(-7, 0, 1, 8, 31),
+        temporalEndDays = c(-1, 0, 7, 30, 90),
+        includeMedicalCosts = TRUE,
+        includePharmacyCosts = TRUE,
+        includeVisitCosts = TRUE,
+        includeProcedureCosts = TRUE,
+        stratifyByCostDomain = TRUE,
+        aggregateMethod = "sum"
+      ),
+      description = "Short-term cost analysis around acute medical events",
+      recommendedCohorts = c("MI", "Stroke", "Pneumonia", "Fractures")
+    ),
+    preventiveCare = list(
+      settings = costCovariateSettings(
+        useCosts = TRUE,
+        temporalStartDays = c(-365, 0, 1),
+        temporalEndDays = c(-1, 0, 365),
+        includeMedicalCosts = TRUE,
+        includePharmacyCosts = FALSE,
+        includeProcedureCosts = TRUE,
+        includeVisitCosts = TRUE,
+        stratifyByAgeGroup = TRUE,
+        stratifyByGender = TRUE,
+        useCostVisitCounts = TRUE,
+        aggregateMethod = "sum"
+      ),
+      description = "Cost analysis for preventive care services and screenings",
+      recommendedCohorts = c("Cancer screening", "Vaccinations", "Annual wellness visits")
+    ),
+    emergencyDepartment = list(
+      settings = costCovariateSettings(
+        useCosts = TRUE,
+        temporalStartDays = c(-30, -7, 0, 1, 8),
+        temporalEndDays = c(-8, -1, 0, 7, 30),
+        includeMedicalCosts = TRUE,
+        includePharmacyCosts = TRUE,
+        includeVisitCosts = TRUE,
+        includeProcedureCosts = TRUE,
+        stratifyByCostType = TRUE,
+        useCostUtilization = TRUE,
+        aggregateMethod = "sum"
+      ),
+      description = "ED visit cost analysis including pre and post visit costs",
+      recommendedCohorts = c("ED visits", "Urgent care visits", "Observation stays")
+    ),
+    hospitalization = list(
+      settings = costCovariateSettings(
+        useCosts = TRUE,
+        temporalStartDays = c(-30, 0, 1, 31, 91),
+        temporalEndDays = c(-1, 0, 30, 90, 180),
+        includeMedicalCosts = TRUE,
+        includePharmacyCosts = TRUE,
+        includeProcedureCosts = TRUE,
+        includeVisitCosts = TRUE,
+        includeDeviceCosts = TRUE,
+        stratifyByCostDomain = TRUE,
+        stratifyByCostType = TRUE,
+        includeOutlierAnalysis = TRUE,
+        outlierLowerQuantile = 0.05,
+        outlierUpperQuantile = 0.95,
+        aggregateMethod = "sum"
+      ),
+      description = "Comprehensive inpatient stay cost analysis",
+      recommendedCohorts = c("Hospital admissions", "ICU stays", "Surgical admissions")
+    ),
+    specialty = list(
+      settings = costCovariateSettings(
+        useCosts = TRUE,
+        temporalStartDays = c(-180, -90, -30, 0, 1, 31, 91),
+        temporalEndDays = c(-91, -31, -1, 0, 30, 90, 180),
+        includeMedicalCosts = TRUE,
+        includePharmacyCosts = TRUE,
+        includeProcedureCosts = TRUE,
+        stratifyByCostDomain = TRUE,
+        useCostVisitCounts = TRUE,
+        aggregateMethod = "sum"
+      ),
+      description = "Specialty care cost tracking and referral patterns",
+      recommendedCohorts = c("Oncology visits", "Cardiology visits", "Rheumatology visits")
+    ),
+    valueBasedCare = list(
+      settings = costCovariateSettings(
+        useCosts = TRUE,
+        useCostDemographics = TRUE,
+        useCostVisitCounts = TRUE,
+        useCostUtilization = TRUE,
+        temporalStartDays = c(-365, -180, -90, 0, 1, 91, 181),
+        temporalEndDays = c(-181, -91, -1, 0, 90, 180, 365),
+        includeMedicalCosts = TRUE,
+        includePharmacyCosts = TRUE,
+        includeProcedureCosts = TRUE,
+        includeVisitCosts = TRUE,
+        stratifyByAgeGroup = TRUE,
+        stratifyByGender = TRUE,
+        stratifyByCostDomain = TRUE,
+        stratifyByCostType = TRUE,
+        includeTimeDistribution = TRUE,
+        includeOutlierAnalysis = TRUE,
+        aggregateMethod = "sum"
+      ),
+      description = "Comprehensive cost and utilization analysis for value-based contracts",
+      recommendedCohorts = c("ACO populations", "Bundle payment cohorts", "Risk-adjusted populations")
+    )
+  )
+
+  return(template)
+} 
+
+
+################################################################################
+# File: R/detailedCostSettings.R
+################################################################################
+
+#' Create detailed cost covariate settings
+#'
+#' @description
+#' Creates detailed settings for extracting specific cost-based covariates with
+#' fine-grained control over concept sets and temporal windows.
+#'
+#' @param analyses A data frame with columns:
+#'   \itemize{
+#'     \item{analysisId}{Unique identifier for the analysis}
+#'     \item{analysisName}{Name of the analysis}
+#'     \item{domainIds}{Comma-separated list of domain IDs}
+#'     \item{startDay}{Start day relative to index}
+#'     \item{endDay}{End day relative to index}
+#'     \item{isBinary}{Whether to create binary covariate}
+#'     \item{missingMeansZero}{Whether missing values mean zero}
+#'   }
+#' @param covariateIds A vector of covariate IDs corresponding to each analysis
+#' @param conceptSets A list of concept sets, each containing:
+#'   \itemize{
+#'     \item{conceptSetId}{Unique identifier}
+#'     \item{conceptSetName}{Name of the concept set}
+#'     \item{conceptIds}{Vector of concept IDs}
+#'   }
+#' @param temporalSequence A data frame defining temporal sequences with columns:
+#'   \itemize{
+#'     \item{sequenceId}{Unique identifier}
+#'     \item{sequenceName}{Name of the sequence}
+#'     \item{startDays}{Vector of start days}
+#'     \item{endDays}{Vector of end days}
+#'   }
+#'
+#' @return
+#' An object of type \code{detailedCostCovariateSettings}
+#'
+#' @export
+createDetailedCostCovariateSettings <- function(analyses = NULL,
+                                                covariateIds = NULL,
+                                                conceptSets = NULL,
+                                                temporalSequence = NULL) {
+  
+  # Default analyses if none provided
+  if (is.null(analyses)) {
+    analyses <- data.frame(
+      analysisId = c(1, 2, 3, 4, 5),
+      analysisName = c(
+        "Total costs in prior year",
+        "Medical costs in prior year",
+        "Pharmacy costs in prior year",
+        "Total costs on index date",
+        "Total costs in future year"
+      ),
+      domainIds = c("", "Visit,Procedure,Measurement,Observation", "Drug", "", ""),
+      startDay = c(-365, -365, -365, 0, 1),
+      endDay = c(-1, -1, -1, 0, 365),
+      isBinary = rep(FALSE, 5),
+      missingMeansZero = rep(TRUE, 5),
+      stringsAsFactors = FALSE
+    )
+  }
+  
+  # Validate analyses
+  requiredColumns <- c("analysisId", "analysisName", "startDay", "endDay")
+  missingColumns <- setdiff(requiredColumns, names(analyses))
+  if (length(missingColumns) > 0) {
+    stop(paste("analyses missing required columns:", paste(missingColumns, collapse = ", ")))
+  }
+  
+  # Set default values for optional columns
+  if (!"domainIds" %in% names(analyses)) {
+    analyses$domainIds <- ""
+  }
+  if (!"isBinary" %in% names(analyses)) {
+    analyses$isBinary <- FALSE
+  }
+  if (!"missingMeansZero" %in% names(analyses)) {
+    analyses$missingMeansZero <- TRUE
+  }
+  
+  # Generate covariate IDs if not provided
+  if (is.null(covariateIds)) {
+    covariateIds <- analyses$analysisId * 1000
+  }
+  
+  if (length(covariateIds) != nrow(analyses)) {
+    stop("Length of covariateIds must match number of analyses")
+  }
+  
+  # Create settings object
+  settings <- list(
+    analyses = analyses,
+    covariateIds = covariateIds,
+    conceptSets = conceptSets,
+    temporalSequence = temporalSequence
+  )
+  
+  class(settings) <- c("detailedCostCovariateSettings", "costCovariateSettings")
+  return(settings)
+} 
+
+
+################################################################################
+# File: R/getDbCostData.R
+################################################################################
+
+#' Get cost data from database
+#'
+#' @description
+#' Extracts cost covariate data from a CDM database based on the provided settings.
+#' This function uses the Andromeda package to store data on disk, making it memory-efficient.
+#'
+#' @param connectionDetails An S3 object of type `connectionDetails` as created by the
+#'   `DatabaseConnector::createConnectionDetails()` function.
+#' @param cdmDatabaseSchema A character string specifying the schema where the OMOP CDM data resides.
+#' @param cohortTable A character string specifying the name of the cohort table.
+#' @param cohortDatabaseSchema A character string specifying the schema where the cohort table resides.
+#'   If not provided, it defaults to the `cdmDatabaseSchema`.
+#' @param cohortId An integer specifying the cohort definition ID to use.
+#' @param costCovariateSettings An S3 object of type `costCovariateSettings` as created by one of the
+#'   settings functions in this package.
+#' @param aggregated A logical flag indicating whether to compute population-level aggregate statistics
+#'   (`TRUE`) or return person-level data (`FALSE`).
+#' @param tempEmulationSchema (Optional) A character string for a schema where temp tables can be created
+#'   for platforms that do not truly support temp tables (e.g., Oracle, Impala).
+#'
+#' @return
+#' A `CostCovariateData` object. This object is a pointer to data stored on disk.
+#' Remember to close it using `Andromeda::close()` when you are finished.
+#'
+#' @export
+getDbCostData <- function(connectionDetails,
+                          cdmDatabaseSchema,
+                          cohortTable = "cohort",
+                          cohortDatabaseSchema = cdmDatabaseSchema,
+                          cohortId,
+                          costCovariateSettings,
+                          aggregated = TRUE,
+                          tempEmulationSchema = NULL) {
+  
+  # --- Input Validation (using checkmate) ---
+  assertClass(connectionDetails, "connectionDetails")
+  assertString(cdmDatabaseSchema, min.chars = 1)
+  assertString(cohortTable, min.chars = 1)
+  assertString(cohortDatabaseSchema, min.chars = 1)
+  assertCount(cohortId)
+  assertClass(costCovariateSettings, "costCovariateSettings")
+  assertFlag(aggregated)
+  assertString(tempEmulationSchema, null.ok = TRUE)
+  
+  # --- Function Body ---
+  connection <- DatabaseConnector::connect(connectionDetails)
+  on.exit(DatabaseConnector::disconnect(connection))
+  
+  startTime <- Sys.time()
+  
+  # Initialize Andromeda object
+  andromeda <- Andromeda::andromeda()
+  on.exit(Andromeda::close(andromeda), add = TRUE, after = FALSE)
+  
+  # Generate all required SQL
+  sqlQueries <- generateCostCovariatesSql(
+    connection = connection,
+    cdmDatabaseSchema = cdmDatabaseSchema,
+    cohortTable = cohortTable,
+    cohortDatabaseSchema = cohortDatabaseSchema,
+    cohortId = cohortId,
+    costCovariateSettings = costCovariateSettings,
+    aggregated = aggregated
+  )
+  
+  # Use querySqlToAndromeda to stream data directly to disk
+  ParallelLogger::logInfo("Extracting cost covariates into Andromeda...")
+  DatabaseConnector::querySqlToAndromeda(
+    connection = connection,
+    sql = sqlQueries$covariatesSql,
+    andromeda = andromeda,
+    andromedaTableName = "covariates",
+    snakeCaseToCamelCase = TRUE
+  )
+  
+  ParallelLogger::logInfo("Getting reference tables...")
+  DatabaseConnector::querySqlToAndromeda(
+    connection = connection,
+    sql = sqlQueries$covariateRefSql,
+    andromeda = andromeda,
+    andromedaTableName = "covariateRef",
+    snakeCaseToCamelCase = TRUE
+  )
+  
+  DatabaseConnector::querySqlToAndromeda(
+    connection = connection,
+    sql = sqlQueries$analysisRefSql,
+    andromeda = andromeda,
+    andromedaTableName = "analysisRef",
+    snakeCaseToCamelCase = TRUE
+  )
+  
+  # Create metadata and store it as an attribute of the Andromeda object
+  metaData <- list(
+    databaseId = connectionDetails$dbms,
+    cdmDatabaseSchema = cdmDatabaseSchema,
+    cohortId = cohortId,
+    cohortTable = cohortTable,
+    cohortDatabaseSchema = cohortDatabaseSchema,
+    costCovariateSettings = costCovariateSettings,
+    aggregated = aggregated,
+    extractionDateTime = Sys.time(),
+    extractionDuration = difftime(Sys.time(), startTime, units = "secs"),
+    cdmVersion = getCdmVersion(connection, cdmDatabaseSchema)
+  )
+  attr(andromeda, "metaData") <- metaData
+  
+  # Create the final CostCovariateData object
+  result <- new("CostCovariateData",
+                andromeda = andromeda,
+                metaData = metaData)
+  
+  ParallelLogger::logInfo(sprintf(
+    "Cost covariate extraction completed in %.2f seconds",
+    as.numeric(metaData$extractionDuration, units = "secs")
+  ))
+  
+  return(result)
+}
+
+
+
+#' Generate SQL for cost covariates extraction
+#'
+#' @description
+#' This internal function constructs the necessary SQL queries to extract cost and
+#' utilization covariates. It creates and uploads a temporary table for temporal
+#' windows to avoid complex string parsing in SQL, making the queries more robust
+#' and efficient.
+#'
+#' @param connection A `DatabaseConnector` connection object. It must be an object
+#'   that inherits from `DBIConnection`.
+#' @param cdmDatabaseSchema The schema holding the OMOP CDM data.
+#' @param cohortTable The table containing the cohorts.
+#' @param cohortDatabaseSchema The schema where the cohort table resides.
+#' @param cohortId The ID of the cohort for which to extract data.
+#' @param costCovariateSettings An object of type `costCovariateSettings`.
+#' @param aggregated A logical value indicating whether to compute aggregated statistics
+#'   or extract person-level data.
+#'
+#' @return
+#' A list containing the rendered and translated SQL queries for covariates,
+#' covariate reference, and analysis reference.
+#'
+#' @keywords internal
+generateCostCovariatesSql <- function(connection,
+                                      cdmDatabaseSchema,
+                                      cohortTable,
+                                      cohortDatabaseSchema,
+                                      cohortId,
+                                      costCovariateSettings,
+                                      aggregated) {
+  
+  # --- Input Validation (using checkmate) ---
+  assertClass(connection, "DBIConnection")
+  assertString(cdmDatabaseSchema, min.chars = 1)
+  assertString(cohortTable, min.chars = 1)
+  assertString(cohortDatabaseSchema, min.chars = 1)
+  assertCount(cohortId)
+  assertClass(costCovariateSettings, "costCovariateSettings")
+  assertFlag(aggregated)
+  
+  
+  # --- Step 1: Create and upload a structured temporary table for temporal windows ---
+  # This is more robust than parsing comma-separated strings in SQL.
+  temporalWindows <- data.frame(
+    window_id = seq_along(costCovariateSettings$temporalStartDays),
+    start_day = as.integer(costCovariateSettings$temporalStartDays),
+    end_day = as.integer(costCovariateSettings$temporalEndDays)
+  )
+  
+  DatabaseConnector::insertTable(
+    connection = connection,
+    tableName = "#temporal_windows",
+    data = temporalWindows,
+    dropTableIfExists = TRUE,
+    createTable = TRUE,
+    tempTable = TRUE,
+    camelCaseToSnakeCase = TRUE # Ensure column names are snake_case for SQL
+  )
+  
+  # --- Step 2: Prepare parameters for SqlRender ---
+  # Handle NULL settings by converting them to empty strings, which the SQL templates expect.
+  sqlParams <- list(
+    cdm_database_schema = cdmDatabaseSchema,
+    cohort_database_schema = cohortDatabaseSchema,
+    cohort_table = cohortTable,
+    cohort_id = cohortId,
+    aggregate_method = costCovariateSettings$aggregateMethod,
+    cost_type_concept_ids = if (is.null(costCovariateSettings$costTypeConceptIds)) {
+      ""
+    } else {
+      paste(costCovariateSettings$costTypeConceptIds, collapse = ",")
+    },
+    cost_domain_ids = if (is.null(costCovariateSettings$costDomainIds)) {
+      ""
+    } else {
+      # Format as a quoted, comma-separated string for SQL 'IN' clause
+      paste0("'", paste(costCovariateSettings$costDomainIds, collapse = "','"), "'")
+    },
+    currency_concept_ids = if (is.null(costCovariateSettings$currencyConceptIds)) {
+      ""
+    } else {
+      paste(costCovariateSettings$currencyConceptIds, collapse = ",")
+    }
+  )
+  
+  # --- Step 3: Select and render the appropriate main SQL script ---
+  sqlFileName <- if (aggregated) {
+    "GetAggregatedCostCovariates.sql"
+  } else {
+    "GetCostCovariates.sql"
+  }
+  
+  ParallelLogger::logInfo(paste("Using SQL template:", sqlFileName))
+  
+  renderedCovariatesSql <- SqlRender::loadRenderTranslateSql(
+    sqlFilename = sqlFileName,
+    packageName = "CostUtilization",
+    dbms = connection@dbms,
+    ... = sqlParams
+  )
+  
+  # --- Step 4: Render the reference SQL scripts ---
+  settingsJson <- as.character(jsonlite::toJSON(costCovariateSettings, auto_unbox = TRUE))
+  
+  renderedCovariateRefSql <- SqlRender::loadRenderTranslateSql(
+    sqlFilename = "GetCostCovariateRef.sql",
+    packageName = "CostUtilization",
+    dbms = connection@dbms,
+    covariate_settings = settingsJson
+  )
+  
+  renderedAnalysisRefSql <- SqlRender::loadRenderTranslateSql(
+    sqlFilename = "GetCostAnalysisRef.sql",
+    packageName = "CostUtilization",
+    dbms = connection@dbms,
+    covariate_settings = settingsJson
+  )
+  
+  # --- Step 5: Return the list of rendered SQL queries ---
+  return(list(
+    covariatesSql = renderedCovariatesSql,
+    aggregatedCovariatesSql = renderedCovariatesSql,
+    covariateRefSql = renderedCovariateRefSql,
+    analysisRefSql = renderedAnalysisRefSql
+  ))
+} 
+
+
+################################################################################
+# File: R/standardizeCost.R
+################################################################################
+
+#' Standardize Costs for Inflation
+#'
+#' @description
+#' Adjusts the cost values in a CostCovariateData object to a standard year's currency value
+#' using an inflation adjustment table.
+#'
+#' @param costCovariateData A CostCovariateData object, requires person-level data.
+#' @param inflationTable A data frame with 'year' and 'adjustment_factor' columns. The factor
+#'                       should represent how to multiply a cost from that 'year' to get to the
+#'                       standard year's value.
+#' @param cdmDatabaseSchema Schema name where your patient-level data resides.
+#' @param connection Database connection.
+#'
+#' @return A new CostCovariateData object with adjusted costs.
+#' @export
+standardizeCost <- function(costCovariateData, inflationTable, connection, cdmDatabaseSchema) {
+  if (costCovariateData$metaData$aggregated) {
+    stop("Cost standardization requires person-level data. Please run getDbCostData with aggregated = FALSE.")
+  }
+  
+  # Get the year of the cohort start for each person
+  sql <- "SELECT subject_id, YEAR(cohort_start_date) as cohort_year
+          FROM @cohort_database_schema.@cohort_table
+          WHERE cohort_definition_id = @cohort_id;"
+  sql <- SqlRender::render(sql,
+                           cohort_database_schema = costCovariateData$metaData$cohortDatabaseSchema,
+                           cohort_table = costCovariateData$metaData$cohortTable,
+                           cohort_id = costCovariateData$metaData$cohortId)
+  personYears <- DatabaseConnector::querySql(connection, sql) %>%
+    rename(personId = .data$SUBJECT_ID, year = .data$COHORT_YEAR)
+  
+  # Join with inflation data and adjust costs
+  adjustedCovariates <- costCovariateData$covariates %>%
+    dplyr::inner_join(personYears, by = "personId") %>%
+    dplyr::inner_join(inflationTable, by = "year") %>%
+    dplyr::mutate(covariateValue = .data$covariateValue * .data$adjustment_factor) %>%
+    dplyr::select(names(costCovariateData$covariates))
+  
+  costCovariateData$covariates <- adjustedCovariates
+  costCovariateData$metaData$isStandardized <- TRUE
+  costCovariateData$metaData$standardizationDate <- Sys.time()
+  
+  return(costCovariateData)
+} 
+
+
+################################################################################
+# File: R/temporalCostSettings.R
+################################################################################
+
+#' Create temporal covariate settings for cost analysis
+#'
+#' @description
+#' Creates settings for extracting cost-based temporal covariates. These settings
+#' can be used to analyze costs within specific time windows relative to cohort
+#' start dates.
+#'
+#' @param useCostInWindow Logical indicating whether to extract costs within time windows
+#' @param temporalStartDays A vector of integers specifying the start of time windows
+#'   (days relative to cohort start date). Negative values indicate days before.
+#' @param temporalEndDays A vector of integers specifying the end of time windows
+#'   (days relative to cohort start date). Must be same length as temporalStartDays.
+#' @param costDomainIds A vector of strings specifying which cost domains to include
+#'   (e.g., "Drug", "Procedure", "Visit"). If NULL, includes all domains.
+#' @param costConceptIds A vector of concept IDs to filter specific cost concepts.
+#'   If NULL, includes all cost concepts.
+#' @param costTypeConceptIds A vector of concept IDs specifying cost types to include
+#'   (e.g., allowed amount, paid amount). If NULL, includes all types.
+#' @param currencyConceptIds A vector of concept IDs for specific currencies.
+#'   If NULL, includes all currencies.
+#' @param aggregateMethod Method for aggregating costs: "sum", "mean", "median", "min", "max"
+#' @param includeCostConceptId Logical indicating whether to create separate covariates
+#'   for each cost concept ID.
+#' @param includeCostTypeConceptId Logical indicating whether to create separate covariates
+#'   for each cost type concept ID.
+#' @param includeCostDomainId Logical indicating whether to create separate covariates
+#'   for each cost domain.
+#' @param covariateIdOffset An integer offset for generating unique covariate IDs.
+#'
+#' @return
+#' An object of type `costTemporalCovariateSettings`.
+#'
+#' @export
+costTemporalCovariateSettings <- function(useCostInWindow = TRUE,
+                                          temporalStartDays = c(-365, -180, -30, 0),
+                                          temporalEndDays = c(-1, -1, -1, 0),
+                                          costDomainIds = NULL,
+                                          costConceptIds = NULL,
+                                          costTypeConceptIds = NULL,
+                                          currencyConceptIds = NULL,
+                                          aggregateMethod = "sum",
+                                          includeCostConceptId = FALSE,
+                                          includeCostTypeConceptId = FALSE,
+                                          includeCostDomainId = TRUE,
+                                          covariateIdOffset = 1000) {
+  
+  # --- Input Validation (using checkmate) ---
+  assertFlag(useCostInWindow)
+  assertIntegerish(temporalStartDays)
+  assertIntegerish(temporalEndDays)
+  
+  # Corrected function name: test_set_equal
+  assert(test_set_equal(length(temporalStartDays), length(temporalEndDays)),
+         "The 'temporalStartDays' and 'temporalEndDays' vectors must have the same length.",
+         .var.name = "temporal window lengths")
+  
+  # Corrected function name: test_true
+  assert(test_true(all(temporalStartDays <= temporalEndDays)),
+         "All start days must be less than or equal to their corresponding end days.",
+         .var.name = "temporal window validity")
+  
+  assertCharacter(costDomainIds, null.ok = TRUE)
+  assertIntegerish(costConceptIds, null.ok = TRUE)
+  assertIntegerish(costTypeConceptIds, null.ok = TRUE)
+  assertIntegerish(currencyConceptIds, null.ok = TRUE)
+  assertChoice(aggregateMethod, choices = c("sum", "mean", "median", "min", "max"))
+  
+  assertFlag(includeCostConceptId)
+  assertFlag(includeCostTypeConceptId)
+  assertFlag(includeCostDomainId)
+  
+  assertCount(covariateIdOffset)
+  
+  
+  # --- Create the settings object ---
+  settings <- list(
+    useCostInWindow = useCostInWindow,
+    temporalStartDays = temporalStartDays,
+    temporalEndDays = temporalEndDays,
+    costDomainIds = costDomainIds,
+    costConceptIds = costConceptIds,
+    costTypeConceptIds = costTypeConceptIds,
+    currencyConceptIds = currencyConceptIds,
+    aggregateMethod = aggregateMethod,
+    includeCostConceptId = includeCostConceptId,
+    includeCostTypeConceptId = includeCostTypeConceptId,
+    includeCostDomainId = includeCostDomainId,
+    covariateIdOffset = as.integer(covariateIdOffset)
+  )
+  
+  class(settings) <- "costTemporalCovariateSettings"
+  return(settings)
+} 
+
+
+################################################################################
+# File: R/visualization.R
+################################################################################
+
+#' Plot CostCovariateData
+#'
+#' @param x A CostCovariateData object.
+#' @param type The type of plot, either "boxplot" or "barchart".
+#' @param covariateIds A vector of covariate IDs to include in the plot.
+#' @param ... Additional arguments (not used).
+#'
+#' @return A ggplot object.
+#' @export
+plot.CostCovariateData <- function(x, type = "boxplot", covariateIds = NULL, ...) {
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("ggplot2 package is required for plotting. Please install it.")
+  }
+  
+  plotData <- x$covariates %>%
+    dplyr::inner_join(x$covariateRef, by = "covariateId")
+  
+  if (!is.null(covariateIds)) {
+    plotData <- plotData %>%
+      dplyr::filter(.data$covariateId %in% covariateIds)
+  }
+  
+  if (type == "boxplot") {
+    if (x$metaData$aggregated) {
+      stop("Boxplots require person-level data (aggregated = FALSE).")
+    }
+    p <- ggplot2::ggplot(plotData, ggplot2::aes(x = .data$covariateName, y = .data$covariateValue)) +
+      ggplot2::geom_boxplot() +
+      ggplot2::coord_flip() +
+      ggplot2::labs(title = "Cost Distribution", x = "Covariate", y = "Cost Value")
+  } else if (type == "barchart") {
+    if (!x$metaData$aggregated) {
+      stop("Bar charts require aggregated data (aggregated = TRUE).")
+    }
+    p <- ggplot2::ggplot(plotData, ggplot2::aes(x = .data$covariateName, y = .data$meanValue)) +
+      ggplot2::geom_bar(stat = "identity") +
+      ggplot2::geom_errorbar(ggplot2::aes(ymin = .data$meanValue - .data$sdValue, ymax = .data.meanValue + .data$sdValue), width = 0.2) +
+      ggplot2::coord_flip() +
+      ggplot2::labs(title = "Mean Costs", x = "Covariate", y = "Mean Cost")
+  } else {
+    stop("Invalid plot type. Choose 'boxplot' or 'barchart'.")
+  }
+  
+  return(p)
+} 
+
+
+################################################################################
+# File: tests/testthat.R
+################################################################################
+
+# This file is part of the standard setup for testthat.
+# It is recommended that you do not modify it.
+#
+# Where should you do additional test configuration?
+# Learn more about the roles of various files in:
+# * https://r-pkgs.org/testing-design.html#sec-tests-files-overview
+# * https://testthat.r-lib.org/articles/special-files.html
+
+library(testthat)
+library(HcResourseUtilization)
+
+test_check("HcResourseUtilization") 
+
+
+################################################################################
+# File: tests/testthat/setup-eunomia.R
+################################################################################
+
+# This setup file is run once before all tests
+library(Eunomia)
+library(dplyr)
+library(DBI)
+
+# --- Connection and Helper Data ---
+connectionDetails <- getEunomiaConnectionDetails()
+connection <- connect(connectionDetails)
+
+# Get existing persons and events from Eunomia
+persons <- dbGetQuery(connection, "SELECT * FROM main.person")
+events <- dbGetQuery(connection, "
+  SELECT 'Procedure' AS domain_id, procedure_occurrence_id AS event_id, person_id, procedure_date AS event_date FROM main.procedure_occurrence
+  UNION ALL
+  SELECT 'Drug' AS domain_id, drug_exposure_id AS event_id, person_id, drug_exposure_start_date AS event_date FROM main.drug_exposure
+  UNION ALL
+  SELECT 'Visit' AS domain_id, visit_occurrence_id AS event_id, person_id, visit_start_date AS event_date FROM main.visit_occurrence
+") %>%
+  as_tibble() %>%
+  mutate(event_date = as.Date(event_date))
+
+# --- Create a Valid PAYER_PLAN_PERIOD Table ---
+# Create one or two plan periods for each person
+payer_plan_period <- persons %>%
+  select(person_id) %>%
+  group_by(person_id) %>%
+  summarise(
+    payer_plan_period_start_date = as.Date(c("2008-01-01", "2012-01-01")),
+    payer_plan_period_end_date = as.Date(c("2011-12-31", "2025-12-31"))
+  ) %>%
+  ungroup() %>%
+  mutate(payer_plan_period_id = row_number())
+
+# --- Generate COST Table in "Long" Format for CDM v5.5 ---
+set.seed(123)
+cost_long <- events %>%
+  # Take a sample of events to apply costs to
+  sample_n(500) %>%
+  # For each event, create multiple cost rows (Charged, Allowed, Paid)
+  rowwise() %>%
+  mutate(cost_data = list({
+    base_cost <- runif(1, 50, 2000)
+    charged_amt <- round(base_cost * runif(1, 1.5, 2.5), 2)
+    allowed_amt <- round(charged_amt * runif(1, 0.4, 0.7), 2)
+    paid_amt <- round(allowed_amt * runif(1, 0.8, 1.0), 2)
+    
+    tibble::tribble(
+      ~cost_concept_id, ~cost_type_concept_id, ~cost,
+      # --- Cost Components ---
+      31973,              32817,               charged_amt,  # Charged, from a Claim
+      31978,              32817,               allowed_amt,  # Allowed, from a Claim
+      31980,              32817,               paid_amt,     # Paid, from a Claim
+    )
+  })) %>%
+  ungroup() %>%
+  tidyr::unnest(cost_data) %>%
+  # Join to get a valid payer_plan_period_id for the person and date
+  left_join(payer_plan_period, by = "person_id") %>%
+  filter(event_date >= payer_plan_period_start_date & event_date <= payer_plan_period_end_date) %>%
+  # Add final v5.5 columns
+  mutate(
+    cost_event_table = domain_id,
+    currency_concept_id = 44818668, # USD
+    cost_id = row_number(),
+    # Create new date columns based on the event date [cite: 169]
+    incurred_date = event_date,
+    billed_date = event_date + sample(2:10, 1),
+    paid_date = event_date + sample(20:45, 1),
+    revenue_code_concept_id = 0,
+    drg_concept_id = 0
+  ) %>%
+  # Select final columns for the COST table
+  select(
+    cost_id, cost_event_id = event_id, cost_event_table, cost_concept_id, cost_type_concept_id,
+    payer_plan_period_id, currency_concept_id, cost, incurred_date, billed_date, paid_date,
+    revenue_code_concept_id, drg_concept_id
+  )
+
+# --- Create Cohort Table ---
+cohort <- dbGetQuery(connection,
+                     "SELECT person_id FROM main.condition_occurrence WHERE condition_concept_id = 201826" # T2DM
+) %>%
+  distinct() %>%
+  mutate(
+    cohort_definition_id = 1,
+    cohort_start_date = as.Date("2010-01-01"),
+    cohort_end_date = as.Date("2014-12-31")
+  ) %>%
+  rename(subject_id = person_id)
+
+# --- Load Tables into Eunomia ---
+dbWriteTable(connection, "main.payer_plan_period", payer_plan_period, overwrite = TRUE)
+dbWriteTable(connection, "main.cost", cost_long, overwrite = TRUE)
+dbWriteTable(connection, "main.cohort", cohort, overwrite = TRUE) 
+
+
+################################################################################
+# File: tests/testthat/test-getDbCostData.R
+################################################################################
+
+# Test core functionality of getDbCostData
+
+# The setup-eunomia.R file is automatically run by testthat
+# and creates connection, connectionDetails, and cohort table
+
+test_that("getDbCostData runs in aggregated mode", {
+  settings <- getDefaultCostSettings("simple",
+                                     temporalStartDays = -365,
+                                     temporalEndDays = -1)
+  
+  costData <- getDbCostData(
+    connectionDetails = connectionDetails,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
+    cohortTable = "cohort",
+    cohortId = 1,
+    covariateSettings = settings,
+    aggregated = TRUE
+  )
+  
+  expect_s3_class(costData, "CostCovariateData")
+  expect_true(is.data.frame(costData$covariates))
+  expect_true("meanValue" %in% names(costData$covariates))
+  expect_gt(nrow(costData$covariates), 0)
+})
+
+test_that("getDbCostData runs in person-level mode", {
+  settings <- getDefaultCostSettings("simple",
+                                     temporalStartDays = -365,
+                                     temporalEndDays = -1)
+  
+  costData <- getDbCostData(
+    connectionDetails = connectionDetails,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
+    cohortTable = "cohort",
+    cohortId = 1,
+    covariateSettings = settings,
+    aggregated = FALSE
+  )
+  
+  expect_s3_class(costData, "CostCovariateData")
+  expect_true(is.data.frame(costData$covariates))
+  expect_true("covariateValue" %in% names(costData$covariates))
+  expect_gt(nrow(costData$covariates), 0)
+}) 

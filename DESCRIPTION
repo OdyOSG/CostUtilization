@@ -2,38 +2,42 @@ Package: CostUtilization
 Title: A Package for Standardized Cost and Healthcare Utilization Analysis
 Version: 0.0.1
 Authors@R: c(
-    person("Gowtham", "Rao", email = "gowthamrao@gmail.com", role = c("aut", "cre")),
-    person("Observational Health Data Science and Informatics", role = c("cph"))
+    person("Gowtham", "Rao", , "gowthamrao@gmail.com", role = c("aut", "cre")),
+    person("Observational Health Data Science and Informatics", role = "cph")
   )
-Description: Provides a framework for executing standardized cost and healthcare
-    utilization analyses on the OMOP Common Data Model. This package computes
-    aggregated or person-level cost and utilization metrics across various
-    domains (e.g., Drug, Visit) and temporal windows relative to a cohort.
-    The primary output is a `CostCovariateData` object, which can be summarized,
-    plotted, and used in downstream OHDSI study pipelines.
+Description: Provides a framework for executing standardized cost and
+    healthcare utilization analyses on the OMOP Common Data Model. This
+    package computes aggregated or person-level cost and utilization
+    metrics across various domains (e.g., Drug, Visit) and temporal
+    windows relative to a cohort.  The primary output is a
+    `CostCovariateData` object, which can be summarized, plotted, and used
+    in downstream OHDSI study pipelines.
 License: Apache License (>= 2.0)
-Encoding: UTF-8
-RoxygenNote: 7.3.2
+URL: https://github.com/OHDSI/CostUtilization
+BugReports: https://github.com/OHDSI/CostUtilization/issues
 Imports: 
+    Andromeda,
+    checkmate,
     DatabaseConnector (>= 5.0.0),
-    SqlRender (>= 1.6.0),
-    ParallelLogger,
-    dplyr,
-    rlang,
     DBI,
-    methods,
-    utils,
+    dplyr,
+    ggplot2,
     jsonlite,
-    ggplot2
+    methods,
+    ParallelLogger,
+    rlang,
+    SqlRender (>= 1.6.0),
+    utils
 Suggests:
-    testthat (>= 3.0.0),
+    covr,
     Eunomia,
     knitr,
     rmarkdown,
-    covr,
+    testthat (>= 3.0.0),
     withr
+VignetteBuilder: 
+    knitr
 Config/testthat/edition: 3
-VignetteBuilder: knitr
-URL: https://github.com/OHDSI/CostUtilization
-BugReports: https://github.com/OHDSI/CostUtilization/issues
+Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2

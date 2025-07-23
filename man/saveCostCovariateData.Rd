@@ -2,15 +2,16 @@
 % Please edit documentation in R/CostCovariateData.R
 \name{saveCostCovariateData}
 \alias{saveCostCovariateData}
-\title{Save CostCovariateData to file}
+\title{Save CostCovariateData to a file}
 \usage{
 saveCostCovariateData(costCovariateData, file)
 }
 \arguments{
-\item{costCovariateData}{CostCovariateData object}
+\item{costCovariateData}{A CostCovariateData object.}
 
-\item{file}{Path to save file (RDS format)}
+\item{file}{The path to the file where the data should be saved.}
 }
 \description{
-Save CostCovariateData to file
+Saves the \code{CostCovariateData} object to a file. The Andromeda data is saved in a
+zip file in the specified folder.
 }

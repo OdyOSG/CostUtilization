@@ -12,45 +12,31 @@ getDbCostData(
   cohortId,
   covariateSettings,
   aggregated = TRUE,
-  minCharacterizationMean = 0.001,
   tempEmulationSchema = NULL
 )
 }
 \arguments{
-\item{connectionDetails}{An object of type \code{connectionDetails} as created using the
-\code{\link[DatabaseConnector]{createConnectionDetails}} function in the
-DatabaseConnector package.}
+\item{connectionDetails}{An object of type \code{connectionDetails}.}
 
-\item{cdmDatabaseSchema}{Schema name where your patient-level data in OMOP CDM format resides.}
+\item{cdmDatabaseSchema}{Schema name where your OMOP CDM data resides.}
 
 \item{cohortTable}{Name of the table with the cohort data.}
 
-\item{cohortDatabaseSchema}{Schema where the cohort table resides. Default is cdmDatabaseSchema.}
+\item{cohortDatabaseSchema}{Schema where the cohort table resides.}
 
-\item{cohortId}{The cohort definition ID of the cohort for which to extract covariates.}
+\item{cohortId}{The cohort definition ID.}
 
-\item{covariateSettings}{An object of type \code{costCovariateSettings} as created using
-the \code{costCovariateSettings} function.}
+\item{covariateSettings}{An object of type \code{costCovariateSettings}.}
 
-\item{aggregated}{Should aggregate statistics be computed? If TRUE, will return
-population-level statistics. If FALSE, will return person-level data.}
+\item{aggregated}{Should aggregate statistics be computed?}
 
-\item{minCharacterizationMean}{Minimum mean value for characterization output.
-Values below this will be censored.}
-
-\item{tempEmulationSchema}{Some database platforms like Oracle and Impala do not truly support
-temp tables. To emulate temp tables, provide a schema where temp tables can be created.}
+\item{tempEmulationSchema}{A schema where temp tables can be created.}
 }
 \value{
-An object of type \code{CostCovariateData} containing:
-\itemize{
-\item{covariates}{Cost covariates data}
-\item{covariateRef}{Reference table with covariate definitions}
-\item{analysisRef}{Reference table with analysis definitions}
-\item{metaData}{Metadata about the extraction}
-}
+A \code{CostCovariateData} object. This object is a pointer to data stored on disk.
+Remember to close it using \code{Andromeda::close()} when you are finished.
 }
 \description{
 Extracts cost covariate data from a CDM database based on the provided settings.
-This function handles the connection to the database, SQL generation, and data retrieval.
+This function uses the Andromeda package to store data on disk, making it memory-efficient.
 }

@@ -2,16 +2,16 @@
 % Please edit documentation in R/CostCovariateData.R
 \name{loadCostCovariateData}
 \alias{loadCostCovariateData}
-\title{Load CostCovariateData from file}
+\title{Load CostCovariateData from a file}
 \usage{
 loadCostCovariateData(file)
 }
 \arguments{
-\item{file}{Path to RDS file}
+\item{file}{The path to the file where the data was saved.}
 }
 \value{
-CostCovariateData object
+A CostCovariateData object.
 }
 \description{
-Load CostCovariateData from file
+Load CostCovariateData from a file
 }

@@ -43,23 +43,18 @@ If NULL, includes all currencies.}
 \item{aggregateMethod}{Method for aggregating costs: "sum", "mean", "median", "min", "max"}
 
 \item{includeCostConceptId}{Logical indicating whether to create separate covariates
-for each cost concept ID}
+for each cost concept ID.}
 
 \item{includeCostTypeConceptId}{Logical indicating whether to create separate covariates
-for each cost type concept ID}
+for each cost type concept ID.}
 
 \item{includeCostDomainId}{Logical indicating whether to create separate covariates
-for each cost domain}
+for each cost domain.}
 
-\item{covariateIdOffset}{An integer offset for generating unique covariate IDs}
-
-\item{includeRevenueCodes}{Logical indicating whether to include revenue code analysis}
-
-\item{includeDrgCodes}{Logical indicating whether to include DRG code analysis}
+\item{covariateIdOffset}{An integer offset for generating unique covariate IDs.}
 }
 \value{
-An object of type \code{costTemporalCovariateSettings}, to be used with other
-functions in the CostUtilization package.
+An object of type \code{costTemporalCovariateSettings}.
 }
 \description{
 Creates settings for extracting cost-based temporal covariates. These settings

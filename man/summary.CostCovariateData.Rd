@@ -7,13 +7,14 @@
 \method{summary}{CostCovariateData}(object, ...)
 }
 \arguments{
-\item{object}{CostCovariateData object}
+\item{object}{A CostCovariateData object.}
 
-\item{...}{Additional arguments (ignored)}
+\item{...}{Additional arguments (ignored).}
 }
 \value{
-Summary data frame
+A tibble with the summary statistics.
 }
 \description{
-Summary of CostCovariateData
+Provides a summary of the covariates. This function executes a query on the
+Andromeda object and returns an in-memory data frame.
 }

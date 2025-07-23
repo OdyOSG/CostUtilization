@@ -2,32 +2,25 @@
 #'
 #' @description
 #' Extracts cost covariate data from a CDM database based on the provided settings.
-#' This function handles the connection to the database, SQL generation, and data retrieval.
+#' This function uses the Andromeda package to store data on disk, making it memory-efficient.
 #'
-#' @param connectionDetails An object of type \code{connectionDetails} as created using the
-#'   \code{\link[DatabaseConnector]{createConnectionDetails}} function in the
-#'   DatabaseConnector package.
-#' @param cdmDatabaseSchema Schema name where your patient-level data in OMOP CDM format resides.
-#' @param cohortTable Name of the table with the cohort data.
-#' @param cohortDatabaseSchema Schema where the cohort table resides. Default is cdmDatabaseSchema.
-#' @param cohortId The cohort definition ID of the cohort for which to extract covariates.
-#' @param covariateSettings An object of type \code{costCovariateSettings} as created using
-#'   the \code{costCovariateSettings} function.
-#' @param aggregated Should aggregate statistics be computed? If TRUE, will return
-#'   population-level statistics. If FALSE, will return person-level data.
-#' @param minCharacterizationMean Minimum mean value for characterization output. 
-#'   Values below this will be censored.
-#' @param tempEmulationSchema Some database platforms like Oracle and Impala do not truly support
-#'   temp tables. To emulate temp tables, provide a schema where temp tables can be created.
+#' @param connectionDetails An S3 object of type `connectionDetails` as created by the
+#'   `DatabaseConnector::createConnectionDetails()` function.
+#' @param cdmDatabaseSchema A character string specifying the schema where the OMOP CDM data resides.
+#' @param cohortTable A character string specifying the name of the cohort table.
+#' @param cohortDatabaseSchema A character string specifying the schema where the cohort table resides.
+#'   If not provided, it defaults to the `cdmDatabaseSchema`.
+#' @param cohortId An integer specifying the cohort definition ID to use.
+#' @param costCovariateSettings An S3 object of type `costCovariateSettings` as created by one of the
+#'   settings functions in this package.
+#' @param aggregated A logical flag indicating whether to compute population-level aggregate statistics
+#'   (`TRUE`) or return person-level data (`FALSE`).
+#' @param tempEmulationSchema (Optional) A character string for a schema where temp tables can be created
+#'   for platforms that do not truly support temp tables (e.g., Oracle, Impala).
 #'
 #' @return
-#' An object of type \code{CostCovariateData} containing:
-#' \itemize{
-#'   \item{covariates}{Cost covariates data}
-#'   \item{covariateRef}{Reference table with covariate definitions}
-#'   \item{analysisRef}{Reference table with analysis definitions}
-#'   \item{metaData}{Metadata about the extraction}
-#' }
+#' A `CostCovariateData` object. This object is a pointer to data stored on disk.
+#' Remember to close it using `Andromeda::close()` when you are finished.
 #'
 #' @export
 getDbCostData <- function(connectionDetails,
@@ -35,264 +28,177 @@ getDbCostData <- function(connectionDetails,
                           cohortTable = "cohort",
                           cohortDatabaseSchema = cdmDatabaseSchema,
                           cohortId,
-                          covariateSettings,
-                          aggregated = TRUE,
-                          minCharacterizationMean = 0.001,
+                          costCovariateSettings,
+                          aggregated = FALSE,
                           tempEmulationSchema = NULL) {
   
-  # Input validation
-  if (!isCostCovariateSettings(covariateSettings)) {
-    stop("covariateSettings must be created using costCovariateSettings()")
-  }
+  checkmate::assertClass(connectionDetails, "connectionDetails")
+  checkmate::assertString(cdmDatabaseSchema)
+  checkmate::assertString(cohortTable)
+  checkmate::assertString(cohortDatabaseSchema)
+  checkmate::assertCount(cohortId)
+  checkmate::assertClass(costCovariateSettings, "costCovariateSettings")
+  checkmate::assertFlag(aggregated)
+  checkmate::assertString(tempEmulationSchema, null.ok = TRUE)
   
-  if (missing(cohortId) || is.null(cohortId)) {
-    stop("cohortId is required")
-  }
-  
-  # Create connection
   connection <- DatabaseConnector::connect(connectionDetails)
   on.exit(DatabaseConnector::disconnect(connection))
   
-  # Start timing
   startTime <- Sys.time()
+  andromeda <- Andromeda::andromeda()
+  on.exit(Andromeda::close(andromeda), add = TRUE, after = FALSE)
   
-  # Create temp tables if needed
-  if (!is.null(tempEmulationSchema)) {
-    options(sqlRenderTempEmulationSchema = tempEmulationSchema)
-  }
+  references <- generateReferenceTables(costCovariateSettings)
+  andromeda$analysisRef <- references$analysisRef
+  andromeda$covariateRef <- references$covariateRef
   
-  # Initialize results
-  covariates <- NULL
-  covariateRef <- NULL
-  analysisRef <- NULL
+  DatabaseConnector::insertTable(
+    connection = connection,
+    tableName = "#temporal_windows",
+    data = references$temporalWindows,
+    dropTableIfExists = TRUE,
+    createTable = TRUE,
+    tempTable = TRUE,
+    camelCaseToSnakeCase = TRUE
+  )
   
-  # Generate SQL based on settings
-  sql <- generateCostCovariatesSql(
+  sql <- generateQuerySql(
     connection = connection,
     cdmDatabaseSchema = cdmDatabaseSchema,
     cohortTable = cohortTable,
     cohortDatabaseSchema = cohortDatabaseSchema,
     cohortId = cohortId,
-    covariateSettings = covariateSettings,
-    aggregated = aggregated
-  )
-  
-  # Execute SQL and retrieve results
-  writeLines("Extracting cost covariates...")
-  
-  if (aggregated) {
-    # Get aggregated covariates
-    covariates <- DatabaseConnector::querySql(
-      connection = connection,
-      sql = sql$aggregatedCovariatesSql,
-      snakeCaseToCamelCase = TRUE
-    )
-    
-    # Apply minimum mean threshold
-    if (!is.null(minCharacterizationMean) && minCharacterizationMean > 0) {
-      covariates <- covariates[covariates$meanValue >= minCharacterizationMean, ]
-    }
-    
-  } else {
-    # Get person-level covariates
-    covariates <- DatabaseConnector::querySql(
-      connection = connection,
-      sql = sql$covariatesSql,
-      snakeCaseToCamelCase = TRUE
-    )
-  }
-  
-  # Get reference tables
-  writeLines("Getting reference tables...")
-  
-  covariateRef <- DatabaseConnector::querySql(
-    connection = connection,
-    sql = sql$covariateRefSql,
-    snakeCaseToCamelCase = TRUE
-  )
-  
-  analysisRef <- DatabaseConnector::querySql(
-    connection = connection,
-    sql = sql$analysisRefSql,
-    snakeCaseToCamelCase = TRUE
-  )
-  
-  # Create metadata
-  metaData <- list(
-    databaseId = connectionDetails$dbms,
-    cdmDatabaseSchema = cdmDatabaseSchema,
-    cohortId = cohortId,
-    covariateSettings = covariateSettings,
+    costCovariateSettings = costCovariateSettings,
     aggregated = aggregated,
-    extractionDateTime = Sys.time(),
-    extractionDuration = difftime(Sys.time(), startTime, units = "secs"),
-    cdmVersion = getCdmVersion(connection, cdmDatabaseSchema)
+    tempEmulationSchema = tempEmulationSchema
   )
   
-  # Create result object
-  result <- list(
-    covariates = covariates,
-    covariateRef = covariateRef,
-    analysisRef = analysisRef,
-    metaData = metaData
+  ParallelLogger::logInfo("Extracting cost covariates into Andromeda...")
+  resultTableName <- if (aggregated) "aggregatedCovariates" else "covariates"
+  
+  DatabaseConnector::querySqlToAndromeda(
+    connection = connection,
+    sql = sql,
+    andromeda = andromeda,
+    andromedaTableName = resultTableName,
+    snakeCaseToCamelCase = TRUE
   )
   
-  class(result) <- "CostCovariateData"
+  metaData <- list(
+    call = match.call(),
+    cohortId = cohortId,
+    costCovariateSettings = costCovariateSettings,
+    aggregated = aggregated,
+    startTime = startTime,
+    endTime = Sys.time()
+  )
+  attr(andromeda, "metaData") <- metaData
+  class(andromeda) <- "CostCovariateData"
   
-  writeLines(sprintf(
-    "Cost covariate extraction completed in %.2f seconds",
-    metaData$extractionDuration
-  ))
-  
-  return(result)
+  ParallelLogger::logInfo("Extraction complete.")
+  return(andromeda)
 }
 
-
-
-
-#' Generate SQL for cost covariates extraction
-#'
-#' @description
-#' This internal function constructs the necessary SQL queries to extract cost and
-#' utilization covariates. It creates and uploads a temporary table for temporal
-#' windows to avoid complex string parsing in SQL, making the queries more robust
-#' and efficient.
-#'
-#' @param connection A `DatabaseConnector` connection object.
-#' @param cdmDatabaseSchema The schema holding the OMOP CDM data.
-#' @param cohortTable The table containing the cohorts.
-#' @param cohortDatabaseSchema The schema where the cohort table resides.
-#' @param cohortId The ID of the cohort for which to extract data.
-#' @param covariateSettings An object of type `costCovariateSettings`.
-#' @param aggregated A logical value indicating whether to compute aggregated statistics
-#'   or extract person-level data.
-#'
-#' @return
-#' A list containing the rendered and translated SQL queries for covariates,
-#' covariate reference, and analysis reference.
-#'
+#' Internal function to generate SQL query
 #' @keywords internal
-generateCostCovariatesSql <- function(connection,
-                                      cdmDatabaseSchema,
-                                      cohortTable,
-                                      cohortDatabaseSchema,
-                                      cohortId,
-                                      covariateSettings,
-                                      aggregated) {
-  
-  # --- Step 1: Create and upload a structured temporary table for temporal windows ---
-  # This is more robust than parsing comma-separated strings in SQL.
-  temporalWindows <- data.frame(
-    window_id = seq_along(covariateSettings$temporalStartDays),
-    start_day = as.integer(covariateSettings$temporalStartDays),
-    end_day = as.integer(covariateSettings$temporalEndDays)
-  )
-  
-  DatabaseConnector::insertTable(
-    connection = connection,
-    tableName = "#temporal_windows",
-    data = temporalWindows,
-    dropTableIfExists = TRUE,
-    createTable = TRUE,
-    tempTable = TRUE,
-    camelCaseToSnakeCase = TRUE # Ensure column names are snake_case for SQL
-  )
-  
-  # --- Step 2: Prepare parameters for SqlRender ---
-  # Handle NULL settings by converting them to empty strings, which the SQL templates expect.
-  sqlParams <- list(
-    cdm_database_schema = cdmDatabaseSchema,
-    cohort_database_schema = cohortDatabaseSchema,
-    cohort_table = cohortTable,
-    cohort_id = cohortId,
-    aggregate_method = covariateSettings$aggregateMethod,
-    cost_type_concept_ids = if (is.null(covariateSettings$costTypeConceptIds)) {
-      ""
-    } else {
-      paste(covariateSettings$costTypeConceptIds, collapse = ",")
-    },
-    cost_domain_ids = if (is.null(covariateSettings$costDomainIds)) {
-      ""
-    } else {
-      # Format as a quoted, comma-separated string for SQL 'IN' clause
-      paste0("'", paste(covariateSettings$costDomainIds, collapse = "','"), "'")
-    },
-    currency_concept_ids = if (is.null(covariateSettings$currencyConceptIds)) {
-      ""
-    } else {
-      paste(covariateSettings$currencyConceptIds, collapse = ",")
-    }
-    # Note: temporal_start_days and temporal_end_days are no longer passed as parameters
-  )
-  
-  # --- Step 3: Select and render the appropriate main SQL script ---
+generateQuerySql <- function(connection, cdmDatabaseSchema, cohortTable, cohortDatabaseSchema, cohortId, costCovariateSettings, aggregated, tempEmulationSchema) {
   sqlFileName <- if (aggregated) {
     "GetAggregatedCostCovariates.sql"
   } else {
     "GetCostCovariates.sql"
   }
   
-  writeLines(paste("Using SQL template:", sqlFileName))
-  
-  # Render the main covariate extraction query
-  # The same rendered SQL is returned for both list items to maintain
-  # compatibility with the calling getDbCostData function's structure.
-  renderedCovariatesSql <- SqlRender::loadRenderTranslateSql(
+  SqlRender::loadRenderTranslateSql(
     sqlFilename = sqlFileName,
     packageName = "CostUtilization",
     dbms = connection@dbms,
-    ... = sqlParams
+    tempEmulationSchema = tempEmulationSchema,
+    cdm_database_schema = cdmDatabaseSchema,
+    cohort_database_schema = cohortDatabaseSchema,
+    cohort_table = cohortTable,
+    cohort_id = cohortId,
+    cost_type_concept_ids = costCovariateSettings$filters$costTypeConceptIds,
+    cost_domain_ids = costCovariateSettings$filters$costDomains,
+    currency_concept_ids = costCovariateSettings$filters$currencyConceptIds,
+    use_total_cost = costCovariateSettings$analyses$totalCost,
+    use_cost_by_domain = costCovariateSettings$analyses$costByDomain,
+    use_cost_by_type = costCovariateSettings$analyses$costByType,
+    use_utilization = costCovariateSettings$analyses$utilization
   )
-  
-  # --- Step 4: Render the reference SQL scripts ---
-  # The settings are passed as a JSON string for potential future use in more
-  # dynamic reference table generation.
-  settingsJson <- as.character(jsonlite::toJSON(covariateSettings, auto_unbox = TRUE))
-  
-  renderedCovariateRefSql <- SqlRender::loadRenderTranslateSql(
-    sqlFilename = "GetCostCovariateRef.sql",
-    packageName = "CostUtilization",
-    dbms = connection@dbms,
-    covariate_settings = settingsJson
-  )
-  
-  renderedAnalysisRefSql <- SqlRender::loadRenderTranslateSql(
-    sqlFilename = "GetCostAnalysisRef.sql",
-    packageName = "CostUtilization",
-    dbms = connection@dbms,
-    covariate_settings = settingsJson
-  )
-  
-  # --- Step 5: Return the list of rendered SQL queries ---
-  return(list(
-    covariatesSql = renderedCovariatesSql,
-    aggregatedCovariatesSql = renderedCovariatesSql,
-    covariateRefSql = renderedCovariateRefSql,
-    analysisRefSql = renderedAnalysisRefSql
-  ))
 }
 
-
-#' Get CDM version from database
-#'
-#' @param connection Database connection
-#' @param cdmDatabaseSchema CDM database schema
-#' @return CDM version string
+#' Internal function to generate reference tables
 #' @keywords internal
-getCdmVersion <- function(connection, cdmDatabaseSchema) {
-  sql <- "SELECT cdm_version FROM @cdm_database_schema.cdm_source LIMIT 1;"
-  sql <- SqlRender::render(sql, cdm_database_schema = cdmDatabaseSchema)
-  sql <- SqlRender::translate(sql, targetDialect = connection@dbms)
+generateReferenceTables <- function(costCovariateSettings) {
+  domains <- dplyr::tibble(
+    domainIdValue = 1:7,
+    costDomainId = c('Drug', 'Visit', 'Procedure', 'Device', 'Measurement', 'Observation', 'Specimen')
+  )
   
-  result <- tryCatch({
-    DatabaseConnector::querySql(connection, sql)
-  }, error = function(e) {
-    return(data.frame(CDM_VERSION = "Unknown"))
-  })
+  temporalWindows <- costCovariateSettings$temporalWindows %>%
+    dplyr::mutate(windowId = dplyr::row_number())
   
-  if (nrow(result) > 0) {
-    return(as.character(result[1, 1]))
-  } else {
-    return("Unknown")
+  analysisRef <- dplyr::tibble()
+  covariateRef <- dplyr::tibble()
+  
+  # Analysis 1: Total Cost
+  if (costCovariateSettings$analyses$totalCost) {
+    analysisId <- 1
+    analysisRef <- analysisRef %>% dplyr::add_row(analysisId = analysisId, analysisName = "Total cost", isBinary = "N", missingMeansZero = "Y")
+    covariateRef <- covariateRef %>% dplyr::bind_rows(
+      temporalWindows %>%
+        dplyr::mutate(
+          analysisId = analysisId,
+          covariateId = 1000 + .data$windowId,
+          covariateName = paste0("Total cost during day ", .data$startDay, " to ", .data$endDay),
+          conceptId = 0
+        )
+    )
   }
+  
+  # Analysis 2: Cost By Domain
+  if (costCovariateSettings$analyses$costByDomain) {
+    analysisId <- 2
+    analysisRef <- analysisRef %>% dplyr::add_row(analysisId = analysisId, analysisName = "Cost by domain", isBinary = "N", missingMeansZero = "Y")
+    covariateRef <- covariateRef %>% dplyr::bind_rows(
+      tidyr::crossing(temporalWindows, domains) %>%
+        dplyr::mutate(
+          analysisId = analysisId,
+          covariateId = 2000 + (.data$windowId * 10) + .data$domainIdValue,
+          covariateName = paste0(.data$costDomainId, " cost during day ", .data$startDay, " to ", .data$endDay),
+          conceptId = 0
+        )
+    )
+  }
+  
+  # Analysis 3: Cost By Type
+  # Note: This is more complex as cost_type_concept_ids are not known beforehand.
+  # The SQL generates covariate_ids like 3000 + (window_id * 100) + (cost_type_concept_id %% 100)
+  # A complete reference would require querying the concept table. For now, we generate a basic analysis ref.
+  if (costCovariateSettings$analyses$costByType) {
+    analysisId <- 3
+    analysisRef <- analysisRef %>% dplyr::add_row(analysisId = analysisId, analysisName = "Cost by type", isBinary = "N", missingMeansZero = "Y")
+    # Covariate names would be like: "Cost type X during day Y to Z". Dynamic creation is complex without DB access here.
+  }
+  
+  # Analysis 4: Utilization
+  if (costCovariateSettings$analyses$utilization) {
+    analysisId <- 4
+    analysisRef <- analysisRef %>% dplyr::add_row(analysisId = analysisId, analysisName = "Utilization", isBinary = "N", missingMeansZero = "Y")
+    covariateRef <- covariateRef %>% dplyr::bind_rows(
+      temporalWindows %>%
+        dplyr::mutate(
+          analysisId = analysisId,
+          covariateId = 4000 + .data$windowId,
+          covariateName = paste0("Utilization days during day ", .data$startDay, " to ", .data.endDay),
+          conceptId = 0
+        )
+    )
+  }
+  
+  return(list(
+    analysisRef = analysisRef %>% dplyr::select(.data$analysisId, .data$analysisName, .data$isBinary, .data$missingMeansZero),
+    covariateRef = covariateRef %>% dplyr::select(.data$covariateId, .data$covariateName, .data$analysisId, .data$conceptId),
+    temporalWindows = temporalWindows %>% dplyr::select(.data$windowId, .data$startDay, .data$endDay)
+  ))
 }
