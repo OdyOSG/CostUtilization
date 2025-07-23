@@ -78,7 +78,7 @@ getDbCostData <- function(connectionDetails,
   )
   
   # Execute SQL and retrieve results
-  ParallelLogger::logInfo("Extracting cost covariates...")
+  writeLines("Extracting cost covariates...")
   
   if (aggregated) {
     # Get aggregated covariates
@@ -103,7 +103,7 @@ getDbCostData <- function(connectionDetails,
   }
   
   # Get reference tables
-  ParallelLogger::logInfo("Getting reference tables...")
+  writeLines("Getting reference tables...")
   
   covariateRef <- DatabaseConnector::querySql(
     connection = connection,
@@ -139,7 +139,7 @@ getDbCostData <- function(connectionDetails,
   
   class(result) <- "CostCovariateData"
   
-  ParallelLogger::logInfo(sprintf(
+  writeLines(sprintf(
     "Cost covariate extraction completed in %.2f seconds",
     metaData$extractionDuration
   ))
@@ -151,19 +151,26 @@ getDbCostData <- function(connectionDetails,
 
 
 #' Generate SQL for cost covariates extraction
-#
+#'
 #' @description
-#' Internal function to generate SQL queries for cost covariate extraction
+#' This internal function constructs the necessary SQL queries to extract cost and
+#' utilization covariates. It creates and uploads a temporary table for temporal
+#' windows to avoid complex string parsing in SQL, making the queries more robust
+#' and efficient.
 #'
-#' @param connection Database connection
-#' @param cdmDatabaseSchema CDM database schema
-#' @param cohortTable Cohort table name
-#' @param cohortDatabaseSchema Cohort database schema
-#' @param cohortId Cohort ID
-#' @param covariateSettings Cost covariate settings
-#' @param aggregated Whether to generate aggregated SQL
+#' @param connection A `DatabaseConnector` connection object.
+#' @param cdmDatabaseSchema The schema holding the OMOP CDM data.
+#' @param cohortTable The table containing the cohorts.
+#' @param cohortDatabaseSchema The schema where the cohort table resides.
+#' @param cohortId The ID of the cohort for which to extract data.
+#' @param covariateSettings An object of type `costCovariateSettings`.
+#' @param aggregated A logical value indicating whether to compute aggregated statistics
+#'   or extract person-level data.
 #'
-#' @return List of SQL queries
+#' @return
+#' A list containing the rendered and translated SQL queries for covariates,
+#' covariate reference, and analysis reference.
+#'
 #' @keywords internal
 generateCostCovariatesSql <- function(connection,
                                       cdmDatabaseSchema,
@@ -173,93 +180,98 @@ generateCostCovariatesSql <- function(connection,
                                       covariateSettings,
                                       aggregated) {
   
-  # Base SQL parameters
+  # --- Step 1: Create and upload a structured temporary table for temporal windows ---
+  # This is more robust than parsing comma-separated strings in SQL.
+  temporalWindows <- data.frame(
+    window_id = seq_along(covariateSettings$temporalStartDays),
+    start_day = as.integer(covariateSettings$temporalStartDays),
+    end_day = as.integer(covariateSettings$temporalEndDays)
+  )
+  
+  DatabaseConnector::insertTable(
+    connection = connection,
+    tableName = "#temporal_windows",
+    data = temporalWindows,
+    dropTableIfExists = TRUE,
+    createTable = TRUE,
+    tempTable = TRUE,
+    camelCaseToSnakeCase = TRUE # Ensure column names are snake_case for SQL
+  )
+  
+  # --- Step 2: Prepare parameters for SqlRender ---
+  # Handle NULL settings by converting them to empty strings, which the SQL templates expect.
   sqlParams <- list(
     cdm_database_schema = cdmDatabaseSchema,
     cohort_database_schema = cohortDatabaseSchema,
     cohort_table = cohortTable,
     cohort_id = cohortId,
     aggregate_method = covariateSettings$aggregateMethod,
-    use_costs = covariateSettings$useCosts
+    cost_type_concept_ids = if (is.null(covariateSettings$costTypeConceptIds)) {
+      ""
+    } else {
+      paste(covariateSettings$costTypeConceptIds, collapse = ",")
+    },
+    cost_domain_ids = if (is.null(covariateSettings$costDomainIds)) {
+      ""
+    } else {
+      # Format as a quoted, comma-separated string for SQL 'IN' clause
+      paste0("'", paste(covariateSettings$costDomainIds, collapse = "','"), "'")
+    },
+    currency_concept_ids = if (is.null(covariateSettings$currencyConceptIds)) {
+      ""
+    } else {
+      paste(covariateSettings$currencyConceptIds, collapse = ",")
+    }
+    # Note: temporal_start_days and temporal_end_days are no longer passed as parameters
   )
   
-  # Add temporal parameters
-  if (!is.null(covariateSettings$temporalStartDays)) {
-    sqlParams$temporal_start_days <- paste(covariateSettings$temporalStartDays, collapse = ",")
-    sqlParams$temporal_end_days <- paste(covariateSettings$temporalEndDays, collapse = ",")
-  }
-  
-  # Add cost type filters
-  if (!is.null(covariateSettings$costTypeConceptIds)) {
-    sqlParams$cost_type_concept_ids <- paste(covariateSettings$costTypeConceptIds, collapse = ",")
-  }
-  
-  # Add domain filters
-  if (!is.null(covariateSettings$costDomainIds)) {
-    sqlParams$cost_domain_ids <- paste0("'", paste(covariateSettings$costDomainIds, collapse = "','"), "'")
-  }
-  
-  # Add currency filters
-  if (!is.null(covariateSettings$currencyConceptIds)) {
-    sqlParams$currency_concept_ids <- paste(covariateSettings$currencyConceptIds, collapse = ",")
-  }
-  
-  # Generate main covariate SQL
-  if (aggregated) {
-    covariatesSql <- SqlRender::loadRenderTranslateSql(
-      "GetAggregatedCostCovariates.sql",
-      packageName = "CostUtilization",
-      dbms = connection@dbms,
-      cdm_database_schema = sqlParams$cdm_database_schema,
-      cohort_database_schema = sqlParams$cohort_database_schema,
-      cohort_table = sqlParams$cohort_table,
-      cohort_id = sqlParams$cohort_id,
-      temporal_start_days = sqlParams$temporal_start_days,
-      temporal_end_days = sqlParams$temporal_end_days,
-      cost_type_concept_ids = sqlParams$cost_type_concept_ids,
-      cost_domain_ids = sqlParams$cost_domain_ids,
-      currency_concept_ids = sqlParams$currency_concept_ids,
-      aggregate_method = sqlParams$aggregate_method
-    )
+  # --- Step 3: Select and render the appropriate main SQL script ---
+  sqlFileName <- if (aggregated) {
+    "GetAggregatedCostCovariates.sql"
   } else {
-    covariatesSql <- SqlRender::loadRenderTranslateSql(
-      "GetCostCovariates.sql",
-      packageName = "CostUtilization",
-      dbms = connection@dbms,
-      cdm_database_schema = sqlParams$cdm_database_schema,
-      cohort_database_schema = sqlParams$cohort_database_schema,
-      cohort_table = sqlParams$cohort_table,
-      cohort_id = sqlParams$cohort_id,
-      temporal_start_days = sqlParams$temporal_start_days,
-      temporal_end_days = sqlParams$temporal_end_days,
-      cost_type_concept_ids = sqlParams$cost_type_concept_ids,
-      cost_domain_ids = sqlParams$cost_domain_ids,
-      currency_concept_ids = sqlParams$currency_concept_ids
-    )
+    "GetCostCovariates.sql"
   }
   
-  # Generate reference SQL
-  covariateRefSql <- SqlRender::loadRenderTranslateSql(
-    "GetCostCovariateRef.sql",
+  writeLines(paste("Using SQL template:", sqlFileName))
+  
+  # Render the main covariate extraction query
+  # The same rendered SQL is returned for both list items to maintain
+  # compatibility with the calling getDbCostData function's structure.
+  renderedCovariatesSql <- SqlRender::loadRenderTranslateSql(
+    sqlFilename = sqlFileName,
     packageName = "CostUtilization",
     dbms = connection@dbms,
-    covariate_settings = as.character(jsonlite::toJSON(covariateSettings))
+    ... = sqlParams
   )
   
-  analysisRefSql <- SqlRender::loadRenderTranslateSql(
-    "GetCostAnalysisRef.sql",
+  # --- Step 4: Render the reference SQL scripts ---
+  # The settings are passed as a JSON string for potential future use in more
+  # dynamic reference table generation.
+  settingsJson <- as.character(jsonlite::toJSON(covariateSettings, auto_unbox = TRUE))
+  
+  renderedCovariateRefSql <- SqlRender::loadRenderTranslateSql(
+    sqlFilename = "GetCostCovariateRef.sql",
     packageName = "CostUtilization",
     dbms = connection@dbms,
-    covariate_settings = as.character(jsonlite::toJSON(covariateSettings))
+    covariate_settings = settingsJson
   )
   
+  renderedAnalysisRefSql <- SqlRender::loadRenderTranslateSql(
+    sqlFilename = "GetCostAnalysisRef.sql",
+    packageName = "CostUtilization",
+    dbms = connection@dbms,
+    covariate_settings = settingsJson
+  )
+  
+  # --- Step 5: Return the list of rendered SQL queries ---
   return(list(
-    covariatesSql = covariatesSql,
-    aggregatedCovariatesSql = covariatesSql,
-    covariateRefSql = covariateRefSql,
-    analysisRefSql = analysisRefSql
+    covariatesSql = renderedCovariatesSql,
+    aggregatedCovariatesSql = renderedCovariatesSql,
+    covariateRefSql = renderedCovariateRefSql,
+    analysisRefSql = renderedAnalysisRefSql
   ))
 }
+
 
 #' Get CDM version from database
 #'

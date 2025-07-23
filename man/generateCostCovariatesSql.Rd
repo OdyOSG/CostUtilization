@@ -15,24 +15,29 @@ generateCostCovariatesSql(
 )
 }
 \arguments{
-\item{connection}{Database connection}
+\item{connection}{A \code{DatabaseConnector} connection object.}
 
-\item{cdmDatabaseSchema}{CDM database schema}
+\item{cdmDatabaseSchema}{The schema holding the OMOP CDM data.}
 
-\item{cohortTable}{Cohort table name}
+\item{cohortTable}{The table containing the cohorts.}
 
-\item{cohortDatabaseSchema}{Cohort database schema}
+\item{cohortDatabaseSchema}{The schema where the cohort table resides.}
 
-\item{cohortId}{Cohort ID}
+\item{cohortId}{The ID of the cohort for which to extract data.}
 
-\item{covariateSettings}{Cost covariate settings}
+\item{covariateSettings}{An object of type \code{costCovariateSettings}.}
 
-\item{aggregated}{Whether to generate aggregated SQL}
+\item{aggregated}{A logical value indicating whether to compute aggregated statistics
+or extract person-level data.}
 }
 \value{
-List of SQL queries
+A list containing the rendered and translated SQL queries for covariates,
+covariate reference, and analysis reference.
 }
 \description{
-Internal function to generate SQL queries for cost covariate extraction
+This internal function constructs the necessary SQL queries to extract cost and
+utilization covariates. It creates and uploads a temporary table for temporal
+windows to avoid complex string parsing in SQL, making the queries more robust
+and efficient.
 }
 \keyword{internal}
