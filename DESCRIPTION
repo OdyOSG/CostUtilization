@@ -14,13 +14,23 @@ RoxygenNote: 7.3.2
 Imports:
     dplyr,
     DBI,
-    SqlRender,
-    DatabaseConnector,
-    FeatureExtraction,
-    checkmate
+    SqlRender (>= 1.6.0),
+    DatabaseConnector (>= 5.0.0),
+    FeatureExtraction (>= 3.0.0),
+    checkmate,
+    ParallelLogger,
+    jsonlite,
+    ggplot2,
+    methods
 Suggests:
     testthat (>= 3.0.0),
     Eunomia,
     knitr,
-    rmarkdown
+    rmarkdown,
+    covr,
+    withr
 Config/testthat/edition: 3
+VignetteBuilder: knitr
+URL: https://github.com/OHDSI/CostUtilization
+BugReports: https://github.com/OHDSI/CostUtilization/issues
+Roxygen: list(markdown = TRUE)

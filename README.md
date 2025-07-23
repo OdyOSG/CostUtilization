@@ -7,84 +7,164 @@
 
 ## Introduction
 
-This R package provides a standardized framework for calculating costs for specified patient cohorts within an OMOP Common Data Model database.
+The CostUtilization R package provides a standardized framework for analyzing healthcare costs and utilization patterns for patient cohorts within OMOP Common Data Model (CDM) databases. It enables researchers to extract, aggregate, and analyze cost data across different domains, time windows, and cost types.
 
-[cite_start]The package design is based on the principle that cost data requires two key pieces of information for standardization: classification (the "what") and provenance (the "where")[cite: 7, 8, 11]. [cite_start]It provides functions to generate cost covariates by leveraging standard concepts for different cost components (e.g., 'Charged', 'Allowed', 'Paid') [cite: 24] [cite_start]and cost provenance types (e.g., 'Adjudicated Claim')[cite: 78, 81]. [cite_start]The final output conforms to the `FeatureExtraction` package's object model, allowing for seamless integration into existing OHDSI study pipelines[cite: 200].
+### Key Features
+
+- **Temporal Analysis**: Analyze costs across multiple time windows relative to an index date
+- **Domain-Specific Costs**: Extract costs for medical, pharmacy, procedures, visits, devices, and more
+- **Cost Type Stratification**: Differentiate between charged, allowed, paid, and other cost components
+- **Flexible Aggregation**: Support for sum, mean, median, min, and max aggregations
+- **Demographic Stratification**: Analyze costs by age groups and gender
+- **Integration with OHDSI Tools**: Seamless integration with FeatureExtraction and other OHDSI packages
+
+The package follows OHDSI best practices for cost data standardization, leveraging standard concepts for cost classification and provenance tracking.
+
+---
+
+## Installation
+
+```r
+# Install from GitHub
+# install.packages("remotes")
+remotes::install_github("OHDSI/CostUtilization")
+```
 
 ---
 
 ## Examples
 
-You can install and run the package from RStudio. The following example demonstrates how to calculate the total "Allowed" cost for a cohort of patients with Type 2 Diabetes using the Eunomia test dataset.
+### Basic Cost Analysis
 
-## Examples
-
-You can install and run the package from RStudio. The following example demonstrates how to calculate the total "Allowed" cost for a cohort of patients with Type 2 Diabetes using the Eunomia test dataset.
+Calculate total healthcare costs for a patient cohort:
 
 ```r
-# 1. Install CostUtilization from GitHub
-# install.packages('remotes')
-remotes::install_github('OHDSI/CostUtilization')
-
-# 2. Load the library and its dependencies
 library(CostUtilization)
-library(dplyr)
 library(DatabaseConnector)
 
-# 3. Get connection details for the Eunomia test database
-connectionDetails <- Eunomia::getEunomiaConnectionDetails()
-
-# 4. Create a cohort and sample cost data for the example
-# A helper function to populate the database (implementation not shown for brevity)
-source("[https://raw.githubusercontent.com/OHDSI/CostUtilization/main/extras/TestSetup.R](https://raw.githubusercontent.com/OHDSI/CostUtilization/main/extras/TestSetup.R)")
-setupCostTests(connectionDetails)
-
-
-# 5. Define and execute the cost analysis
-# Define settings to calculate the total "Allowed" cost from "Claims"
-costSettings <- createCostCovariateSettings(
-  covariateId = 1001,
-  costConceptId = c(31978), # Allowed
-  costTypeConceptId = c(32817) # Adjudicated Claim
+# Create connection to your CDM database
+connectionDetails <- createConnectionDetails(
+  dbms = "postgresql",
+  server = "localhost/ohdsi",
+  user = "cdm_user",
+  password = "cdm_password"
 )
 
-# Execute the analysis using connectionDetails
-# The function will handle connecting and disconnecting automatically
-costCovariates <- getCostCovariateData(
+# Define cost analysis settings
+costSettings <- costCovariateSettings(
+  useCosts = TRUE,
+  temporalStartDays = c(-365, -180, -30, 0),
+  temporalEndDays = c(-1, -1, -1, 0),
+  includeMedicalCosts = TRUE,
+  includePharmacyCosts = TRUE,
+  aggregateMethod = "sum"
+)
+
+# Extract cost data
+costData <- getDbCostData(
   connectionDetails = connectionDetails,
-  cdmDatabaseSchema = "main",
-  cohortDatabaseSchema = "main",
+  cdmDatabaseSchema = "cdm_schema",
   cohortTable = "cohort",
-  cohortId = 1, # ID for the T2DM cohort created in setupCostTests()
-  costCovariateSettings = costSettings
+  cohortId = 1234,
+  covariateSettings = costSettings,
+  aggregated = TRUE
 )
 
-# 6. View the results
-print(head(costCovariates))
+# View summary
+summary(costData)
 ```
 
------
+### Advanced Analysis with Stratification
+
+Analyze costs stratified by demographics and cost domains:
+
+```r
+# Create detailed settings with stratification
+advancedSettings <- costCovariateSettings(
+  useCosts = TRUE,
+  useCostDemographics = TRUE,
+  temporalStartDays = c(-365, -180, -30),
+  temporalEndDays = c(-1, -1, -1),
+  includeMedicalCosts = TRUE,
+  includePharmacyCosts = TRUE,
+  includeProcedureCosts = TRUE,
+  stratifyByAgeGroup = TRUE,
+  stratifyByGender = TRUE,
+  stratifyByCostDomain = TRUE,
+  aggregateMethod = "sum"
+)
+
+# Extract stratified cost data
+stratifiedCostData <- getDbCostData(
+  connectionDetails = connectionDetails,
+  cdmDatabaseSchema = "cdm_schema",
+  cohortTable = "cohort",
+  cohortId = 1234,
+  covariateSettings = advancedSettings,
+  aggregated = TRUE
+)
+
+# Filter by specific analysis
+procedureCosts <- filterByAnalysisId(stratifiedCostData, analysisIds = c(1003))
+```
+
+### Cost and Utilization Analysis
+
+Combine cost analysis with healthcare utilization metrics:
+
+```r
+# Settings for cost and utilization
+utilizationSettings <- costCovariateSettings(
+  useCosts = TRUE,
+  useCostUtilization = TRUE,
+  useCostVisitCounts = TRUE,
+  temporalStartDays = c(-365, -30, 0),
+  temporalEndDays = c(-1, -1, 30),
+  includeTimeDistribution = TRUE
+)
+
+# Extract combined data
+utilizationData <- getDbCostData(
+  connectionDetails = connectionDetails,
+  cdmDatabaseSchema = "cdm_schema",
+  cohortTable = "cohort",
+  cohortId = 1234,
+  covariateSettings = utilizationSettings,
+  aggregated = TRUE
+)
+```
+
+---
+
+## Documentation
+
+- [Package Manual](https://ohdsi.github.io/CostUtilization/)
+- [Vignettes](https://github.com/OHDSI/CostUtilization/tree/main/vignettes)
+  - Getting Started with CostUtilization
+  - Advanced Cost Analysis Techniques
+  - Integration with OHDSI Studies
+
+---
 
 ## Technology
 
-`CostUtilization` is an R package.
+CostUtilization is an R package built using:
+- SqlRender for database-agnostic SQL generation
+- DatabaseConnector for database connectivity
+- Standard OHDSI design patterns for consistency
 
------
+---
 
 ## System Requirements
 
-Running the package requires R (version 4.1.0 or higher).
+- R (version 4.1.0 or higher)
+- Java 8 or higher (for DatabaseConnector)
+- Access to an OMOP CDM v5.3+ database with cost data
 
------
+---
 
-## License
+## Getting Help
 
-`CostUtilization` is licensed under Apache License 2.0.
-
------
-
-## Development
-
-`CostUtilization` is being developed in RStudio. [cite\_start]The package is maintained by the OHDSI community[cite: 199].
-
-
+- [Issue Tracker](https://github.com/OHDSI/CostUtilization/issues) for bug reports and feature requests
+- [OHDSI Forums](https://forums.ohdsi.org/) for questions and discussions
+- [OHDSI MS Teams](https://teams.microsoft.com/l/team/19%3a133f2b94b86a41a884d4a4ca3a7fc7e1%40thread.tacv2/conversations?groupId=a5f83e43-d065-4d6e-b20c-4adb3
