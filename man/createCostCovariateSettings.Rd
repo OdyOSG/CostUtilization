@@ -2,15 +2,25 @@
 % Please edit documentation in R/CostCovariateSettings.R
 \name{createCostCovariateSettings}
 \alias{createCostCovariateSettings}
-\title{Create Settings for Cost and Utilization Covariates}
+\title{Create Unified Cost and Utilization Covariate Settings}
 \usage{
 createCostCovariateSettings(
-  temporalStartDays = c(-365, -1, 0, 30),
-  temporalEndDays = c(-1, -1, 0, 365),
-  totalCost = TRUE,
-  costByDomain = TRUE,
-  costByType = FALSE,
-  utilization = TRUE,
+  useCostTotalLongTerm = FALSE,
+  useCostTotalMediumTerm = FALSE,
+  useCostTotalShortTerm = FALSE,
+  useCostByDomainLongTerm = FALSE,
+  useCostByDomainMediumTerm = FALSE,
+  useCostByDomainShortTerm = FALSE,
+  useCostByTypeLongTerm = FALSE,
+  useCostByTypeMediumTerm = FALSE,
+  useCostByTypeShortTerm = FALSE,
+  useUtilizationLongTerm = FALSE,
+  useUtilizationMediumTerm = FALSE,
+  useUtilizationShortTerm = FALSE,
+  longTermStartDays = -365,
+  mediumTermStartDays = -180,
+  shortTermStartDays = -30,
+  endDays = 0,
   costDomains = NULL,
   costTypeConceptIds = NULL,
   currencyConceptIds = NULL,
@@ -21,29 +31,45 @@ createCostCovariateSettings(
 )
 }
 \arguments{
-\item{temporalStartDays}{A numeric vector of integers specifying the start days of temporal windows
-relative to the cohort index date.}
+\item{useCostTotalLongTerm}{Total cost of all events in the long-term window. (Analysis ID: 1)}
 
-\item{temporalEndDays}{A numeric vector of integers specifying the end days of temporal windows
-relative to the cohort index date. Must be the same length as \code{temporalStartDays}.}
+\item{useCostTotalMediumTerm}{Total cost of all events in the medium-term window. (Analysis ID: 1)}
 
-\item{totalCost}{A logical flag indicating whether to compute total cost across all domains.}
+\item{useCostTotalShortTerm}{Total cost of all events in the short-term window. (Analysis ID: 1)}
 
-\item{costByDomain}{A logical flag indicating whether to compute costs stratified by CDM domain (e.g., 'Drug', 'Visit').}
+\item{useCostByDomainLongTerm}{Cost stratified by domain in the long-term window. (Analysis ID: 2)}
 
-\item{costByType}{A logical flag indicating whether to compute costs stratified by the cost_type_concept_id.}
+\item{useCostByDomainMediumTerm}{Cost stratified by domain in the medium-term window. (Analysis ID: 2)}
 
-\item{utilization}{A logical flag indicating whether to compute healthcare utilization (count of distinct cost days).}
+\item{useCostByDomainShortTerm}{Cost stratified by domain in the short-term window. (Analysis ID: 2)}
 
-\item{costDomains}{A character vector of specific cost domains to include (e.g., c("Drug", "Visit")).
-If NULL, all domains are included.}
+\item{useCostByTypeLongTerm}{Cost stratified by cost type in the long-term window. (Analysis ID: 3)}
 
-\item{costTypeConceptIds}{A numeric vector of \code{cost_type_concept_id}s to include. If NULL, all types are included.}
+\item{useCostByTypeMediumTerm}{Cost stratified by cost type in the medium-term window. (Analysis ID: 3)}
 
-\item{currencyConceptIds}{A numeric vector of \code{currency_concept_id}s to include. If NULL, all currencies are included.}
+\item{useCostByTypeShortTerm}{Cost stratified by cost type in the short-term window. (Analysis ID: 3)}
 
-\item{includedCovariateConceptIds}{A vector of concept IDs for which to calculate costs. The costs will be for events
-where the associated clinical concept is in this set.}
+\item{useUtilizationLongTerm}{Healthcare utilization in the long-term window. (Analysis ID: 4)}
+
+\item{useUtilizationMediumTerm}{Healthcare utilization in the medium-term window. (Analysis ID: 4)}
+
+\item{useUtilizationShortTerm}{Healthcare utilization in the short-term window. (Analysis ID: 4)}
+
+\item{longTermStartDays}{Start day (relative to index) for the long-term window.}
+
+\item{mediumTermStartDays}{Start day (relative to index) for the medium-term window.}
+
+\item{shortTermStartDays}{Start day (relative to index) for the short-term window.}
+
+\item{endDays}{End day (relative to index) for all standard (long, medium, short-term) windows.}
+
+\item{costDomains}{A character vector of specific cost domains to include. If NULL, all are included.}
+
+\item{costTypeConceptIds}{A numeric vector of \code{cost_type_concept_id}s to include. If NULL, all are included.}
+
+\item{currencyConceptIds}{A numeric vector of \code{currency_concept_id}s to include. If NULL, all are included.}
+
+\item{includedCovariateConceptIds}{A vector of concept IDs for which to calculate costs.}
 
 \item{addDescendantsToInclude}{Should descendants of the \code{includedCovariateConceptIds} be included?}
 
@@ -55,6 +81,14 @@ where the associated clinical concept is in this set.}
 An S3 object of class \code{costCovariateSettings}.
 }
 \description{
-Creates a settings object for use with the \code{FeatureExtraction::getDbCovariateData}
-function. This object specifies how cost and utilization covariates should be constructed.
+Creates a single, unified settings object for constructing cost and utilization covariates. This function can
+define analyses using standard "long/medium/short-term" windows, fully custom temporal windows, or a combination of both.
+}
+\details{
+This function generates a \code{costCovariateSettings} object that can be passed to the
+\code{getDbCovariateData} function.
+
+To use standard windows, set flags like \code{useCostTotalLongTerm = TRUE}.
+To use custom windows, provide a list to \code{customTemporalWindows}, e.g., \code{list(c(-30, -1), c(0, 0))}.
+Any analyses selected (e.g., \code{useCostTotalLongTerm = TRUE}) will be applied to all custom windows as well.
 }

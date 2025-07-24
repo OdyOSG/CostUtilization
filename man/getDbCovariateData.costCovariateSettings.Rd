@@ -2,16 +2,17 @@
 % Please edit documentation in R/FeatureExtractionIntegration.R
 \name{getDbCovariateData.costCovariateSettings}
 \alias{getDbCovariateData.costCovariateSettings}
-\title{Construct Cost and Utilization Covariates}
+\title{(S3 method) Construct Cost and Utilization Covariates}
 \usage{
 getDbCovariateData.costCovariateSettings(
   connection,
   oracleTempSchema = NULL,
   cdmDatabaseSchema,
   cohortTable,
-  cohortId,
+  cohortId = -1,
+  cohortIds = c(-1),
   cdmVersion = "5",
-  rowIdField,
+  rowIdField = "subject_id",
   covariateSettings,
   aggregated = FALSE,
   tempEmulationSchema = getOption("sqlRenderTempEmulationSchema")
@@ -26,35 +27,29 @@ getDbCovariateData.costCovariateSettings(
 
 \item{cohortTable}{Name of the table holding the cohort.}
 
-\item{cohortId}{The ID of the cohort for which to construct covariates.}
+\item{cohortId}{The ID of the cohort for which to construct covariates. Use \code{cohortIds} for multiple cohorts.}
 
-\item{cdmVersion}{The version of the OMOP CDM. Currently, only "5" is supported.}
+\item{cohortIds}{A vector of cohort definition IDs.}
 
-\item{rowIdField}{The name of the field in the cohort table that is to be used as the
-\code{row_id} field. Crucial for person-level data.}
+\item{cdmVersion}{The version of the OMOP CDM.}
+
+\item{rowIdField}{The name of the field in the cohort table that is to be used as the \code{row_id} field.}
 
 \item{covariateSettings}{An S3 object of type \code{costCovariateSettings}.}
 
-\item{aggregated}{A logical flag indicating whether to compute population-level aggregate statistics
-(\code{TRUE}) or person-level data (\code{FALSE}).}
+\item{aggregated}{A logical flag indicating whether to compute aggregate statistics (\code{TRUE}) or person-level data (\code{FALSE}).}
 
 \item{tempEmulationSchema}{A schema with write privileges for emulating temp tables.}
 }
 \value{
-A \code{CovariateData} object containing the constructed covariates.
-If \code{aggregated = TRUE}, results are in \code{covariatesContinuous}.
-If \code{aggregated = FALSE}, results are in \code{covariates}.
+A \code{CovariateData} object.
 }
 \description{
 This is an S3 method for the \code{FeatureExtraction::getDbCovariateData} generic.
 It is called when the \code{covariateSettings} object is of type \code{costCovariateSettings}.
-This function constructs aggregated or person-level cost and healthcare utilization covariates.
 }
 \details{
-This function is not intended to be called directly, but is automatically dispatched
-by \code{FeatureExtraction::getDbCovariateData}. It generates covariates for the specified
-cohort based on settings created by \code{createCostCovariateSettings}.
-When \code{aggregated = TRUE}, it produces summary statistics.
-When \code{aggregated = FALSE}, it produces person-level data, which requires a unique
-\code{rowIdField} in the cohort table to distinguish cohort entries.
+This function is not intended to be called directly but is automatically dispatched
+by \code{FeatureExtraction::getDbCovariateData}. It serves as a wrapper around the main
+\code{getDbCostCovariateData} function to ensure compatibility with the OHDSI framework.
 }
