@@ -2,32 +2,51 @@
 % Please edit documentation in R/defaultCostSettings.R
 \name{getCostAnalysisTemplate}
 \alias{getCostAnalysisTemplate}
-\title{Get predefined cost analysis templates}
+\title{Get a Pre-defined Cost Analysis Study Template}
 \usage{
 getCostAnalysisTemplate(templateName = "episodeOfCare")
 }
 \arguments{
-\item{templateName}{Name of the template. Options are:
+\item{templateName}{The name of the study template. Available options are:
 \itemize{
-\item{"episodeOfCare"}{Cost analysis for episodes of care}
-\item{"chronicDisease"}{Long-term cost tracking for chronic conditions}
-\item{"acuteEvent"}{Short-term cost analysis around acute events}
-\item{"preventiveCare"}{Cost analysis for preventive care services}
-\item{"emergencyDepartment"}{ED visit cost analysis}
-\item{"hospitalization"}{Inpatient stay cost analysis}
-\item{"specialty"}{Specialty care cost analysis}
-\item{"valueBasedCare"}{Cost and utilization for value-based contracts}
+\item{"episodeOfCare"}{Costs before, during, and after an episode of care (e.g., surgery).}
+\item{"chronicDisease"}{Long-term cost and utilization tracking for chronic conditions.}
+\item{"acuteEvent"}{Short-term cost analysis around an acute event (e.g., MI, stroke).}
+\item{"preventiveCare"}{Costs associated with preventive services, excluding pharmacy.}
+\item{"emergencyDepartment"}{Cost analysis around an emergency department visit.}
+\item{"hospitalization"}{Comprehensive analysis of costs surrounding an inpatient stay.}
 }}
 }
 \value{
-A list containing:
-\itemize{
-\item{settings}{costCovariateSettings object}
-\item{description}{Description of the template}
-\item{recommendedCohorts}{Suggested cohort types for this analysis}
-}
+A list containing the \code{settings} object, \code{description}, and \code{recommendedCohorts}.
 }
 \description{
-Returns a list of predefined analysis templates for common cost analysis scenarios.
-These templates can be used as starting points for custom analyses.
+Returns a list containing a pre-configured \code{costCovariateSettings} object and
+associated metadata for a specific clinical study use-case. This provides a
+convenient starting point for common types of cost analyses.
+}
+\details{
+Each template provides:
+\itemize{
+\item{\code{settings}}{A \code{costCovariateSettings} object ready for use with \code{FeatureExtraction::getDbCovariateData}.}
+\item{\code{description}}{A string describing the purpose of the analysis template.}
+\item{\code{recommendedCohorts}}{A character vector of example cohort types suitable for the analysis.}
+}
+}
+\examples{
+# Get the template for analyzing an acute event
+acuteEventTemplate <- getCostAnalysisTemplate("acuteEvent")
+
+# You can now use the settings object directly
+\dontrun{
+covData <- FeatureExtraction::getDbCovariateData(
+  connectionDetails = connectionDetails,
+  cdmDatabaseSchema = "main",
+  cohortTable = "stroke_cohort",
+  cohortId = 1,
+  covariateSettings = acuteEventTemplate$settings,
+  aggregated = TRUE
+)
+}
+
 }

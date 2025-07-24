@@ -2,30 +2,53 @@
 % Please edit documentation in R/standardizeCost.R
 \name{standardizeCost}
 \alias{standardizeCost}
-\title{Standardize Costs for Inflation}
+\title{Standardize Covariate Costs for Inflation}
 \usage{
-standardizeCost(
-  costCovariateData,
-  inflationTable,
-  connection,
-  cdmDatabaseSchema
-)
+standardizeCost(covariateData, cohort, inflationTable)
 }
 \arguments{
-\item{costCovariateData}{A CostCovariateData object, requires person-level data.}
+\item{covariateData}{A \code{CovariateData} object created with \code{aggregated = FALSE}.}
 
-\item{inflationTable}{A data frame with 'year' and 'adjustment_factor' columns. The factor
-should represent how to multiply a cost from that 'year' to get to the
-standard year's value.}
+\item{cohort}{A data frame containing the cohort information used to generate
+the \code{covariateData}. Must contain the \code{rowIdField} used in the
+call to \code{getDbCovariateData} and the \code{cohortStartDate}.}
 
-\item{connection}{Database connection.}
-
-\item{cdmDatabaseSchema}{Schema name where your patient-level data resides.}
+\item{inflationTable}{A data frame with at least two columns: 'year' and 'inflationFactor'.
+The factor should represent the multiplier to convert a cost from
+that 'year' to the target standard year's value.}
 }
 \value{
-A new CostCovariateData object with adjusted costs.
+A new \code{CovariateData} object with the cost values adjusted for inflation.
 }
 \description{
-Adjusts the cost values in a CostCovariateData object to a standard year's currency value
-using an inflation adjustment table.
+Adjusts the \code{covariateValue} for cost-based covariates in a \code{CovariateData}
+object to a standard year's currency value. This function operates on
+person-level (\code{aggregated = FALSE}) data.
+}
+\details{
+This function takes a \code{CovariateData} object and adjusts the cost values using a
+provided inflation table. It requires the original cohort data frame to link each
+\code{rowId} to its corresponding \code{cohortStartDate} to determine the correct year for
+inflation adjustment. It returns a new \code{CovariateData} object with the adjusted values.
+}
+\examples{
+\dontrun{
+# Assume `covData` is a CovariateData object from getDbCovariateData(..., aggregated = FALSE)
+# Assume `myCohort` is the data frame used for the cohort table
+
+# Create a sample inflation table (e.g., to standardize to 2021 costs)
+# Using Consumer Price Index for Medical Care (CUUR0000SAM) from FRED
+inflation <- data.frame(
+  year = c(2018, 2019, 2020, 2021),
+  cpi = c(497.6, 517.9, 524.3, 540.8) # Example values
+) \%>\%
+  dplyr::mutate(inflationFactor = max(cpi) / cpi)
+
+adjustedCovs <- standardizeCost(
+  covariateData = covData,
+  cohort = myCohort,
+  inflationTable = inflation
+)
+}
+
 }

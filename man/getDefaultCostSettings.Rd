@@ -2,61 +2,44 @@
 % Please edit documentation in R/defaultCostSettings.R
 \name{getDefaultCostSettings}
 \alias{getDefaultCostSettings}
-\title{Get default cost covariate settings}
+\title{Get Default Cost Covariate Settings}
 \usage{
-getDefaultCostSettings(
-  analysisType = "simple",
-  temporalStartDays = NULL,
-  temporalEndDays = NULL,
-  costTypeConceptIds = NULL,
-  currencyConceptId = 44818568,
-  includeOutliers = FALSE
-)
+getDefaultCostSettings(analysisType = "simple", ...)
 }
 \arguments{
-\item{analysisType}{Type of default analysis. Options are:
-\itemize{
-\item{"simple"}{Basic total cost analysis across standard time windows}
-\item{"comprehensive"}{Detailed analysis including all cost domains and types}
-\item{"medical"}{Medical costs only (excludes pharmacy)}
-\item{"pharmacy"}{Pharmacy costs only}
-\item{"highCost"}{Analysis focused on high-cost patients}
-\item{"temporal"}{Detailed temporal analysis with multiple time windows}
-\item{"utilization"}{Cost utilization patterns and indicators}
-\item{"stratified"}{Costs stratified by demographics and domains}
-}}
+\item{analysisType}{The type of default analysis. Options are:
+- \code{"simple"}: Total cost and cost by domain across standard time windows.
+- \code{"medical_only"}: Costs limited to medical domains (e.g., Visit, Procedure).
+- \code{"pharmacy_only"}: Costs limited to the 'Drug' domain.
+- \code{"detailed_temporal"}: All standard analyses across a more granular set of time windows.}
 
-\item{temporalStartDays}{Custom start days for temporal windows (overrides defaults)}
-
-\item{temporalEndDays}{Custom end days for temporal windows (overrides defaults)}
-
-\item{costTypeConceptIds}{Specific cost type concept IDs to include}
-
-\item{currencyConceptId}{Currency concept ID (defaults to USD: 44818568)}
-
-\item{includeOutliers}{Whether to include outlier analysis}
+\item{...}{Additional arguments to be passed to \code{createCostCovariateSettings},
+allowing for customization of the template (e.g., overriding
+\code{temporalStartDays} or providing \code{includedCovariateConceptIds}).}
 }
 \value{
-A costCovariateSettings object configured for the specified analysis type
+An S3 object of class \code{costCovariateSettings}.
 }
 \description{
-Returns pre-configured cost covariate settings for common use cases in healthcare
-cost analysis. These settings can be used directly or modified as needed.
+Provides pre-configured settings for common cost analysis scenarios. These templates
+call \code{createCostCovariateSettings} with sensible defaults and can be used directly
+with \code{FeatureExtraction::getDbCovariateData}.
 }
 \examples{
-\dontrun{
-# Get simple default settings
-settings <- getDefaultCostSettings("simple")
+# Get settings for a simple, standard analysis
+simpleSettings <- getDefaultCostSettings("simple")
 
-# Get comprehensive analysis settings
-settings <- getDefaultCostSettings("comprehensive")
-
-# Get medical costs only with custom time windows
-settings <- getDefaultCostSettings(
-  "medical",
-  temporalStartDays = c(-180, -90, -30),
-  temporalEndDays = c(-1, -1, -1)
+# Get settings for medical costs only, but with custom time windows
+medicalSettings <- getDefaultCostSettings(
+  analysisType = "medical_only",
+  temporalStartDays = c(-180, 0),
+  temporalEndDays = c(-1, 0)
 )
-}
+
+# Get settings for a simple analysis focused only on a specific concept set
+conceptSettings <- getDefaultCostSettings(
+  analysisType = "simple",
+  includedCovariateConceptIds = c(201826) # Type 2 diabetes
+)
 
 }

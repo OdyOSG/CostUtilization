@@ -14,10 +14,11 @@
 #' @export
 #' @importFrom methods setClass
 setClass("CostCovariateData",
-         slots = list(
-           andromeda = "ANY",
-           metaData = "list"
-         ))
+  slots = list(
+    andromeda = "ANY",
+    metaData = "list"
+  )
+)
 
 #' Print a CostCovariateData object
 #'
@@ -30,20 +31,32 @@ print.CostCovariateData <- function(x, ...) {
   writeLines("CostCovariateData object")
   writeLines("")
   writeLines(paste("Database ID:", x$metaData$databaseId))
-  writeLines(paste("Cohort ID:", x_getMetaData("cohortId", x, "...") ))
-  writeLines(paste("Aggregated:", x_getMetaData("aggregated", x, "...") ))
+  writeLines(paste("Cohort ID:", x_getMetaData("cohortId", x, "...")))
+  writeLines(paste("Aggregated:", x_getMetaData("aggregated", x, "...")))
   writeLines("")
-  
-  if (x_getMetaData("aggregated", x, FALSE )) {
-    covariateCount <- x$andromeda$covariates %>% count() %>% pull()
-    nonZeroCount <- x$andromeda$covariates %>% filter(.data$meanValue > 0) %>% count() %>% pull()
+
+  if (x_getMetaData("aggregated", x, FALSE)) {
+    covariateCount <- x$andromeda$covariates %>%
+      count() %>%
+      pull()
+    nonZeroCount <- x$andromeda$covariates %>%
+      filter(.data$meanValue > 0) %>%
+      count() %>%
+      pull()
     writeLines(paste("Number of covariates:", covariateCount))
     writeLines(paste("Number of non-zero covariates:", nonZeroCount))
   } else {
-    subjectCount <- x$andromeda$covariates %>% distinct(.data$subjectId) %>% count() %>% pull()
-    covariateDefCount <- x$andromeda$covariateRef %>% count() %>% pull()
-    valueCount <- x$andromeda$covariates %>% count() %>% pull()
-    
+    subjectCount <- x$andromeda$covariates %>%
+      distinct(.data$subjectId) %>%
+      count() %>%
+      pull()
+    covariateDefCount <- x$andromeda$covariateRef %>%
+      count() %>%
+      pull()
+    valueCount <- x$andromeda$covariates %>%
+      count() %>%
+      pull()
+
     writeLines(paste("Number of subjects:", subjectCount))
     writeLines(paste("Number of covariates:", covariateDefCount))
     writeLines(paste("Number of covariate values:", valueCount))
@@ -82,7 +95,7 @@ summary.CostCovariateData <- function(object, ...) {
         median = median(.data$covariateValue, na.rm = TRUE),
         max = max(.data$covariateValue, na.rm = TRUE)
       )
-    
+
     summary_data <- summary_stats %>%
       inner_join(object$andromeda$covariateRef, by = "covariateId") %>%
       arrange(desc(.data$mean)) %>%
@@ -138,10 +151,11 @@ loadCostCovariateData <- function(file) {
   }
   andromeda <- Andromeda::loadAndromeda(file)
   metaData <- attr(andromeda, "metaData")
-  
+
   result <- new("CostCovariateData",
-                andromeda = andromeda,
-                metaData = metaData)
+    andromeda = andromeda,
+    metaData = metaData
+  )
   return(result)
 }
 

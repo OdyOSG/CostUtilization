@@ -43,13 +43,13 @@ cost_long <- events %>%
     charged_amt <- round(base_cost * runif(1, 1.5, 2.5), 2)
     allowed_amt <- round(charged_amt * runif(1, 0.4, 0.7), 2)
     paid_amt <- round(allowed_amt * runif(1, 0.8, 1.0), 2)
-    
+
     tibble::tribble(
       ~cost_concept_id, ~cost_type_concept_id, ~cost,
       # --- Cost Components ---
-      31973,              32817,               charged_amt,  # Charged, from a Claim
-      31978,              32817,               allowed_amt,  # Allowed, from a Claim
-      31980,              32817,               paid_amt,     # Paid, from a Claim
+      31973, 32817, charged_amt, # Charged, from a Claim
+      31978, 32817, allowed_amt, # Allowed, from a Claim
+      31980, 32817, paid_amt, # Paid, from a Claim
     )
   })) %>%
   ungroup() %>%
@@ -71,14 +71,16 @@ cost_long <- events %>%
   ) %>%
   # Select final columns for the COST table
   select(
-    cost_id, cost_event_id = event_id, cost_event_table, cost_concept_id, cost_type_concept_id,
+    cost_id,
+    cost_event_id = event_id, cost_event_table, cost_concept_id, cost_type_concept_id,
     payer_plan_period_id, currency_concept_id, cost, incurred_date, billed_date, paid_date,
     revenue_code_concept_id, drg_concept_id
   )
 
 # --- Create Cohort Table ---
-cohort <- dbGetQuery(connection,
-                     "SELECT person_id FROM main.condition_occurrence WHERE condition_concept_id = 201826" # T2DM
+cohort <- dbGetQuery(
+  connection,
+  "SELECT person_id FROM main.condition_occurrence WHERE condition_concept_id = 201826" # T2DM
 ) %>%
   distinct() %>%
   mutate(
