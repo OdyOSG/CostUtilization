@@ -25,3 +25,7 @@
 ^Dockerfile$
 ^docs$
 ^pkgdown$
+^.*\.Rproj$
+^\.Rproj\.user$
+^combined_package_code\.txt$
+^README\.md$

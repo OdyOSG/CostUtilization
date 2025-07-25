@@ -31,7 +31,7 @@
 #' @param cdmVersion              The version of the OMOP CDM. Currently, only "5" is supported.
 #' @param rowIdField              The name of the field in the cohort table that is to be used as the
 #'                                `row_id` field. Crucial for person-level data.
-#' @param costCovariateSettings       An S3 object of type `costcostCovariateSettings` as created by `createCostcostCovariateSettings()`.
+#' @param costCovariateSettings       An S3 object of type `costCovariateSettings` as created by `createCostCovariateSettings()`.
 #' @param aggregated              A logical flag indicating whether to compute population-level aggregate statistics
 #'                                (`TRUE`) or person-level data (`FALSE`).
 #' @param tempEmulationSchema     A schema with write privileges for emulating temp tables.
@@ -61,18 +61,17 @@ getDbCostCovariateData <- function(connection,
                                    targetCovariateTable = NULL,
                                    targetCovariateRefTable = NULL,
                                    targetAnalysisRefTable = NULL) {
-  
   # --- Input Validation ---
-  checkmate::assertClass(connection, "DBIConnection")
-  checkmate::assertClass(costCovariateSettings, "costcostCovariateSettings")
+  checkmate::assertClass(connection, "DatabaseConnectorJdbcConnection")
+  checkmate::assertClass(costCovariateSettings, "costCovariateSettings")
   if (!is.null(targetCovariateTable) && aggregated) {
     stop("Writing aggregated results to a database table is not supported. Please use aggregated = FALSE or omit the targetCovariateTable argument.")
   }
-  
+
   # --- Reference Table Generation ---
-  references <- generateReferenceTablesFromUnifiedSettings(costCovariateSettings)
+  references <- .generateReferenceTablesFromUnifiedSettings(costCovariateSettings)
   if (nrow(references$temporalWindows) == 0 || nrow(references$analysisRef) == 0) {
-    ParallelLogger::logWarn("No covariates to generate based on the provided settings.")
+    warning("No covariates to generate based on the provided settings.")
     if (is.null(targetCovariateTable)) {
       # Return empty CovariateData object
       covariateData <- Andromeda::andromeda()
@@ -84,7 +83,7 @@ getDbCostCovariateData <- function(connection,
       return(invisible(NULL))
     }
   }
-  
+
   # --- Temp Table Setup ---
   # Upload temporal windows and concept sets to temp tables
   DatabaseConnector::insertTable(connection, "temporal_windows", references$temporalWindows, tempTable = TRUE, dropTableIfExists = TRUE, createTable = TRUE, camelCaseToSnakeCase = TRUE)
@@ -97,12 +96,14 @@ getDbCostCovariateData <- function(connection,
   if (hasExcludedConcepts) {
     # (Logic for resolving and inserting excluded concepts as before)
   }
-  
-  
+
+
   # --- SQL Generation ---
   sqlFilename <- if (aggregated) "GetAggregatedCostCovariates.sql" else "GetCostCovariates.sql"
-  isAnalysisActive <- function(baseName) { any(grepl(baseName, names(which(unlist(costCovariateSettings$analyses))))) }
-  
+  isAnalysisActive <- function(baseName) {
+    any(grepl(baseName, names(which(unlist(costCovariateSettings$analyses)))))
+  }
+
   sql <- SqlRender::loadRenderTranslateSql(
     sqlFilename = sqlFilename,
     packageName = "CostUtilization",
@@ -123,9 +124,9 @@ getDbCostCovariateData <- function(connection,
     has_included_concepts = hasIncludedConcepts,
     has_excluded_concepts = hasExcludedConcepts
   )
-  
-  ParallelLogger::logInfo("Constructing cost & utilization covariates on the server.")
-  
+
+  message("Constructing cost & utilization covariates on the server.")
+
   # --- Execution: Fetch to R or Write to Table ---
   if (is.null(targetCovariateTable)) {
     # Fetch to R using Andromeda
@@ -139,7 +140,7 @@ getDbCostCovariateData <- function(connection,
     )
     covariateData$analysisRef <- references$analysisRef
     covariateData$covariateRef <- references$covariateRef
-    
+
     metaData <- list(
       call = match.call(),
       sql = sql,
@@ -150,14 +151,13 @@ getDbCostCovariateData <- function(connection,
     attr(covariateData, "metaData") <- metaData
     class(covariateData) <- "CovariateData"
     return(covariateData)
-    
   } else {
     # Write to database tables
     destinationTable <- if (is.null(targetDatabaseSchema)) targetCovariateTable else paste(targetDatabaseSchema, targetCovariateTable, sep = ".")
     insertSql <- paste("INSERT INTO @destination_table (row_id, covariate_id, covariate_value)", sql)
     insertSql <- SqlRender::render(insertSql, destination_table = destinationTable)
     DatabaseConnector::executeSql(connection, insertSql)
-    
+
     # Write reference tables
     if (!is.null(targetCovariateRefTable)) {
       DatabaseConnector::insertTable(connection, targetCovariateRefTable, references$covariateRef, dropTableIfExists = FALSE, createTable = FALSE)
@@ -167,4 +167,142 @@ getDbCostCovariateData <- function(connection,
     }
     return(invisible(NULL))
   }
+}
+
+
+#' Generate Analysis and Covariate Reference Tables from Settings
+#'
+#' @description
+#' An internal helper function that dynamically creates the `analysisRef`, `covariateRef`,
+#' and `temporalWindows` tables based on a `costUtilSettings` object.
+#'
+#' @details
+#' This function interprets the user's settings to define unique IDs and descriptive names for
+#' each analysis (e.g., "Total Cost") and each specific covariate (e.g., "Drug cost during day -365 to 0").
+#' It is not intended to be called directly by the end-user.
+#'
+#' @param settings  An S3 object of class `costUtilSettings`.
+#'
+#' @return
+#' A list containing three tibbles:
+#' \item{`analysisRef`}{A tibble defining the analyses to be performed.}
+#' \item{`covariateRef`}{A tibble defining each covariate to be generated.}
+#' \item{`temporalWindows`}{A tibble with unique time windows and their assigned IDs.}
+#'
+#' @keywords internal
+.generateReferenceTablesFromUnifiedSettings <- function(settings) {
+  # Initialize empty reference tables
+  analysisRef <- dplyr::tibble()
+  covariateRef <- dplyr::tibble()
+  
+  # 1. Process and unify all temporal windows
+  windows <- settings$timeWindows
+  if (length(windows) == 0) {
+    # If no time windows are specified, no covariates can be generated.
+    return(list(
+      analysisRef = analysisRef,
+      covariateRef = covariateRef,
+      temporalWindows = dplyr::tibble()
+    ))
+  }
+  
+  temporalWindows <- do.call(rbind, lapply(windows, function(x) data.frame(startDay = x[1], endDay = x[2]))) %>%
+    dplyr::distinct() %>%
+    dplyr::mutate(windowId = dplyr::row_number())
+  
+  # 2. Conditionally build reference tables based on requested analyses
+  
+  # Analysis 1: Total Cost (Analysis ID prefix: 1000)
+  if (settings$calculateTotalCost) {
+    analysisId <- 1001
+    analysisRef <- analysisRef %>%
+      dplyr::bind_rows(
+        dplyr::tibble(analysisId = analysisId, analysisName = "Total Cost", domainId = "Cost", isBinary = "N", missingMeansZero = "Y")
+      )
+    
+    covariateRef <- covariateRef %>%
+      dplyr::bind_rows(
+        temporalWindows %>%
+          dplyr::mutate(
+            analysisId = !!analysisId,
+            covariateId = 10000 + .data$windowId,
+            covariateName = paste0("Total cost during day ", .data$startDay, " to ", .data$endDay),
+            conceptId = 0
+          )
+      )
+  }
+  
+  # Analysis 2: Cost By Domain (Analysis ID prefix: 2000)
+  if (!is.null(settings$costDomains) && length(settings$costDomains) > 0) {
+    analysisId <- 1002
+    analysisRef <- analysisRef %>%
+      dplyr::bind_rows(
+        dplyr::tibble(analysisId = analysisId, analysisName = "Cost By Domain", domainId = "Cost", isBinary = "N", missingMeansZero = "Y")
+      )
+    
+    domains <- dplyr::tibble(domainName = settings$costDomains) %>%
+      dplyr::mutate(domainIdValue = dplyr::row_number())
+    
+    covariateRef <- covariateRef %>%
+      dplyr::bind_rows(
+        tidyr::crossing(temporalWindows, domains) %>%
+          dplyr::mutate(
+            analysisId = !!analysisId,
+            covariateId = 20000 + (.data$windowId * 100) + .data$domainIdValue,
+            covariateName = paste0(.data$domainName, " cost during day ", .data$startDay, " to ", .data$endDay),
+            conceptId = 0
+          )
+      )
+  }
+  
+  # Analysis 3: Utilization (Analysis ID prefix: 3000)
+  if (!is.null(settings$utilizationDomains) && length(settings$utilizationDomains) > 0) {
+    analysisId <- 1003
+    analysisRef <- analysisRef %>%
+      dplyr::bind_rows(
+        dplyr::tibble(analysisId = analysisId, analysisName = "Utilization", domainId = "Observation", isBinary = "N", missingMeansZero = "Y")
+      )
+    
+    domains <- dplyr::tibble(domainName = settings$utilizationDomains) %>%
+      dplyr::mutate(domainIdValue = dplyr::row_number())
+    
+    covariateRef <- covariateRef %>%
+      dplyr::bind_rows(
+        tidyr::crossing(temporalWindows, domains) %>%
+          dplyr::mutate(
+            analysisId = !!analysisId,
+            covariateId = 30000 + (.data$windowId * 100) + .data$domainIdValue,
+            covariateName = paste0(.data$domainName, " utilization count during day ", .data$startDay, " to ", .data$endDay),
+            conceptId = 0
+          )
+      )
+  }
+  
+  # Analysis 4: Length of Stay (Analysis ID prefix: 4000)
+  if (settings$calculateLengthOfStay) {
+    analysisId <- 1004
+    analysisRef <- analysisRef %>%
+      dplyr::bind_rows(
+        dplyr::tibble(analysisId = analysisId, analysisName = "Length of Stay", domainId = "Visit", isBinary = "N", missingMeansZero = "Y")
+      )
+    
+    covariateRef <- covariateRef %>%
+      dplyr::bind_rows(
+        temporalWindows %>%
+          dplyr::mutate(
+            analysisId = !!analysisId,
+            covariateId = 40000 + .data$windowId,
+            covariateName = paste0("Length of stay for inpatient visits during day ", .data$startDay, " to ", .data$endDay),
+            conceptId = 0
+          )
+      )
+  }
+  
+  # 3. Return the structured list
+  return(list(
+    analysisRef = analysisRef,
+    covariateRef = covariateRef %>%
+      dplyr::select(.data$covariateId, .data$covariateName, .data$analysisId, .data$conceptId),
+    temporalWindows = temporalWindows
+  ))
 }

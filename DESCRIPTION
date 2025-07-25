@@ -31,7 +31,9 @@ Imports:
 Suggests:
     covr,
     Eunomia,
+    glue,
     knitr,
+    purrr,
     rmarkdown,
     testthat (>= 3.0.0),
     withr

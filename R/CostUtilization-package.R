@@ -6,13 +6,16 @@
 ## usethis namespace: start
 
 #' @importFrom Andromeda andromeda loadAndromeda saveAndromeda close
-#' @importFrom DatabaseConnector connect disconnect querySqlToAndromeda insertTable
+#' @importFrom DatabaseConnector connect disconnect querySqlToAndromeda insertTable executeSql querySql
+#' @importFrom DBI DBIConnection
 #' @importFrom SqlRender loadRenderTranslateSql render translate
-#' @importFrom ParallelLogger logInfo
-#' @importFrom checkmate assertFlag assertIntegerish assertChoice assert assertCharacter assertCount
-#' @importFrom checkmate test_true test_set_equal
+#' @importFrom ParallelLogger logInfo logWarn
+#' @importFrom checkmate assertFlag assertIntegerish assertChoice assert assertCharacter assertCount makeAssertCollection reportAssertions assertClass assertList assertString assertInt assertDataFrame assertNames
 #' @importFrom methods setClass
-#' @importFrom utils read.csv write.csv
+#' @importFrom stats runif
+#' @importFrom tidyr pivot_longer crossing
+#' @importFrom utils read.csv write.csv globalVariables
+
 #' @import dplyr
 #' @import rlang
 

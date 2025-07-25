@@ -37,7 +37,7 @@ getDbCostCovariateData(
 \item{rowIdField}{The name of the field in the cohort table that is to be used as the
 \code{row_id} field. Crucial for person-level data.}
 
-\item{costCovariateSettings}{An S3 object of type \code{costcostCovariateSettings} as created by \code{createCostcostCovariateSettings()}.}
+\item{costCovariateSettings}{An S3 object of type \code{costCovariateSettings} as created by \code{createCostCovariateSettings()}.}
 
 \item{aggregated}{A logical flag indicating whether to compute population-level aggregate statistics
 (\code{TRUE}) or person-level data (\code{FALSE}).}

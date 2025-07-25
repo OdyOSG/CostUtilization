@@ -40,101 +40,44 @@ Calculate total healthcare costs for a patient cohort:
 
 ```r
 library(CostUtilization)
-library(DatabaseConnector)
 
-# Create connection to your CDM database
-connectionDetails <- createConnectionDetails(
-  dbms = "postgresql",
-  server = "localhost/ohdsi",
-  user = "cdm_user",
-  password = "cdm_password"
+# Set up connection to the database
+connectionDetails <- DatabaseConnector::createConnectionDetails(
+  dbms = "...",
+  server = "...",
+  user = "...",
+  password = "..."
 )
 
-# Define cost analysis settings
-costSettings <- costCovariateSettings(
-  useCosts = TRUE,
-  temporalStartDays = c(-365, -180, -30, 0),
-  temporalEndDays = c(-1, -1, -1, 0),
-  includeMedicalCosts = TRUE,
-  includePharmacyCosts = TRUE,
-  aggregateMethod = "sum"
+cdmDatabaseSchema <- "your_cdm_schema"
+cohortDatabaseSchema <- "your_results_schema"
+cohortTable <- "your_cohort_table"
+
+# Define the analysis settings
+costSettings <- createCostUtilSettings(
+  analysisName = "My First Cost Analysis",
+  timeWindows = list(c(-365, -1), c(0, 365)),
+  costDomains = c("Drug", "Visit", "Procedure"),
+  calculateTotalCost = TRUE,
+  calculateLengthOfStay = TRUE
 )
 
-# Extract cost data
-costData <- getDbCostData(
+# Execute the analysis
+costData <- getCostUtilData(
   connectionDetails = connectionDetails,
-  cdmDatabaseSchema = "cdm_schema",
-  cohortTable = "cohort",
-  cohortId = 1234,
-  covariateSettings = costSettings,
+  cdmDatabaseSchema = cdmDatabaseSchema,
+  cohortDatabaseSchema = cohortDatabaseSchema,
+  cohortTable = cohortTable,
+  cohortIds = c(101, 102),
+  costUtilSettings = costSettings,
   aggregated = TRUE
 )
 
-# View summary
-summary(costData)
+# The result is a standard CovariateData object, which can be explored
+# using FeatureExtraction functions
+summary <- FeatureExtraction::getCovariateDataSummary(costData)
+print(summary)
 ```
-
-### Advanced Analysis with Stratification
-
-Analyze costs stratified by demographics and cost domains:
-
-```r
-# Create detailed settings with stratification
-advancedSettings <- costCovariateSettings(
-  useCosts = TRUE,
-  useCostDemographics = TRUE,
-  temporalStartDays = c(-365, -180, -30),
-  temporalEndDays = c(-1, -1, -1),
-  includeMedicalCosts = TRUE,
-  includePharmacyCosts = TRUE,
-  includeProcedureCosts = TRUE,
-  stratifyByAgeGroup = TRUE,
-  stratifyByGender = TRUE,
-  stratifyByCostDomain = TRUE,
-  aggregateMethod = "sum"
-)
-
-# Extract stratified cost data
-stratifiedCostData <- getDbCostData(
-  connectionDetails = connectionDetails,
-  cdmDatabaseSchema = "cdm_schema",
-  cohortTable = "cohort",
-  cohortId = 1234,
-  covariateSettings = advancedSettings,
-  aggregated = TRUE
-)
-
-# Filter by specific analysis
-procedureCosts <- filterByAnalysisId(stratifiedCostData, analysisIds = c(1003))
-```
-
-### Cost and Utilization Analysis
-
-Combine cost analysis with healthcare utilization metrics:
-
-```r
-# Settings for cost and utilization
-utilizationSettings <- costCovariateSettings(
-  useCosts = TRUE,
-  useCostUtilization = TRUE,
-  useCostVisitCounts = TRUE,
-  temporalStartDays = c(-365, -30, 0),
-  temporalEndDays = c(-1, -1, 30),
-  includeTimeDistribution = TRUE
-)
-
-# Extract combined data
-utilizationData <- getDbCostData(
-  connectionDetails = connectionDetails,
-  cdmDatabaseSchema = "cdm_schema",
-  cohortTable = "cohort",
-  cohortId = 1234,
-  covariateSettings = utilizationSettings,
-  aggregated = TRUE
-)
-```
-
----
 
 ## Documentation
 
