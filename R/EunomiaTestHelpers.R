@@ -211,19 +211,25 @@ injectCostData <- function(connection) {
 #'
 #' Only non-zero and valid cost entries are included in the final result.
 #'
-#' @param connectionDetails An object of class `ConnectionDetails` as created by the DatabaseConnector package.
+#' @param connectionDetails An object of class `connectionDetails` as created by the DatabaseConnector package.
 #' @param cdmDatabaseSchema Name of the database schema containing the OMOP CDM instance. Defaults to `"main"`.
 #' @param sourceCostTable Name of the wide-format cost table to transform. Defaults to `"cost"`.
 #'
+
 #' @return Invisibly returns the database connection after successful execution.
 #'
 #' @export
-
+#'
+#' @examples
+#' \dontrun{
+#' con <- transformCostToCdmV5dot5(Eunomia::getEunomiaConnectionDetails())
+#' }
 
 transformCostToCdmV5dot5 <- function(
     connectionDetails,
     cdmDatabaseSchema = "main",
-    sourceCostTable = "cost"
+    sourceCostTable = "cost",
+    createIndexes = TRUE
     ) {
   connection <- DatabaseConnector::connect(connectionDetails)
   connection <- injectCostData(connection)

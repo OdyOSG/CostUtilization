@@ -2,9 +2,9 @@
 % Please edit documentation in R/OhdsiFeatureExtractionIntegration.R
 \name{getDbCovariateData.costUtilSettings}
 \alias{getDbCovariateData.costUtilSettings}
-\title{(S3 method) Construct Cost and Utilization Covariates}
+\title{Construct Cost and Utilization Covariates}
 \usage{
-getDbCovariateData.costUtilSettings(
+\method{getDbCovariateData}{costUtilSettings}(
   connection,
   cdmDatabaseSchema,
   cohortDatabaseSchema,

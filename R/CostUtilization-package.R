@@ -7,9 +7,8 @@
 
 #' @importFrom Andromeda andromeda loadAndromeda saveAndromeda close
 #' @importFrom DatabaseConnector connect disconnect querySqlToAndromeda insertTable executeSql querySql
-#' @importFrom DBI DBIConnection
+#' @importFrom FeatureExtraction getDbCovariateData
 #' @importFrom SqlRender loadRenderTranslateSql render translate
-#' @importFrom ParallelLogger logInfo logWarn
 #' @importFrom checkmate assertFlag assertIntegerish assertChoice assert assertCharacter assertCount makeAssertCollection reportAssertions assertClass assertList assertString assertInt assertDataFrame assertNames
 #' @importFrom methods setClass
 #' @importFrom stats runif
