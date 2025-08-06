@@ -45,6 +45,7 @@ cohort_cost_events AS (
     ch.subject_id,
     ch.cohort_definition_id,
     ch.cohort_start_date,
+    ch.cohort_end_date,
     ce.*
   FROM @cohort_database_schema.@cohort_table ch
   INNER JOIN cost_events ce
@@ -53,6 +54,8 @@ cohort_cost_events AS (
 ),
 -- Apply temporal windows
 windowed_events AS (
+  {@use_fixed_windows} ? {
+  -- Fixed windows relative to cohort_start_date
   SELECT
     cce.subject_id,
     cce.cohort_definition_id,
@@ -69,6 +72,28 @@ windowed_events AS (
   {@use_cost_standardization} ? {
   LEFT JOIN #cpi_data cpi
     ON YEAR(cce.incurred_date) = cpi.year
+  }
+  }
+  
+  {@use_fixed_windows & @use_in_cohort_window} ? {UNION ALL}
+
+  {@use_in_cohort_window} ? {
+  -- 'In Cohort' window (from cohort start to end date)
+  SELECT
+    cce.subject_id,
+    cce.cohort_definition_id,
+    999 AS window_id, -- Special ID for 'in cohort' window
+    cce.cost,
+    cce.cost_domain_id,
+    cce.length_of_stay,
+    cce.cost_event_id
+    {@use_cost_standardization} ? {, cpi.inflation_factor}
+  FROM cohort_cost_events cce
+  {@use_cost_standardization} ? {
+  LEFT JOIN #cpi_data cpi
+    ON YEAR(cce.incurred_date) = cpi.year
+  }
+  WHERE cce.incurred_date >= cce.cohort_start_date AND cce.incurred_date <= cce.cohort_end_date
   }
 )
 -- Store person-level results in a final temp table

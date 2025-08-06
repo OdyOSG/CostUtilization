@@ -10,7 +10,6 @@ dir.create(eunomia_dir)
 
 # Get connection details and establish a connection
 connectionDetails <- getEunomiaConnectionDetails(databaseFile = file.path(eunomia_dir, "eunomia.sqlite"))
-connection <- DatabaseConnector::connect(connectionDetails)
 
 # Defer cleanup to the end of the testing session
 withr::defer(
@@ -25,15 +24,6 @@ withr::defer(
 # This block ensures the database is ready for testing CostUtilization functions.
 # It creates a wide-format cost table and then transforms it to the modern
 # long format required by the main analysis functions.
-message("Setting up Eunomia database for testing: Injecting and transforming cost data...")
-CostUtilization::injectCostData(
-  connectionDetails = connectionDetails,
-  cdmDatabaseSchema = "main",
-  seed = 123
-)
-
-CostUtilization::transformCostToCdmV5_5(
-  connectionDetails = connectionDetails,
-  cdmDatabaseSchema = "main"
-)
+message("Setting up Eunomia database for testing: Injecting and transforming cost data to 5.5")
+con <- transformCostToCdmV5dot5(connectionDetails)
 message("Eunomia setup complete.")

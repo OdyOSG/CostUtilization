@@ -7,7 +7,8 @@
 transformCostToCdmV5dot5(
   connectionDetails,
   cdmDatabaseSchema = "main",
-  sourceCostTable = "cost"
+  sourceCostTable = "cost",
+  createIndexes = TRUE
 )
 }
 \arguments{
@@ -35,4 +36,9 @@ This function performs the following:
 }
 
 Only non-zero and valid cost entries are included in the final result.
+}
+\examples{
+\dontrun{
+con <- transformCostToCdmV5dot5(Eunomia::getEunomiaConnectionDetails())
+}
 }

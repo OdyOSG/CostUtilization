@@ -22,12 +22,16 @@
 #'
 #' @details
 #' This function allows users to specify which cost and utilization metrics to compute over
-#' defined time windows relative to a cohort's index date.
+#' defined time windows. Windows can be fixed relative to a cohort's index date or can be
+#' dynamic based on the duration of the cohort itself.
 #'
 #' @param analysisName              A string name for the analysis.
-#' @param timeWindows               A list of numeric vectors, where each vector defines a time
-#'                                  window. The first element is the start day (relative to cohort
-#'                                  start) and the second is the end day. Example: `list(c(-365, -1), c(0, 365))`.
+#' @param timeWindows               A list of numeric vectors, where each vector defines a fixed time
+#'                                  window relative to cohort start. The first element is the start
+#'                                  day and the second is the end day. Example: `list(c(-365, -1), c(0, 365))`.
+#'                                  Can be `NULL` if `useInCohortWindow = TRUE`.
+#' @param useInCohortWindow         A boolean. If `TRUE`, a window covering the duration from
+#'                                  `cohort_start_date` to `cohort_end_date` will be included in the analysis.
 #' @param costDomains               A character vector of OMOP CDM domains to calculate costs for.
 #'                                  Supported domains: "Drug", "Procedure", "Visit", "Device",
 #'                                  "Measurement", "Observation". If NULL, no cost-by-domain is computed.
@@ -48,6 +52,7 @@
 #' @export
 createCostUtilSettings <- function(analysisName = "Cost and Utilization Analysis",
                                    timeWindows = list(c(-365, -1), c(0, 365)),
+                                   useInCohortWindow = FALSE,
                                    costDomains = c("Drug", "Procedure", "Visit"),
                                    utilizationDomains = c("Visit", "Drug", "Procedure"),
                                    calculateTotalCost = TRUE,
@@ -58,7 +63,8 @@ createCostUtilSettings <- function(analysisName = "Cost and Utilization Analysis
                                    cpiData = NULL) {
   errorMessages <- checkmate::makeAssertCollection()
   checkmate::assertString(analysisName, add = errorMessages)
-  checkmate::assertList(timeWindows, types = "numeric", min.len = 1, add = errorMessages)
+  checkmate::assertList(timeWindows, types = "numeric", null.ok = TRUE, add = errorMessages)
+  checkmate::assertFlag(useInCohortWindow, add = errorMessages)
   checkmate::assertCharacter(costDomains, null.ok = TRUE, add = errorMessages)
   checkmate::assertCharacter(utilizationDomains, null.ok = TRUE, add = errorMessages)
   checkmate::assertFlag(calculateTotalCost, add = errorMessages)
@@ -70,11 +76,19 @@ createCostUtilSettings <- function(analysisName = "Cost and Utilization Analysis
   if (!is.null(cpiData)) {
     checkmate::assertNames(colnames(cpiData), must.include = c("year", "cpi"), add = errorMessages)
   }
+  
+  # Ensure at least one windowing strategy is selected
+  if (is.null(timeWindows) && !useInCohortWindow) {
+    errorMessages$push("At least one windowing strategy must be used. Set 'timeWindows' or set 'useInCohortWindow = TRUE'.")
+  }
+  
   checkmate::reportAssertions(collection = errorMessages)
+  
   structure(
     list(
       analysisName = analysisName,
       timeWindows = timeWindows,
+      useInCohortWindow = useInCohortWindow,
       costDomains = costDomains,
       utilizationDomains = utilizationDomains,
       calculateTotalCost = calculateTotalCost,
@@ -88,6 +102,7 @@ createCostUtilSettings <- function(analysisName = "Cost and Utilization Analysis
   )
 }
 
+
 #' Get default Consumer Price Index (CPI) data for Medical Care
 #'
 #' @description
@@ -100,3 +115,4 @@ getDefaultCpiTable <- function() {
   # Data as of early 2024.
   utils::read.csv(system.file("csv/cpi_data.csv", package = "CostUtilization"))
 }
+

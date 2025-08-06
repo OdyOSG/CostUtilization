@@ -1,0 +1,26 @@
+DBMS:
+sqlite
+
+Error:
+near ".": syntax error
+
+SQL:
+CREATE INDEX idx_cost_domain_id ON main.cost (cost_domain_id)
+
+R version:
+R version 4.4.1 (2024-06-14 ucrt)
+
+Platform:
+x86_64-w64-mingw32
+
+Attached base packages:
+- stats
+- graphics
+- grDevices
+- utils
+- datasets
+- methods
+- base
+
+Other attached packages:
+- CostUtilization (0.0.1)
