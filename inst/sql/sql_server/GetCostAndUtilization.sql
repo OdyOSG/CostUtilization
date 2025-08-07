@@ -1,6 +1,5 @@
 /*
   Extracts person-level cost and utilization covariates for one or more cohorts.
-  The output is one row per person-covariate combination, stored in a temporary table.
 */
 
 -- Get all relevant cost event information in one place
@@ -12,7 +11,6 @@ WITH cost_events AS (
     c.cost_type_concept_id,
     c.incurred_date,
     c.cost_event_id,
-    -- Get concept_id from each domain
     CASE
       WHEN c.cost_domain_id = 'Drug' THEN de.drug_concept_id
       WHEN c.cost_domain_id = 'Procedure' THEN po.procedure_concept_id
@@ -22,7 +20,6 @@ WITH cost_events AS (
       WHEN c.cost_domain_id = 'Observation' THEN o.observation_concept_id
       ELSE 0
     END AS event_concept_id,
-    -- Get Length of Stay for inpatient visits
     CASE
       WHEN c.cost_domain_id = 'Visit' AND vo.visit_concept_id IN (9201, 262)
       THEN DATEDIFF(DAY, vo.visit_start_date, vo.visit_end_date)
@@ -48,14 +45,12 @@ cohort_cost_events AS (
     ch.cohort_end_date,
     ce.*
   FROM @cohort_database_schema.@cohort_table ch
-  INNER JOIN cost_events ce
-    ON ch.subject_id = ce.person_id
+  INNER JOIN cost_events ce ON ch.subject_id = ce.person_id
   WHERE ch.cohort_definition_id IN (@cohort_ids)
 ),
 -- Apply temporal windows
 windowed_events AS (
   {@use_fixed_windows} ? {
-  -- Fixed windows relative to cohort_start_date
   SELECT
     cce.subject_id,
     cce.cohort_definition_id,
@@ -63,36 +58,31 @@ windowed_events AS (
     cce.cost,
     cce.cost_domain_id,
     cce.length_of_stay,
-    cce.cost_event_id
+    cce.cost_event_id,
+    cce.event_concept_id
     {@use_cost_standardization} ? {, cpi.inflation_factor}
   FROM cohort_cost_events cce
   INNER JOIN #temporal_windows tw
     ON cce.incurred_date >= DATEADD(DAY, tw.start_day, cce.cohort_start_date)
     AND cce.incurred_date <= DATEADD(DAY, tw.end_day, cce.cohort_start_date)
   {@use_cost_standardization} ? {
-  LEFT JOIN #cpi_data cpi
-    ON YEAR(cce.incurred_date) = cpi.year
+  LEFT JOIN #cpi_data cpi ON YEAR(cce.incurred_date) = cpi.year }
   }
-  }
-  
   {@use_fixed_windows & @use_in_cohort_window} ? {UNION ALL}
-
   {@use_in_cohort_window} ? {
-  -- 'In Cohort' window (from cohort start to end date)
   SELECT
     cce.subject_id,
     cce.cohort_definition_id,
-    999 AS window_id, -- Special ID for 'in cohort' window
+    999 AS window_id,
     cce.cost,
     cce.cost_domain_id,
     cce.length_of_stay,
-    cce.cost_event_id
+    cce.cost_event_id,
+    cce.event_concept_id
     {@use_cost_standardization} ? {, cpi.inflation_factor}
   FROM cohort_cost_events cce
   {@use_cost_standardization} ? {
-  LEFT JOIN #cpi_data cpi
-    ON YEAR(cce.incurred_date) = cpi.year
-  }
+  LEFT JOIN #cpi_data cpi ON YEAR(cce.incurred_date) = cpi.year }
   WHERE cce.incurred_date >= cce.cohort_start_date AND cce.incurred_date <= cce.cohort_end_date
   }
 )
@@ -105,55 +95,48 @@ INTO @person_level_table
 FROM (
   -- Analysis 1: Total Cost
   {@use_total_cost} ? {
-  SELECT
-    we.subject_id,
-    10000 + we.window_id AS covariate_id,
+  SELECT we.subject_id, 10000 + we.window_id AS covariate_id,
     we.cost {@use_cost_standardization} ? {* ISNULL(we.inflation_factor, 1)} AS value
   FROM windowed_events we
   }
-
   -- Analysis 2: Cost By Domain
   {@use_domain_cost} ? {
   {@use_total_cost} ? {UNION ALL}
-  SELECT
-    we.subject_id,
-    20000 + (we.window_id * 100) +
-      CASE we.cost_domain_id
-        WHEN 'Drug' THEN 1 WHEN 'Procedure' THEN 2 WHEN 'Visit' THEN 3
-        WHEN 'Device' THEN 4 WHEN 'Measurement' THEN 5 WHEN 'Observation' THEN 6
-        ELSE 0
+  SELECT we.subject_id, 20000 + (we.window_id * 100) +
+      CASE we.cost_domain_id WHEN 'Drug' THEN 1 WHEN 'Procedure' THEN 2 WHEN 'Visit' THEN 3
+        WHEN 'Device' THEN 4 WHEN 'Measurement' THEN 5 WHEN 'Observation' THEN 6 ELSE 0
       END AS covariate_id,
     we.cost {@use_cost_standardization} ? {* ISNULL(we.inflation_factor, 1)} AS value
   FROM windowed_events we
   WHERE we.cost_domain_id IN (@cost_domains)
   }
-
   -- Analysis 3: Utilization Count
   {@use_utilization} ? {
   {@use_total_cost | @use_domain_cost} ? {UNION ALL}
-  SELECT
-    we.subject_id,
-    30000 + (we.window_id * 100) +
-      CASE we.cost_domain_id
-        WHEN 'Drug' THEN 1 WHEN 'Procedure' THEN 2 WHEN 'Visit' THEN 3
-        WHEN 'Device' THEN 4
-        ELSE 0
+  SELECT we.subject_id, 30000 + (we.window_id * 100) +
+      CASE we.cost_domain_id WHEN 'Drug' THEN 1 WHEN 'Procedure' THEN 2 WHEN 'Visit' THEN 3
+        WHEN 'Device' THEN 4 ELSE 0
       END AS covariate_id,
-    1 AS value -- count distinct events
+    1 AS value
   FROM windowed_events we
   WHERE we.cost_domain_id IN (@utilization_domains)
   GROUP BY we.subject_id, we.window_id, we.cost_domain_id, we.cost_event_id
   }
-
   -- Analysis 4: Length of Stay
   {@use_length_of_stay} ? {
   {@use_total_cost | @use_domain_cost | @use_utilization} ? {UNION ALL}
-  SELECT
-    we.subject_id,
-    40000 + we.window_id AS covariate_id,
+  SELECT we.subject_id, 40000 + we.window_id AS covariate_id,
     we.length_of_stay AS value
   FROM windowed_events we
   WHERE we.length_of_stay IS NOT NULL
+  }
+  -- Analysis 5: Cost by Concept Set
+  {@use_concept_set} ? {
+  {@use_total_cost | @use_domain_cost | @use_utilization | @use_length_of_stay} ? {UNION ALL}
+  SELECT we.subject_id, 50000 + (we.window_id * 10000) + cs.concept_rank AS covariate_id,
+    we.cost {@use_cost_standardization} ? {* ISNULL(we.inflation_factor, 1)} AS value
+  FROM windowed_events we
+  INNER JOIN #concept_set_codes cs ON we.event_concept_id = cs.concept_id
   }
 ) all_covariates
 GROUP BY subject_id, covariate_id;

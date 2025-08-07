@@ -63,3 +63,27 @@ test_that("createCostUtilSettings catches invalid inputs", {
   # Invalid CPI data frame
   expect_error(createCostUtilSettings(cpiData = data.frame(yr = 2020, val = 100)))
 })
+
+
+# (Existing tests for other parameters omitted for brevity)
+
+test_that("createCostUtilSettings validates conceptIds parameter", {
+  # Fails if not a numeric vector
+  expect_error(createCostUtilSettings(conceptIds = "not a vector"))
+  expect_error(createCostUtilSettings(conceptIds = data.frame(id = 123)))
+  
+  # Fails if vector is not unique
+  expect_error(
+    createCostUtilSettings(conceptIds = c(123, 456, 123)),
+    "Must have unique values"
+  )
+  
+  # Succeeds with a valid numeric vector
+  settings <- createCostUtilSettings(conceptIds = c(123, 456))
+  expect_s3_class(settings, "costUtilSettings")
+  expect_equal(settings$conceptIds, c(123, 456))
+  
+  # Succeeds with NULL
+  settings_null <- createCostUtilSettings(conceptIds = NULL)
+  expect_null(settings_null$conceptIds)
+})

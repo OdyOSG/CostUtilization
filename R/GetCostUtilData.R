@@ -53,7 +53,7 @@ getCostUtilData <- function(connection,
                             costUtilSettings,
                             aggregated = FALSE) {
   errorMessages <- checkmate::makeAssertCollection()
-  checkmate::assertClass(connection, "DatabaseConnectorConnection", add = errorMessages)
+  checkmate::assertClass(connection, "DatabaseConnection", add = errorMessages)
   checkmate::assertCharacter(cdmDatabaseSchema, len = 1, add = errorMessages)
   checkmate::assertCharacter(cohortDatabaseSchema, len = 1, add = errorMessages)
   checkmate::assertCharacter(cohortTable, len = 1, add = errorMessages)
@@ -64,10 +64,13 @@ getCostUtilData <- function(connection,
   
   start <- Sys.time()
   
+  # Set up temp tables
   personLevelTable <- paste0("#pl_", paste(sample(letters, 12), collapse = ""))
   temporalWindowsTable <- "#temporal_windows"
   cpiDataTable <- "#cpi_data"
+  conceptSetTable <- "#concept_set_codes"
   
+  # Create and upload temporal windows table
   useFixedWindows <- !is.null(costUtilSettings$timeWindows) && length(costUtilSettings$timeWindows) > 0
   if (useFixedWindows) {
     temporalWindows <- do.call(rbind, lapply(seq_along(costUtilSettings$timeWindows), function(i) {
@@ -84,6 +87,7 @@ getCostUtilData <- function(connection,
                                    camelCaseToSnakeCase = TRUE)
   }
   
+  # Prepare and upload CPI data if standardization is requested
   useCostStandardization <- !is.null(costUtilSettings$costStandardizationYear)
   if (useCostStandardization) {
     cpiData <- costUtilSettings$cpiData
@@ -102,6 +106,21 @@ getCostUtilData <- function(connection,
                                    camelCaseToSnakeCase = TRUE)
   }
   
+  # Prepare and upload concept IDs if provided
+  useConceptSet <- !is.null(costUtilSettings$conceptIds) && length(costUtilSettings$conceptIds) > 0
+  if (useConceptSet) {
+    conceptSet <- data.frame(
+      concept_id = costUtilSettings$conceptIds,
+      concept_rank = seq_along(costUtilSettings$conceptIds)
+    )
+    DatabaseConnector::insertTable(connection,
+                                   tableName = conceptSetTable,
+                                   data = conceptSet,
+                                   tempTable = TRUE,
+                                   camelCaseToSnakeCase = TRUE)
+  }
+  
+  # Render and execute main SQL
   sql <- SqlRender::loadRenderTranslateSql(
     sqlFilename = "GetCostAndUtilization.sql",
     packageName = "CostUtilization",
@@ -121,19 +140,22 @@ getCostUtilData <- function(connection,
     use_length_of_stay = costUtilSettings$calculateLengthOfStay,
     use_cost_standardization = useCostStandardization,
     use_fixed_windows = useFixedWindows,
-    use_in_cohort_window = costUtilSettings$useInCohortWindow
+    use_in_cohort_window = costUtilSettings$useInCohortWindow,
+    use_concept_set = useConceptSet
   )
   DatabaseConnector::executeSql(connection, sql)
   
+  # Create CovariateData object in Andromeda
   covariateData <- Andromeda::andromeda()
   
+  # Construct reference tables
   analysisRef <- .createAnalysisRef(costUtilSettings)
   Andromeda::appendToTable(covariateData$analysisRef, analysisRef)
-  
   covariateRef <- .createCovariateRef(costUtilSettings, analysisRef)
   Andromeda::appendToTable(covariateData$covariateRef, covariateRef)
   
   if (aggregated) {
+    # Aggregate results on the server and pull into Andromeda
     sql <- SqlRender::loadRenderTranslateSql(
       sqlFilename = "AggregateCovariates.sql",
       packageName = "CostUtilization",
@@ -151,6 +173,7 @@ getCostUtilData <- function(connection,
       mutate(cohortDefinitionId = !!cohortIds[1])
     
   } else {
+    # Pull person-level results into Andromeda
     sql <- "SELECT row_id, covariate_id, covariate_value FROM @person_level_table;"
     sql <- SqlRender::render(sql, person_level_table = personLevelTable)
     sql <- SqlRender::translate(sql, targetDialect = connection@dbms)
@@ -163,6 +186,7 @@ getCostUtilData <- function(connection,
     )
   }
   
+  # Clean up server-side temp tables
   if (useFixedWindows) {
     sql <- "TRUNCATE TABLE @temporal_windows_table; DROP TABLE @temporal_windows_table;"
     DatabaseConnector::renderTranslateExecuteSql(connection,
@@ -175,7 +199,15 @@ getCostUtilData <- function(connection,
                                                  sql,
                                                  cpi_data_table = cpiDataTable)
   }
+  if (useConceptSet) {
+    sql <- "TRUNCATE TABLE @concept_set_table; DROP TABLE @concept_set_table;"
+    DatabaseConnector::renderTranslateExecuteSql(connection,
+                                                 sql,
+                                                 concept_set_table = conceptSetTable)
+  }
   
+  
+  # Set metadata
   attr(covariateData, "metaData") <- list(
     call = match.call(),
     cohortIds = cohortIds,
@@ -187,14 +219,53 @@ getCostUtilData <- function(connection,
   return(covariateData)
 }
 
-# Helper function to create covariate reference table
+# Helper functions to create reference tables
+.createAnalysisRef <- function(settings) {
+  analysisId <- numeric(0)
+  analysisName <- character(0)
+  domainId <- character(0)
+  
+  if (settings$calculateTotalCost) {
+    analysisId <- c(analysisId, 1)
+    analysisName <- c(analysisName, "Total Cost")
+    domainId <- c(domainId, "Cost")
+  }
+  if (!is.null(settings$costDomains)) {
+    analysisId <- c(analysisId, 2)
+    analysisName <- c(analysisName, "Cost By Domain")
+    domainId <- c(domainId, "Cost")
+  }
+  if (!is.null(settings$utilizationDomains)) {
+    analysisId <- c(analysisId, 3)
+    analysisName <- c(analysisName, "Utilization")
+    domainId <- c(domainId, "Count")
+  }
+  if (settings$calculateLengthOfStay) {
+    analysisId <- c(analysisId, 4)
+    analysisName <- c(analysisName, "Length of Stay")
+    domainId <- c(domainId, "Observation")
+  }
+  if (!is.null(settings$conceptIds) && length(settings$conceptIds) > 0) {
+    analysisId <- c(analysisId, 5)
+    analysisName <- c(analysisName, "Cost by Concept")
+    domainId <- c(domainId, "Cost")
+  }
+  
+  data.frame(
+    analysisId = analysisId,
+    analysisName = analysisName,
+    domainId = domainId,
+    startDay = NA,
+    endDay = NA,
+    isBinary = "N",
+    missingMeansZero = "Y"
+  )
+}
+
 .createCovariateRef <- function(settings, analysisRef) {
   covariateRef <- list()
   
-  # Initialize empty data frame for windows
   window_df <- data.frame(windowId = integer(), windowName = character())
-  
-  # Add fixed time windows if they exist
   if (!is.null(settings$timeWindows) && length(settings$timeWindows) > 0) {
     fixed_windows_df <- do.call(rbind, lapply(seq_along(settings$timeWindows), function(i) {
       data.frame(
@@ -204,8 +275,6 @@ getCostUtilData <- function(connection,
     }))
     window_df <- rbind(window_df, fixed_windows_df)
   }
-  
-  # Add the 'in cohort' window if requested
   if (settings$useInCohortWindow) {
     in_cohort_window_df <- data.frame(windowId = 999, windowName = " (In Cohort)")
     window_df <- rbind(window_df, in_cohort_window_df)
@@ -253,6 +322,19 @@ getCostUtilData <- function(connection,
     df$covariateName <- paste0("Length of Stay for Inpatient Visits", df$windowName)
     df$analysisId <- 4
     df$conceptId <- 0
+    covariateRef[[length(covariateRef) + 1]] <- df
+  }
+  if (!is.null(settings$conceptIds) && length(settings$conceptIds) > 0) {
+    concept_df <- data.frame(
+      conceptId = settings$conceptIds,
+      concept_rank = seq_along(settings$conceptIds)
+    )
+    
+    df <- tidyr::crossing(window_df, concept_df)
+    df$covariateId <- 50000 + (df$windowId * 10000) + df$concept_rank
+    df$covariateName <- paste0("Cost - Concept ", df$conceptId, df$windowName)
+    df$analysisId <- 5
+    # conceptId is already in the data frame
     covariateRef[[length(covariateRef) + 1]] <- df
   }
   

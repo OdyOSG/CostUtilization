@@ -1,7 +1,5 @@
 # Copyright 2025 OHDSI
 #
-# This file is part of CostUtilization
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -17,34 +15,21 @@
 #' Create Cost and Utilization Analysis Settings
 #'
 #' @description
-#' Creates a settings object for defining a cost and healthcare utilization analysis. This object
-#' is used by the \code{\link{getCostUtilData}} function.
-#'
-#' @details
-#' This function allows users to specify which cost and utilization metrics to compute over
-#' defined time windows. Windows can be fixed relative to a cohort's index date or can be
-#' dynamic based on the duration of the cohort itself.
+#' Creates a settings object for defining a cost and healthcare utilization analysis.
 #'
 #' @param analysisName              A string name for the analysis.
-#' @param timeWindows               A list of numeric vectors, where each vector defines a fixed time
-#'                                  window relative to cohort start. The first element is the start
-#'                                  day and the second is the end day. Example: `list(c(-365, -1), c(0, 365))`.
+#' @param timeWindows               A list of numeric vectors defining fixed time windows relative to cohort start.
 #'                                  Can be `NULL` if `useInCohortWindow = TRUE`.
-#' @param useInCohortWindow         A boolean. If `TRUE`, a window covering the duration from
-#'                                  `cohort_start_date` to `cohort_end_date` will be included in the analysis.
-#' @param costDomains               A character vector of OMOP CDM domains to calculate costs for.
-#'                                  Supported domains: "Drug", "Procedure", "Visit", "Device",
-#'                                  "Measurement", "Observation". If NULL, no cost-by-domain is computed.
-#' @param utilizationDomains        A character vector of OMOP CDM domains for which to count occurrences.
-#'                                  Supported domains: "Visit", "Drug", "Procedure", "Device". If NULL, no utilization is computed.
+#' @param useInCohortWindow         A boolean. If `TRUE`, a window from `cohort_start_date` to `cohort_end_date` is included.
+#' @param costDomains               A character vector of OMOP CDM domains to calculate costs for. If NULL, no cost-by-domain is computed.
+#' @param utilizationDomains        A character vector of OMOP CDM domains for which to count occurrences. If NULL, no utilization is computed.
+#' @param conceptIds                A numeric vector of concept IDs for which to calculate costs. If `NULL`, this analysis is skipped.
 #' @param calculateTotalCost        Boolean. If TRUE, calculates the total cost across all specified domains.
 #' @param calculateLengthOfStay     Boolean. If TRUE, calculates the length of stay for inpatient visits.
 #' @param costTypeConceptIds        A numeric vector of `cost_type_concept_id`s to include. If NULL, all are included.
 #' @param currencyConceptId         A single integer for the `currency_concept_id` to use. Defaults to 44818668 (USD).
-#' @param costStandardizationYear   Integer. The year to which all costs will be standardized using the CPI table. If NULL,
-#'                                  no standardization is performed.
+#' @param costStandardizationYear   Integer. The year to which all costs will be standardized. If NULL, no standardization is performed.
 #' @param cpiData                   A data frame with 'year' and 'cpi' columns for cost standardization.
-#'                                  If NULL, a default CPI table will be used. See \code{\link{getDefaultCpiTable}}.
 #'
 #' @return
 #' An object of class `costUtilSettings`.
@@ -55,6 +40,7 @@ createCostUtilSettings <- function(analysisName = "Cost and Utilization Analysis
                                    useInCohortWindow = FALSE,
                                    costDomains = c("Drug", "Procedure", "Visit"),
                                    utilizationDomains = c("Visit", "Drug", "Procedure"),
+                                   conceptIds = NULL,
                                    calculateTotalCost = TRUE,
                                    calculateLengthOfStay = TRUE,
                                    costTypeConceptIds = NULL,
@@ -67,6 +53,7 @@ createCostUtilSettings <- function(analysisName = "Cost and Utilization Analysis
   checkmate::assertFlag(useInCohortWindow, add = errorMessages)
   checkmate::assertCharacter(costDomains, null.ok = TRUE, add = errorMessages)
   checkmate::assertCharacter(utilizationDomains, null.ok = TRUE, add = errorMessages)
+  checkmate::assertIntegerish(conceptIds, null.ok = TRUE, unique = TRUE, add = errorMessages)
   checkmate::assertFlag(calculateTotalCost, add = errorMessages)
   checkmate::assertFlag(calculateLengthOfStay, add = errorMessages)
   checkmate::assertIntegerish(costTypeConceptIds, null.ok = TRUE, add = errorMessages)
@@ -76,12 +63,9 @@ createCostUtilSettings <- function(analysisName = "Cost and Utilization Analysis
   if (!is.null(cpiData)) {
     checkmate::assertNames(colnames(cpiData), must.include = c("year", "cpi"), add = errorMessages)
   }
-  
-  # Ensure at least one windowing strategy is selected
   if (is.null(timeWindows) && !useInCohortWindow) {
     errorMessages$push("At least one windowing strategy must be used. Set 'timeWindows' or set 'useInCohortWindow = TRUE'.")
   }
-  
   checkmate::reportAssertions(collection = errorMessages)
   
   structure(
@@ -91,6 +75,7 @@ createCostUtilSettings <- function(analysisName = "Cost and Utilization Analysis
       useInCohortWindow = useInCohortWindow,
       costDomains = costDomains,
       utilizationDomains = utilizationDomains,
+      conceptIds = conceptIds,
       calculateTotalCost = calculateTotalCost,
       calculateLengthOfStay = calculateLengthOfStay,
       costTypeConceptIds = costTypeConceptIds,
