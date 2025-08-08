@@ -10,6 +10,7 @@ createCostUtilSettings(
   useInCohortWindow = FALSE,
   costDomains = c("Drug", "Procedure", "Visit"),
   utilizationDomains = c("Visit", "Drug", "Procedure"),
+  conceptIds = NULL,
   calculateTotalCost = TRUE,
   calculateLengthOfStay = TRUE,
   costTypeConceptIds = NULL,
@@ -21,20 +22,16 @@ createCostUtilSettings(
 \arguments{
 \item{analysisName}{A string name for the analysis.}
 
-\item{timeWindows}{A list of numeric vectors, where each vector defines a fixed time
-window relative to cohort start. The first element is the start
-day and the second is the end day. Example: \code{list(c(-365, -1), c(0, 365))}.
+\item{timeWindows}{A list of numeric vectors defining fixed time windows relative to cohort start.
 Can be \code{NULL} if \code{useInCohortWindow = TRUE}.}
 
-\item{useInCohortWindow}{A boolean. If \code{TRUE}, a window covering the duration from
-\code{cohort_start_date} to \code{cohort_end_date} will be included in the analysis.}
+\item{useInCohortWindow}{A boolean. If \code{TRUE}, a window from \code{cohort_start_date} to \code{cohort_end_date} is included.}
 
-\item{costDomains}{A character vector of OMOP CDM domains to calculate costs for.
-Supported domains: "Drug", "Procedure", "Visit", "Device",
-"Measurement", "Observation". If NULL, no cost-by-domain is computed.}
+\item{costDomains}{A character vector of OMOP CDM domains to calculate costs for. If NULL, no cost-by-domain is computed.}
 
-\item{utilizationDomains}{A character vector of OMOP CDM domains for which to count occurrences.
-Supported domains: "Visit", "Drug", "Procedure", "Device". If NULL, no utilization is computed.}
+\item{utilizationDomains}{A character vector of OMOP CDM domains for which to count occurrences. If NULL, no utilization is computed.}
+
+\item{conceptIds}{A numeric vector of concept IDs for which to calculate costs. If \code{NULL}, this analysis is skipped.}
 
 \item{calculateTotalCost}{Boolean. If TRUE, calculates the total cost across all specified domains.}
 
@@ -44,21 +41,13 @@ Supported domains: "Visit", "Drug", "Procedure", "Device". If NULL, no utilizati
 
 \item{currencyConceptId}{A single integer for the \code{currency_concept_id} to use. Defaults to 44818668 (USD).}
 
-\item{costStandardizationYear}{Integer. The year to which all costs will be standardized using the CPI table. If NULL,
-no standardization is performed.}
+\item{costStandardizationYear}{Integer. The year to which all costs will be standardized. If NULL, no standardization is performed.}
 
-\item{cpiData}{A data frame with 'year' and 'cpi' columns for cost standardization.
-If NULL, a default CPI table will be used. See \code{\link{getDefaultCpiTable}}.}
+\item{cpiData}{A data frame with 'year' and 'cpi' columns for cost standardization.}
 }
 \value{
 An object of class \code{costUtilSettings}.
 }
 \description{
-Creates a settings object for defining a cost and healthcare utilization analysis. This object
-is used by the \code{\link{getCostUtilData}} function.
-}
-\details{
-This function allows users to specify which cost and utilization metrics to compute over
-defined time windows. Windows can be fixed relative to a cohort's index date or can be
-dynamic based on the duration of the cohort itself.
+Creates a settings object for defining a cost and healthcare utilization analysis.
 }

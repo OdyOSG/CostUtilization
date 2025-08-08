@@ -5,7 +5,8 @@
 \title{Get Cost and Utilization Data}
 \usage{
 getCostUtilData(
-  connection,
+  connection = NULL,
+  connectionDetails = NULL,
   cdmDatabaseSchema,
   cohortDatabaseSchema,
   cohortTable,
@@ -17,6 +18,10 @@ getCostUtilData(
 \arguments{
 \item{connection}{An object of type \code{connection} as created using the
 \code{DatabaseConnector::connect()} function.}
+
+\item{connectionDetails}{An R object of type connectionDetails created using the
+function createConnectionDetails in the DatabaseConnector package. Either
+the connection or connectionDetails argument should be specified}
 
 \item{cdmDatabaseSchema}{The name of the database schema that contains the OMOP CDM instance.
 Requires read permissions to this schema.}

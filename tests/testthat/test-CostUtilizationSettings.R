@@ -2,7 +2,7 @@ library(testthat)
 
 test_that("getDefaultCpiTable returns a valid data frame", {
   cpi_table <- getDefaultCpiTable()
-  
+
   expect_s3_class(cpi_table, "data.frame")
   expect_true(all(c("year", "cpi") %in% colnames(cpi_table)))
   expect_type(cpi_table$year, "integer")
@@ -12,7 +12,7 @@ test_that("getDefaultCpiTable returns a valid data frame", {
 
 test_that("createCostUtilSettings creates object with default values", {
   settings <- createCostUtilSettings()
-  
+
   expect_s3_class(settings, "costUtilSettings")
   expect_equal(settings$analysisName, "Cost and Utilization Analysis")
   expect_true(settings$calculateTotalCost)
@@ -27,7 +27,7 @@ test_that("createCostUtilSettings accepts 'in cohort' window only", {
     timeWindows = NULL,
     useInCohortWindow = TRUE
   )
-  
+
   expect_s3_class(settings, "costUtilSettings")
   expect_null(settings$timeWindows)
   expect_true(settings$useInCohortWindow)
@@ -38,7 +38,7 @@ test_that("createCostUtilSettings allows both fixed and 'in cohort' windows", {
     timeWindows = list(c(-30, -1)),
     useInCohortWindow = TRUE
   )
-  
+
   expect_s3_class(settings, "costUtilSettings")
   expect_length(settings$timeWindows, 1)
   expect_true(settings$useInCohortWindow)
@@ -50,16 +50,16 @@ test_that("createCostUtilSettings catches invalid inputs", {
     createCostUtilSettings(timeWindows = NULL, useInCohortWindow = FALSE),
     "At least one windowing strategy must be used"
   )
-  
+
   # Invalid useInCohortWindow flag (not a boolean)
   expect_error(createCostUtilSettings(useInCohortWindow = "TRUE"))
-  
+
   # Invalid timeWindows (not a list of numerics)
   expect_error(createCostUtilSettings(timeWindows = "invalid"))
-  
+
   # Invalid boolean flags
   expect_error(createCostUtilSettings(calculateTotalCost = "TRUE"))
-  
+
   # Invalid CPI data frame
   expect_error(createCostUtilSettings(cpiData = data.frame(yr = 2020, val = 100)))
 })
@@ -71,18 +71,18 @@ test_that("createCostUtilSettings validates conceptIds parameter", {
   # Fails if not a numeric vector
   expect_error(createCostUtilSettings(conceptIds = "not a vector"))
   expect_error(createCostUtilSettings(conceptIds = data.frame(id = 123)))
-  
+
   # Fails if vector is not unique
   expect_error(
     createCostUtilSettings(conceptIds = c(123, 456, 123)),
     "Must have unique values"
   )
-  
+
   # Succeeds with a valid numeric vector
   settings <- createCostUtilSettings(conceptIds = c(123, 456))
   expect_s3_class(settings, "costUtilSettings")
   expect_equal(settings$conceptIds, c(123, 456))
-  
+
   # Succeeds with NULL
   settings_null <- createCostUtilSettings(conceptIds = NULL)
   expect_null(settings_null$conceptIds)

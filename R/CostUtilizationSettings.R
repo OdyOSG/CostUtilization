@@ -67,7 +67,7 @@ createCostUtilSettings <- function(analysisName = "Cost and Utilization Analysis
     errorMessages$push("At least one windowing strategy must be used. Set 'timeWindows' or set 'useInCohortWindow = TRUE'.")
   }
   checkmate::reportAssertions(collection = errorMessages)
-  
+
   structure(
     list(
       analysisName = analysisName,
@@ -100,4 +100,3 @@ getDefaultCpiTable <- function() {
   # Data as of early 2024.
   utils::read.csv(system.file("csv/cpi_data.csv", package = "CostUtilization"))
 }
-
