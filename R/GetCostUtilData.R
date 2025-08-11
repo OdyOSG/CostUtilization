@@ -22,10 +22,9 @@
 #' the analysis parameters.
 #'
 #' @details
-#' This function connects to the database, prepares the analysis settings, and runs the
-#' main SQL query (`GetCostAndUtilization.sql`) to extract person-level data. If aggregation
-#' is requested, it runs a second SQL query (`AggregateCovariates.sql`) to summarize the results.
-#' The final output is structured as a standard OHDSI `CovariateData` object.
+#' If your platform does not support local temp tables (e.g., Oracle), set
+#' `tempEmulationSchema` to a schema where temporary tables can be created and dropped.
+#' All `#temp` tables in the SQL will be emulated there.
 #'
 #' @param connection              An object of type `connection` as created using the
 #'                                `DatabaseConnector::connect()` function.
@@ -40,12 +39,13 @@
 #' @param cohortIds               A numeric vector of cohort definition IDs to be included in the analysis.
 #' @param costUtilSettings        An S3 object of type `costUtilSettings` created using the
 #'                                `createCostUtilSettings()` function.
-#' @param aggregated              A boolean flag indicating whether to return aggregated summary
-#'                                statistics (`TRUE`) or person-level data (`FALSE`).
+#' @param aggregated              Return aggregated summary statistics (`TRUE`) or person-level data (`FALSE`).
+#' @param tempEmulationSchema     Schema name used by SqlRender/DatabaseConnector to emulate `#temp` tables
+#'                                on platforms that don't support them. Default pulls from the global option
+#'                                `"sqlRenderTempEmulationSchema"` if set; otherwise `NULL`.
 #'
 #' @return
-#' An R object of class `CovariateData`, which is an `Andromeda` object containing the
-#' analysis results.
+#' An R object of class `CovariateData` (an `Andromeda` object) containing the analysis results.
 #'
 #' @export
 getCostUtilData <- function(connection = NULL,
@@ -55,20 +55,15 @@ getCostUtilData <- function(connection = NULL,
                             cohortTable,
                             cohortIds,
                             costUtilSettings,
-                            aggregated = FALSE) {
+                            aggregated = FALSE,
+                            tempEmulationSchema = getOption("sqlRenderTempEmulationSchema")) {
   errorMessages <- checkmate::makeAssertCollection()
-  checkmate::assert(
-    (is.null(connection) && !is.null(connectionDetails)) ||
-      (!is.null(connection) && is.null(connectionDetails)),
-    .var.name = "connection XOR connectionDetails",
-    add = errorMessages
-  )
   
-  if (!is.null(connection)) {
-    checkmate::assertClass(connection, "DBIConnection", add = errorMessages)
+  if (is.null(connectionDetails) && is.null(connection)) {
+    stop("Need to provide either connectionDetails or connection")
   }
-  if (!is.null(connectionDetails)) {
-    checkmate::assertClass(connectionDetails, "ConnectionDetails", add = errorMessages)
+  if (!is.null(connectionDetails) && !is.null(connection)) {
+    stop("Need to provide either connectionDetails or connection, not both")
   }
   
   if (!is.null(connectionDetails)) {
@@ -82,6 +77,7 @@ getCostUtilData <- function(connection = NULL,
   checkmate::assertIntegerish(cohortIds, min.len = 1, add = errorMessages)
   checkmate::assertClass(costUtilSettings, "costUtilSettings", add = errorMessages)
   checkmate::assertFlag(aggregated, add = errorMessages)
+  if (!is.null(tempEmulationSchema)) checkmate::assertString(tempEmulationSchema, add = errorMessages)
   checkmate::reportAssertions(collection = errorMessages)
   
   start <- Sys.time()
@@ -95,18 +91,17 @@ getCostUtilData <- function(connection = NULL,
   # Windows
   useFixedWindows <- !is.null(costUtilSettings$timeWindows) && length(costUtilSettings$timeWindows) > 0
   if (useFixedWindows) {
-    temporalWindows <- do.call(rbind, lapply(seq_along(costUtilSettings$timeWindows), function(i) {
-      dplyr::tibble(
-        window_id = i,
-        start_day = costUtilSettings$timeWindows[[i]][1],
-        end_day = costUtilSettings$timeWindows[[i]][2]
-      )
-    }))
-    DatabaseConnector::insertTable(connection,
-                                   tableName = temporalWindowsTable,
-                                   data = temporalWindows,
-                                   tempTable = TRUE,
-                                   camelCaseToSnakeCase = TRUE
+    temporalWindows <- purrr::map_dfr(seq_along(costUtilSettings$timeWindows), ~ dplyr::tibble(
+      window_id = .x,
+      start_day = costUtilSettings$timeWindows[[.x]][1],
+      end_day   = costUtilSettings$timeWindows[[.x]][2]
+    ))
+    DatabaseConnector::insertTable(
+      connection       = connection,
+      tableName        = temporalWindowsTable,
+      data             = temporalWindows,
+      tempTable        = TRUE,
+      tempEmulationSchema = tempEmulationSchema
     )
   }
   
@@ -122,11 +117,12 @@ getCostUtilData <- function(connection = NULL,
       stop("Target year for cost standardization not found in CPI table.")
     }
     cpiData$inflation_factor <- targetCpi / cpiData$cpi
-    DatabaseConnector::insertTable(connection,
-                                   tableName = cpiDataTable,
-                                   data = cpiData[, c("year", "inflation_factor")],
-                                   tempTable = TRUE,
-                                   camelCaseToSnakeCase = TRUE
+    DatabaseConnector::insertTable(
+      connection       = connection,
+      tableName        = cpiDataTable,
+      data             = cpiData[, c("year", "inflation_factor")],
+      tempTable        = TRUE,
+      tempEmulationSchema = tempEmulationSchema
     )
   }
   
@@ -134,39 +130,40 @@ getCostUtilData <- function(connection = NULL,
   useConceptSet <- !is.null(costUtilSettings$conceptIds) && length(costUtilSettings$conceptIds) > 0
   if (useConceptSet) {
     conceptSet <- dplyr::tibble(
-      concept_id = costUtilSettings$conceptIds,
+      concept_id   = costUtilSettings$conceptIds,
       concept_rank = seq_along(costUtilSettings$conceptIds)
     )
-    DatabaseConnector::insertTable(connection,
-                                   tableName = conceptSetTable,
-                                   data = conceptSet,
-                                   tempTable = TRUE,
-                                   camelCaseToSnakeCase = TRUE
+    DatabaseConnector::insertTable(
+      connection       = connection,
+      tableName        = conceptSetTable,
+      data             = conceptSet,
+      tempTable        = TRUE,
+      tempEmulationSchema = tempEmulationSchema
     )
   }
   
-  # Render/execute main SQL
   sql <- SqlRender::loadRenderTranslateSql(
-    sqlFilename = "GetCostAndUtilization.sql",
-    packageName = "CostUtilization",
-    dbms = connection@dbms,
-    cdm_database_schema = cdmDatabaseSchema,
+    sqlFilename          = "GetCostAndUtilization.sql",
+    packageName          = "CostUtilization",
+    dbms                 = 'postgresql', #connection@dbms,
+    cdm_database_schema  = cdmDatabaseSchema,
     cohort_database_schema = cohortDatabaseSchema,
-    cohort_table = cohortTable,
-    cohort_ids = cohortIds,
-    person_level_table = personLevelTable,
-    currency_concept_id = costUtilSettings$currencyConceptId,
+    cohort_table         = cohortTable,
+    cohort_ids           = cohortIds,
+    person_level_table   = personLevelTable,
+    currency_concept_id  = costUtilSettings$currencyConceptId,
     cost_type_concept_ids = costUtilSettings$costTypeConceptIds,
-    use_total_cost = costUtilSettings$calculateTotalCost,
-    use_domain_cost = !is.null(costUtilSettings$costDomains) && length(costUtilSettings$costDomains) > 0,
-    cost_domains = costUtilSettings$costDomains,
-    use_utilization = !is.null(costUtilSettings$utilizationDomains) && length(costUtilSettings$utilizationDomains) > 0,
-    utilization_domains = costUtilSettings$utilizationDomains,
-    use_length_of_stay = costUtilSettings$calculateLengthOfStay,
+    use_total_cost       = costUtilSettings$calculateTotalCost,
+    use_domain_cost      = !is.null(costUtilSettings$costDomains) && length(costUtilSettings$costDomains) > 0,
+    cost_domains         = costUtilSettings$costDomains,
+    use_utilization      = !is.null(costUtilSettings$utilizationDomains) && length(costUtilSettings$utilizationDomains) > 0,
+    utilization_domains  = costUtilSettings$utilizationDomains,
+    use_length_of_stay   = costUtilSettings$calculateLengthOfStay,
     use_cost_standardization = useCostStandardization,
-    use_fixed_windows = useFixedWindows,
+    use_fixed_windows    = useFixedWindows,
     use_in_cohort_window = costUtilSettings$useInCohortWindow,
-    use_concept_set = useConceptSet
+    use_concept_set      = useConceptSet,
+    tempEmulationSchema  = tempEmulationSchema
   )
   DatabaseConnector::executeSql(connection, sql)
   
@@ -182,52 +179,68 @@ getCostUtilData <- function(connection = NULL,
     sql <- SqlRender::loadRenderTranslateSql(
       sqlFilename = "AggregateCovariates.sql",
       packageName = "CostUtilization",
-      dbms = connection@dbms,
-      person_level_table = personLevelTable
+      dbms        = connection@dbms,
+      person_level_table = personLevelTable,
+      tempEmulationSchema = tempEmulationSchema
     )
     DatabaseConnector::querySqlToAndromeda(
       connection = connection,
-      sql = sql,
-      andromeda = covariateData,
+      sql        = sql,
+      andromeda  = covariateData,
       andromedaTableName = "covariatesContinuous",
       snakeCaseToCamelCase = TRUE
     )
   } else {
-    # Person-level results (now include cohort_definition_id)
+    # Person-level results (include cohort_definition_id)
     sql <- "SELECT row_id, cohort_definition_id, covariate_id, covariate_value FROM @person_level_table;"
     sql <- SqlRender::render(sql, person_level_table = personLevelTable)
-    sql <- SqlRender::translate(sql, targetDialect = connection@dbms)
+    sql <- SqlRender::translate(sql, targetDialect = connection@dbms, tempEmulationSchema = tempEmulationSchema)
     DatabaseConnector::querySqlToAndromeda(
       connection = connection,
-      sql = sql,
-      andromeda = covariateData,
+      sql        = sql,
+      andromeda  = covariateData,
       andromedaTableName = "covariates",
       snakeCaseToCamelCase = TRUE
     )
   }
   
-  # Clean up
+  # Clean up helper temp tables
   if (useFixedWindows) {
     sql <- "TRUNCATE TABLE @temporal_windows_table; DROP TABLE @temporal_windows_table;"
-    DatabaseConnector::renderTranslateExecuteSql(connection,
-                                                 sql,
-                                                 temporal_windows_table = temporalWindowsTable
+    DatabaseConnector::renderTranslateExecuteSql(
+      connection,
+      sql,
+      temporal_windows_table = temporalWindowsTable,
+      tempEmulationSchema = tempEmulationSchema
     )
   }
   if (useCostStandardization) {
     sql <- "TRUNCATE TABLE @cpi_data_table; DROP TABLE @cpi_data_table;"
-    DatabaseConnector::renderTranslateExecuteSql(connection,
-                                                 sql,
-                                                 cpi_data_table = cpiDataTable
+    DatabaseConnector::renderTranslateExecuteSql(
+      connection,
+      sql,
+      cpi_data_table = cpiDataTable,
+      tempEmulationSchema = tempEmulationSchema
     )
   }
   if (useConceptSet) {
     sql <- "TRUNCATE TABLE @concept_set_table; DROP TABLE @concept_set_table;"
-    DatabaseConnector::renderTranslateExecuteSql(connection,
-                                                 sql,
-                                                 concept_set_table = conceptSetTable
+    DatabaseConnector::renderTranslateExecuteSql(
+      connection,
+      sql,
+      concept_set_table = conceptSetTable,
+      tempEmulationSchema = tempEmulationSchema
     )
   }
+  
+  # Clean up the main person-level temp (important when emulating temps)
+  sql <- "TRUNCATE TABLE @person_level_table; DROP TABLE @person_level_table;"
+  DatabaseConnector::renderTranslateExecuteSql(
+    connection,
+    sql,
+    person_level_table = personLevelTable,
+    tempEmulationSchema = tempEmulationSchema
+  )
   
   # Set metadata
   attr(covariateData, "metaData") <- list(
@@ -240,6 +253,7 @@ getCostUtilData <- function(connection = NULL,
   class(covariateData) <- "CovariateData"
   return(covariateData)
 }
+
 
 # Helper functions to create reference tables
 .createAnalysisRef <- function(settings) {
@@ -265,7 +279,7 @@ getCostUtilData <- function(connection = NULL,
   if (settings$calculateLengthOfStay) {
     analysisId <- c(analysisId, 4)
     analysisName <- c(analysisName, "Length of Stay")
-    domainId <- c(domainId, "Observation")
+    domainId <- c(domainId, "Visit")
   }
   if (!is.null(settings$conceptIds) && length(settings$conceptIds) > 0) {
     analysisId <- c(analysisId, 5)
@@ -326,11 +340,9 @@ getCostUtilData <- function(connection = NULL,
   }
   if (!is.null(settings$utilizationDomains)) {
     util_df <- dplyr::tibble(
-      domainId = 1:4,
-      domainName = c("Drug", "Procedure", "Visit", "Device")
+      domainId = seq_along(settings$utilizationDomains),
+      domainName = settings$utilizationDomains
     )
-    util_df <- util_df[util_df$domainName %in% settings$utilizationDomains, ]
-
     df <- tidyr::crossing(window_df, util_df)
     df$covariateId <- 30000 + (df$windowId * 100) + df$domainId
     df$covariateName <- paste0("Count of ", df$domainName, " Events", df$windowName)
@@ -360,6 +372,6 @@ getCostUtilData <- function(connection = NULL,
     covariateRef[[length(covariateRef) + 1]] <- df
   }
 
-  dplyr::bind_rows(covariateRef) %>%
+  dplyr::bind_rows(covariateRef) |>
     dplyr::select(.data$covariateId, .data$covariateName, .data$analysisId, .data$conceptId)
 }
