@@ -6,70 +6,54 @@
 ------------------------------------------------------------
 -- 0) Safety: drop existing temps
 ------------------------------------------------------------
-IF OBJECT_ID('tempdb..#cost_events') IS NOT NULL DROP TABLE #cost_events;
 IF OBJECT_ID('tempdb..#cohort_cost_events') IS NOT NULL DROP TABLE #cohort_cost_events;
 IF OBJECT_ID('tempdb..#windowed_events') IS NOT NULL DROP TABLE #windowed_events;
 
 ------------------------------------------------------------
--- 1) Build #cost_events (from long cost table)
-------------------------------------------------------------
-SELECT
-    c.person_id,
-    c.cost,
-    c.cost_id,
-    c.cost_domain_id,
-    c.cost_type_concept_id,
-    c.incurred_date,
-    c.cost_concept_id AS event_concept_id,
-
-    -- Inclusive LoS for specific visit types (Inpatient, ER & Inpatient)
-    CASE
-        WHEN c.cost_domain_id = 'Visit' AND vo.visit_concept_id IN (9201, 262)
-        THEN DATEDIFF(DAY, vo.visit_start_date, vo.visit_end_date) + 1
-        ELSE NULL
-    END AS length_of_stay
-
-    {@use_cost_standardization} ? {, YEAR(c.incurred_date) AS cost_year}
-
-INTO #cost_events
-FROM @cdm_database_schema.cost c
--- All costs must be associated with a visit to be included
-INNER JOIN @cdm_database_schema.visit_occurrence vo
-  ON c.visit_occurrence_id = vo.visit_occurrence_id
-WHERE c.currency_concept_id = @currency_concept_id
-  AND c.cost IS NOT NULL
-  -- Enforce that the cost's incurred_date is within the visit's window
-  AND c.incurred_date >= vo.visit_start_date
-  AND c.incurred_date <= vo.visit_end_date
-  {@cost_type_concept_ids != ''} ? {AND c.cost_type_concept_id IN (@cost_type_concept_ids)};
-
-------------------------------------------------------------
--- 2) Link to cohort (per person, per cohort)
+-- 1) Build #cohort_cost_events, deriving domain from the concept table
 ------------------------------------------------------------
 SELECT
     ch.subject_id,
     ch.cohort_definition_id,
     ch.cohort_start_date,
     ch.cohort_end_date,
+    c.cost,
+    c.cost_id,
+    con.domain_id AS cost_domain_id,
+    c.cost_type_concept_id,
+    c.incurred_date,
+    c.cost_concept_id AS event_concept_id,
+    vo.visit_occurrence_id,
+    CASE
+        WHEN vo.visit_concept_id IN (9201, 262) -- Inpatient, ER & Inpatient
+        THEN vo.visit_start_date ELSE NULL
+    END AS inpatient_start,
+    CASE
+        WHEN vo.visit_concept_id IN (9201, 262)
+        THEN vo.visit_end_date ELSE NULL
+    END AS inpatient_end
+    {@use_cost_standardization} ? {, YEAR(c.incurred_date) AS cost_year}
 
-    ce.person_id,
-    ce.cost,
-    ce.cost_id,
-    ce.cost_domain_id,
-    ce.cost_type_concept_id,
-    ce.incurred_date,
-    ce.event_concept_id,
-    ce.length_of_stay
-    {@use_cost_standardization} ? {, ce.cost_year}
 INTO #cohort_cost_events
 FROM @cohort_database_schema.@cohort_table ch
-INNER JOIN #cost_events ce
-        ON ch.subject_id = ce.person_id
-WHERE ch.cohort_definition_id IN (@cohort_ids);
+INNER JOIN @cdm_database_schema.cost c
+  ON ch.subject_id = c.person_id
+-- All costs must be associated with a visit to be included
+INNER JOIN @cdm_database_schema.visit_occurrence vo
+  ON c.visit_occurrence_id = vo.visit_occurrence_id
+-- Join to concept table to get the domain of the cost event
+INNER JOIN @cdm_database_schema.concept con
+  ON c.cost_concept_id = con.concept_id
+WHERE ch.cohort_definition_id IN (@cohort_ids)
+  AND c.currency_concept_id = @currency_concept_id
+  AND c.cost IS NOT NULL
+  -- Enforce that the cost's incurred_date is within the visit's window
+  AND c.incurred_date >= vo.visit_start_date
+  AND c.incurred_date <= vo.visit_end_date
+  {@cost_type_concept_ids != ''} ? {AND c.cost_type_concept_id IN (@cost_type_concept_ids)};
 
 -----------------------------------------------------------
--- 3) Apply temporal windows (fixed windows and/or in-cohort window)
---    Pre-create #windowed_events so we can INSERT from multiple branches.
+-- 2) Apply temporal windows (fixed windows and/or in-cohort window)
 ------------------------------------------------------------
 CREATE TABLE #windowed_events (
   subject_id BIGINT NOT NULL,
@@ -77,16 +61,19 @@ CREATE TABLE #windowed_events (
   window_id INT NOT NULL,
   cost DECIMAL(38,8) NULL,
   cost_domain_id VARCHAR(50) NULL,
-  length_of_stay INT NULL,
   cost_id BIGINT NULL,
-  event_concept_id BIGINT NULL
+  event_concept_id BIGINT NULL,
+  visit_occurrence_id BIGINT NULL,
+  inpatient_start DATE NULL,
+  inpatient_end DATE NULL
   {@use_cost_standardization} ? {, inflation_factor DECIMAL(18,8) NULL}
 );
 
 {@use_fixed_windows} ? {
 INSERT INTO #windowed_events (
   subject_id, cohort_definition_id, window_id,
-  cost, cost_domain_id, length_of_stay, cost_id, event_concept_id
+  cost, cost_domain_id, cost_id, event_concept_id,
+  visit_occurrence_id, inpatient_start, inpatient_end
   {@use_cost_standardization} ? {, inflation_factor}
 )
 SELECT
@@ -95,9 +82,11 @@ SELECT
   tw.window_id,
   cce.cost,
   cce.cost_domain_id,
-  cce.length_of_stay,
   cce.cost_id,
-  cce.event_concept_id
+  cce.event_concept_id,
+  cce.visit_occurrence_id,
+  cce.inpatient_start,
+  cce.inpatient_end
   {@use_cost_standardization} ? {, cpi.inflation_factor}
 FROM #cohort_cost_events cce
 INNER JOIN #temporal_windows tw
@@ -111,7 +100,8 @@ LEFT JOIN #cpi_data cpi
 {@use_in_cohort_window} ? {
 INSERT INTO #windowed_events (
   subject_id, cohort_definition_id, window_id,
-  cost, cost_domain_id, length_of_stay, cost_id, event_concept_id
+  cost, cost_domain_id, cost_id, event_concept_id,
+  visit_occurrence_id, inpatient_start, inpatient_end
   {@use_cost_standardization} ? {, inflation_factor}
 )
 SELECT
@@ -120,9 +110,11 @@ SELECT
   999 AS window_id,
   cce.cost,
   cce.cost_domain_id,
-  cce.length_of_stay,
   cce.cost_id,
-  cce.event_concept_id
+  cce.event_concept_id,
+  cce.visit_occurrence_id,
+  cce.inpatient_start,
+  cce.inpatient_end
   {@use_cost_standardization} ? {, cpi.inflation_factor}
 FROM #cohort_cost_events cce
 {@use_cost_standardization} ? {
@@ -132,10 +124,8 @@ WHERE cce.incurred_date >= cce.cohort_start_date
   AND cce.incurred_date <= cce.cohort_end_date
 ;}
 
-CREATE CLUSTERED INDEX IX_we_subject_window ON #windowed_events(subject_id, cohort_definition_id, window_id);
-
 ------------------------------------------------------------
--- 4) Roll up to person-level covariates
+-- 3) Roll up to person-level covariates
 ------------------------------------------------------------
 SELECT
   subject_id AS row_id,
@@ -198,13 +188,23 @@ FROM (
   -- Analysis 4: Length of Stay
   {@use_length_of_stay} ? {
   {@use_total_cost | @use_domain_cost | @use_utilization} ? {UNION ALL}
+  -- This subquery calculates LoS for each unique inpatient visit within each window
+  -- to prevent double-counting if a visit has multiple cost entries.
   SELECT
+    subject_id,
+    cohort_definition_id,
+    covariate_id,
+    los AS value
+  FROM (
+    SELECT DISTINCT
       we.subject_id,
       we.cohort_definition_id,
       40000 + we.window_id AS covariate_id,
-      we.length_of_stay AS value
-  FROM #windowed_events we
-  WHERE we.length_of_stay IS NOT NULL
+      we.visit_occurrence_id,
+      DATEDIFF(DAY, we.inpatient_start, we.inpatient_end) + 1 AS los
+    FROM #windowed_events we
+    WHERE we.inpatient_start IS NOT NULL
+  ) AS distinct_los
   }
 
   -- Analysis 5: Cost by Concept Set
@@ -224,4 +224,4 @@ GROUP BY subject_id, cohort_definition_id, covariate_id;
 
 
 -- Optional cleanup (left to caller / R wrapper when using temp emulation)
-DROP TABLE IF EXISTS #windowed_events, #cohort_cost_events, #cost_events;
+DROP TABLE IF EXISTS #windowed_events, #cohort_cost_events;
