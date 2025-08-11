@@ -326,8 +326,8 @@ getCostUtilData <- function(connection = NULL,
   }
   if (!is.null(settings$costDomains)) {
     domain_df <- dplyr::tibble(
-      domainId = 1:6,
-      domainName = c("Drug", "Procedure", "Visit", "Device", "Measurement", "Observation")
+      domainId = 1:7,
+      domainName = c("Drug", "Procedure", "Visit", "Device", "Measurement", "Observation", "Condition")
     )
     domain_df <- domain_df[domain_df$domainName %in% settings$costDomains, ]
 

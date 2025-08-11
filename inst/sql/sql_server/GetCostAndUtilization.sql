@@ -158,6 +158,7 @@ FROM (
           WHEN 'Device' THEN 4
           WHEN 'Measurement' THEN 5
           WHEN 'Observation' THEN 6
+          WHEN 'Condition' THEN 7
           ELSE 0
         END AS covariate_id,
       we.cost {@use_cost_standardization} ? {* ISNULL(we.inflation_factor, 1)} AS value
@@ -173,10 +174,14 @@ FROM (
       we.cohort_definition_id,
       30000 + (we.window_id * 100) +
         CASE we.cost_domain_id
+        CASE we.cost_domain_id
           WHEN 'Drug' THEN 1
           WHEN 'Procedure' THEN 2
           WHEN 'Visit' THEN 3
           WHEN 'Device' THEN 4
+          WHEN 'Measurement' THEN 5
+          WHEN 'Observation' THEN 6
+          WHEN 'Condition' THEN 7
           ELSE 0
         END AS covariate_id,
       1 AS value
