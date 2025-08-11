@@ -1,5 +1,6 @@
 /*
   Person-level cost & utilization covariates with #temp tables.
+  This query is designed for a CDM v5.5-like long COST table.
 */
 
 ------------------------------------------------------------
@@ -10,28 +11,18 @@ IF OBJECT_ID('tempdb..#cohort_cost_events') IS NOT NULL DROP TABLE #cohort_cost_
 IF OBJECT_ID('tempdb..#windowed_events') IS NOT NULL DROP TABLE #windowed_events;
 
 ------------------------------------------------------------
--- 1) Build #cost_events (visit-centric)
+-- 1) Build #cost_events (from long cost table)
 ------------------------------------------------------------
 SELECT
     c.person_id,
     c.cost,
+    c.cost_id,
     c.cost_domain_id,
     c.cost_type_concept_id,
     c.incurred_date,
-    c.cost_event_id,
+    c.cost_concept_id AS event_concept_id,
 
-    -- Event concept id for concept-set joins
-    CASE
-        WHEN c.cost_domain_id = 'Drug'        THEN de.drug_concept_id
-        WHEN c.cost_domain_id = 'Procedure'   THEN po.procedure_concept_id
-        WHEN c.cost_domain_id = 'Visit'       THEN vo.visit_concept_id
-        WHEN c.cost_domain_id = 'Device'      THEN dx.device_concept_id
-        WHEN c.cost_domain_id = 'Measurement' THEN m.measurement_concept_id
-        WHEN c.cost_domain_id = 'Observation' THEN o.observation_concept_id
-        ELSE 0
-    END AS event_concept_id,
-
-    -- Inclusive LoS for specific visit types
+    -- Inclusive LoS for specific visit types (Inpatient, ER & Inpatient)
     CASE
         WHEN c.cost_domain_id = 'Visit' AND vo.visit_concept_id IN (9201, 262)
         THEN DATEDIFF(DAY, vo.visit_start_date, vo.visit_end_date) + 1
@@ -42,30 +33,14 @@ SELECT
 
 INTO #cost_events
 FROM @cdm_database_schema.cost c
-
-LEFT JOIN @cdm_database_schema.drug_exposure        de ON c.cost_event_id = de.drug_exposure_id        AND c.cost_domain_id = 'Drug'
-LEFT JOIN @cdm_database_schema.procedure_occurrence po ON c.cost_event_id = po.procedure_occurrence_id  AND c.cost_domain_id = 'Procedure'
-LEFT JOIN @cdm_database_schema.visit_occurrence     vo ON c.cost_event_id = vo.visit_occurrence_id      AND c.cost_domain_id = 'Visit'
-LEFT JOIN @cdm_database_schema.device_exposure      dx ON c.cost_event_id = dx.device_exposure_id       AND c.cost_domain_id = 'Device'
-LEFT JOIN @cdm_database_schema.measurement          m  ON c.cost_event_id = m.measurement_id            AND c.cost_domain_id = 'Measurement'
-LEFT JOIN @cdm_database_schema.observation          o  ON c.cost_event_id = o.observation_id            AND c.cost_domain_id = 'Observation'
-
--- Require a parent visit and enforce incurred_date within visit window
-INNER JOIN @cdm_database_schema.visit_occurrence v
-        ON v.visit_occurrence_id =
-           CASE
-             WHEN c.cost_domain_id = 'Visit' THEN vo.visit_occurrence_id
-             ELSE COALESCE(de.visit_occurrence_id,
-                           po.visit_occurrence_id,
-                           dx.visit_occurrence_id,
-                           m.visit_occurrence_id,
-                           o.visit_occurrence_id)
-           END
-       AND c.incurred_date >= v.visit_start_date
-       AND c.incurred_date <= v.visit_end_date
-
+-- All costs must be associated with a visit to be included
+INNER JOIN @cdm_database_schema.visit_occurrence vo
+  ON c.visit_occurrence_id = vo.visit_occurrence_id
 WHERE c.currency_concept_id = @currency_concept_id
   AND c.cost IS NOT NULL
+  -- Enforce that the cost's incurred_date is within the visit's window
+  AND c.incurred_date >= vo.visit_start_date
+  AND c.incurred_date <= vo.visit_end_date
   {@cost_type_concept_ids != ''} ? {AND c.cost_type_concept_id IN (@cost_type_concept_ids)};
 
 ------------------------------------------------------------
@@ -79,10 +54,10 @@ SELECT
 
     ce.person_id,
     ce.cost,
+    ce.cost_id,
     ce.cost_domain_id,
     ce.cost_type_concept_id,
     ce.incurred_date,
-    ce.cost_event_id,
     ce.event_concept_id,
     ce.length_of_stay
     {@use_cost_standardization} ? {, ce.cost_year}
@@ -103,7 +78,7 @@ CREATE TABLE #windowed_events (
   cost DECIMAL(38,8) NULL,
   cost_domain_id VARCHAR(50) NULL,
   length_of_stay INT NULL,
-  cost_event_id BIGINT NULL,
+  cost_id BIGINT NULL,
   event_concept_id BIGINT NULL
   {@use_cost_standardization} ? {, inflation_factor DECIMAL(18,8) NULL}
 );
@@ -111,7 +86,7 @@ CREATE TABLE #windowed_events (
 {@use_fixed_windows} ? {
 INSERT INTO #windowed_events (
   subject_id, cohort_definition_id, window_id,
-  cost, cost_domain_id, length_of_stay, cost_event_id, event_concept_id
+  cost, cost_domain_id, length_of_stay, cost_id, event_concept_id
   {@use_cost_standardization} ? {, inflation_factor}
 )
 SELECT
@@ -121,7 +96,7 @@ SELECT
   cce.cost,
   cce.cost_domain_id,
   cce.length_of_stay,
-  cce.cost_event_id,
+  cce.cost_id,
   cce.event_concept_id
   {@use_cost_standardization} ? {, cpi.inflation_factor}
 FROM #cohort_cost_events cce
@@ -136,7 +111,7 @@ LEFT JOIN #cpi_data cpi
 {@use_in_cohort_window} ? {
 INSERT INTO #windowed_events (
   subject_id, cohort_definition_id, window_id,
-  cost, cost_domain_id, length_of_stay, cost_event_id, event_concept_id
+  cost, cost_domain_id, length_of_stay, cost_id, event_concept_id
   {@use_cost_standardization} ? {, inflation_factor}
 )
 SELECT
@@ -146,7 +121,7 @@ SELECT
   cce.cost,
   cce.cost_domain_id,
   cce.length_of_stay,
-  cce.cost_event_id,
+  cce.cost_id,
   cce.event_concept_id
   {@use_cost_standardization} ? {, cpi.inflation_factor}
 FROM #cohort_cost_events cce
@@ -217,7 +192,7 @@ FROM (
       1 AS value
   FROM #windowed_events we
   WHERE we.cost_domain_id IN (@utilization_domains)
-  GROUP BY we.subject_id, we.cohort_definition_id, we.window_id, we.cost_domain_id, we.cost_event_id
+  GROUP BY we.subject_id, we.cohort_definition_id, we.window_id, we.cost_domain_id, we.cost_id
   }
 
   -- Analysis 4: Length of Stay
