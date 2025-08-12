@@ -88,6 +88,8 @@ getCostUtilData <- function(connection = NULL,
   cpiDataTable <- "#cpi_data"
   conceptSetTable <- "#concept_set_codes"
   
+  
+  
   # Windows
   useFixedWindows <- !is.null(costUtilSettings$timeWindows) && length(costUtilSettings$timeWindows) > 0
   if (useFixedWindows) {

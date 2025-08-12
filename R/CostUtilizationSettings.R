@@ -40,12 +40,15 @@ createCostUtilSettings <- function(analysisName = "Cost and Utilization Analysis
                                    useInCohortWindow = FALSE,
                                    costDomains = c("Drug", "Procedure", "Visit"),
                                    utilizationDomains = c("Visit", "Drug", "Procedure"),
-                                   conceptIds = NULL,
                                    calculateTotalCost = TRUE,
                                    calculateLengthOfStay = TRUE,
+                                   calculatePerPatientDaysCost = c(),
                                    costTypeConceptIds = NULL,
                                    currencyConceptId = 44818668,
                                    costStandardizationYear = NULL,
+                                   includedConceptIds = c(),
+                                   addDescendantsToInclude = FALSE,
+                                   excludedConceptIds = c(),
                                    cpiData = NULL) {
   errorMessages <- checkmate::makeAssertCollection()
   checkmate::assertString(analysisName, add = errorMessages)
