@@ -158,18 +158,14 @@ buildEventUnionSpec <- function(settings, relevantDomains = NULL) {
         FROM @cdm_database_schema.{..2} t
         INNER JOIN #final_codesets cs ON t.{..6} = cs.concept_id
         ")) |> paste(collapse = "\nUNION ALL\n")
-    
-
+    return(allUnions)
     # Case 2: A list of cost domains is provided directly in settings.
   } else if (!is.null(settings$costDomains)) {
     fieldConceptIds <- metaData |>
       dplyr::filter(tolower(.data$domain_id) %in% tolower(settings$costDomains)) |> 
       dplyr::pull(.data$domain_concept_id)
-  } 
-
-  if (is.null(tables2Query) || length(fieldConceptIds) == 0) {
-    rlang::abort("Could not identify any relevant domain tables to query based on the provided settings.", call. = FALSE)
-  }
+    return(fieldConceptIds)
+  } else return(NULL)
 
 }
 
@@ -212,20 +208,20 @@ buildAnalysisSql <- function(settings, relevantDomains = NULL) {
 
 conceptSetRoute <- function(costUtilizationSettings, connection, cdmDatabaseSchema) {
   cli::cli_alert_info("Concept set provided. Pre-querying for relevant domains to optimize SQL.")
-  finalCodeset <- SqlRender::translate("#final_codesets", connection@dbms)
-  tempSql <- purrr::compose(.buildConceptSetSql, \(x) gsub("#final_codesets", finalCodeset, x),
+  finalCodesetTable <- SqlRender::translate("#final_codesets", connection@dbms)
+  tempSql <- purrr::compose(.buildConceptSetSql, \(x) gsub("#final_codesets", finalCodesetTable, x),
                             .dir = "forward"
   )(costUtilizationSettings$conceptSetDefinition)
   relevantDomains <- DatabaseConnector::renderTranslateQuerySql(
     connection,
-    sql = paste0(tempSql, glue::glue("select distinct domain_id from {finalCodeset}")),
+    sql = paste0(tempSql, glue::glue("select distinct domain_id from {finalCodesetTable}")),
     cdm_database_schema = cdmDatabaseSchema
   ) |> dplyr::pull(.data$DOMAIN_ID)
   cli::cli_alert_success("Found relevant domains: {paste(relevantDomains, collapse = ', ')}")
   prefixSql <- buildAnalysisSql(costUtilizationSettings, relevantDomains = relevantDomains)
   return(
     sql = prefixSql,
-    finalCodeset = finalCodeset
+    finalCodeset = finalCodesetTable
   )
 }
 

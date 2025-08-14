@@ -84,7 +84,7 @@ createCostUtilizationSettings <- function(
   checkmate::reportAssertions(collection = errorMessages)
 
   settings_env <- as.list(environment())
-  clean_settings <- .normalizeSettings(settings_env)
+  clean_settings <- .normalizeSettings(settings_env$settings)
 
   conceptSetDefinition <- tryCatch(
     {

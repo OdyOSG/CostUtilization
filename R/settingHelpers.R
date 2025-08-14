@@ -124,3 +124,20 @@ cdmMetadata <- function() {
     call. = FALSE
   )
 }
+
+
+
+generateWindowTibble <- function(settings) {
+  fixedWindows <- if (!is.null(settings$timeWindows)) {
+    purrr::map_dfr(settings$timeWindows, ~ dplyr::tibble(start = .x[[1]], end = .x[[2]]))
+  } else {
+    dplyr::tibble(start = integer(), end = integer())
+  }
+  if (settings$useInCohortWindow) {
+    fixedWindows <- dplyr::bind_rows(fixedWindows, dplyr::tibble(start = NA_integer_, end = NA_integer_))
+  }
+  widn <- fixedWindows |> dplyr::mutate(window_id = dplyr::row_number())
+  
+  return(widn)
+}
+
