@@ -1,8 +1,6 @@
 #' Inject Synthetic Payer Plan and Wide-Format Cost Data into an OMOP CDM (Eunomia) Instance
 #' @return Invisibly returns `TRUE` upon successful database insertion. Called for its side effect.
 injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
-
-  
   message("Generating synthetic payer_plan_period and wide-format cost data.")
 
   message("- Step 1: Creating realistic payer_plan_period table.")

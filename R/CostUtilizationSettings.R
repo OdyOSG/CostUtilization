@@ -18,8 +18,8 @@
 #' @param useInCohortWindow       A logical flag. If TRUE, the analysis will include the
 #'                                time a person is inside the cohort (from `cohort_start_date` to
 #'                                `cohort_end_date`) as a distinct analysis window.
-#' @param costDomains             A character vector of cost domains to include ('Condition', 'Drug'). 
-#'                                This argument is ignored if `useConceptSet` is provided. (case independent)                               
+#' @param costDomains             A character vector of cost domains to include ('Condition', 'Drug').
+#'                                This argument is ignored if `useConceptSet` is provided. (case independent)
 #' @param useConceptSet           An optional concept set to restrict the events used for cost and
 #'                                utilization calculation. This provides fine-grained control over
 #'                                which events contribute to the totals. The input can be a numeric
@@ -53,14 +53,13 @@ createCostUtilizationSettings <- function(
     useConceptSet = NULL,
     costTypeConceptIds = NULL,
     currencyConceptId = 44818668, # US dollar
-    aggregate = c('pppm', 'pppy'),
+    aggregate = c("pppm", "pppy"),
     standardizationData = NULL) {
-  
   # --- 1. Initial Argument Validation ---
   errorMessages <- checkmate::makeAssertCollection()
   checkmate::assertList(timeWindows, types = "numeric", null.ok = TRUE, add = errorMessages)
   if (!is.null(timeWindows)) {
-    purrr::walk(timeWindows, ~checkmate::assertNumeric(.x, len = 2, add = errorMessages))
+    purrr::walk(timeWindows, ~ checkmate::assertNumeric(.x, len = 2, add = errorMessages))
   }
   checkmate::assertFlag(useInCohortWindow, add = errorMessages)
   if (is.null(timeWindows) && !useInCohortWindow) {
@@ -80,19 +79,22 @@ createCostUtilizationSettings <- function(
   checkmate::assertIntegerish(costTypeConceptIds, null.ok = TRUE, add = errorMessages)
   checkmate::assertInt(currencyConceptId, add = errorMessages)
   checkmate::assertCharacter(aggregate, min.len = 1, add = errorMessages)
-  checkmate::assertSubset(aggregate, choices = c('pppd', 'pppm', 'pppq', 'pppy'), add = errorMessages)
+  checkmate::assertSubset(aggregate, choices = c("pppd", "pppm", "pppq", "pppy"), add = errorMessages)
   checkmate::assertDataFrame(standardizationData, null.ok = TRUE, add = errorMessages)
   checkmate::reportAssertions(collection = errorMessages)
-  
+
   settings_env <- as.list(environment())
   clean_settings <- .normalizeSettings(settings_env)
-  
-  conceptSetDefinition <- tryCatch({
-    .parseConceptSet(clean_settings$useConceptSet)
-  }, error = function(e) {
-    stop(e$message, call. = FALSE)
-  })
-  
+
+  conceptSetDefinition <- tryCatch(
+    {
+      .parseConceptSet(clean_settings$useConceptSet)
+    },
+    error = function(e) {
+      stop(e$message, call. = FALSE)
+    }
+  )
+
   structure(
     list(
       timeWindows = clean_settings$timeWindows,
@@ -119,7 +121,7 @@ createCostUtilizationSettings <- function(
 #' @export
 print.costUtilizationSettings <- function(x, ...) {
   cli::cli_h1("Cost & Utilization Analysis Settings")
-  
+
   # --- Windowing Strategy ---
   cli::cli_h2("Windowing Strategy")
   if (!is.null(x$timeWindows) && length(x$timeWindows) > 0) {
@@ -128,11 +130,11 @@ print.costUtilizationSettings <- function(x, ...) {
   }
   cli::cli_alert(paste("Analyze time within cohort period (start to end date):", cli::style_bold(x$useInCohortWindow)))
   cli::cli_text() # Add a blank line
-  
+
   # --- Event & Cost Parameters ---
   cli::cli_h2("Event & Cost Parameters")
   cli::cli_text("The primary event filter is determined by the following (in order of precedence):")
-  
+
   # This logic now reflects the precedence rule. It shows what is *actually* being used.
   if (!is.null(x$conceptSetDefinition)) {
     cli::cli_rule("1. By Custom Concept Set")
@@ -152,11 +154,11 @@ print.costUtilizationSettings <- function(x, ...) {
   cli::cli_li(items = c("Cost Type Concept IDs: {cli::style_bold(cost_types_str)}"))
   cli::cli_li(items = c("Currency Concept ID: {cli::style_bold(x$currencyConceptId)}"))
   cli::cli_text()
-  
+
   # --- Aggregation & Standardization ---
   cli::cli_h2("Aggregation & Standardization")
   cli::cli_li(items = c("Aggregation Intervals: {cli::style_bold(toupper(paste(x$aggregate, collapse = ', ')))}"))
-  
+
   if (!is.null(x$standardizationData)) {
     cli::cli_alert_success("Cost Standardization is ENABLED")
     cli::cli_li(items = c("Standardization Data: Provided ({nrow(x$standardizationData)} rows)"))

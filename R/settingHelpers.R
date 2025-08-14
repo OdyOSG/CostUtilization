@@ -77,7 +77,7 @@ cdmMetadata <- function() {
   if (is.null(conceptSet)) {
     return(NULL)
   }
-  
+
   # Case 1: Input is a Capr S4 ConceptSet object.
   # This check must come before is.list() because Capr objects are also lists.
   if (inherits(conceptSet, "ConceptSet")) {
@@ -89,7 +89,7 @@ cdmMetadata <- function() {
       )
     )
   }
-  
+
   # Case 2: Input is a simple numeric vector of concept IDs.
   if (checkmate::test_integerish(conceptSet)) {
     # Defaulting includeDescendants to TRUE is the most common and expected
@@ -102,11 +102,11 @@ cdmMetadata <- function() {
       )
     )
   }
-  
+
   # Case 3: Input is a list (from JSON, representing a Circe expression).
   if (checkmate::test_list(conceptSet)) {
     # Detect if it's a full concept set definition or just the items list
-    items <- purrr::pluck(conceptSet, 'items')
+    items <- purrr::pluck(conceptSet, "items")
     return(
       purrr::map_dfr(items, ~ dplyr::tibble(
         conceptId = as.integer(.x$concept$CONCEPT_ID),
@@ -115,7 +115,7 @@ cdmMetadata <- function() {
       ))
     )
   }
-  
+
   # If none of the above, the format is not recognized.
   stop(
     "The 'useConceptSet' argument is not in a recognized format.\n",

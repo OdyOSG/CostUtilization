@@ -18,13 +18,13 @@
   if (is.null(conceptSetDefinition) || nrow(conceptSetDefinition) == 0) {
     return("")
   }
-  
+
   # --- Internal SQL Snippet Helpers ---
   # These now select both concept_id and domain_id.
   .sql_query_concepts <- function(ids) {
     glue::glue("SELECT concept_id, domain_id FROM @cdm_database_schema.CONCEPT WHERE concept_id IN ({paste(ids, collapse = ',')})")
   }
-  
+
   .sql_query_descendants <- function(ids) {
     # Must join back to CONCEPT to get the domain_id for the descendants
     glue::glue("
@@ -33,57 +33,69 @@
     JOIN @cdm_database_schema.CONCEPT_ANCESTOR ca ON c.concept_id = ca.descendant_concept_id
     WHERE ca.ancestor_concept_id IN ({paste(ids, collapse = ',')})")
   }
-  
+
   # --- Internal Query Builder ---
   # This helper builds a query part that returns both concept_id and domain_id
   .build_part_query <- function(df) {
-    if (nrow(df) == 0) return(NULL)
-    
+    if (nrow(df) == 0) {
+      return(NULL)
+    }
+
     queries <- list()
-    direct_ids <- df |> dplyr::filter(!.data$includeDescendants) |> dplyr::pull(.data$conceptId)
+    direct_ids <- df |>
+      dplyr::filter(!.data$includeDescendants) |>
+      dplyr::pull(.data$conceptId)
     if (length(direct_ids) > 0) {
       queries$direct <- .sql_query_concepts(direct_ids)
     }
-    
-    desc_ids <- df |> dplyr::filter(.data$includeDescendants) |> dplyr::pull(.data$conceptId)
+
+    desc_ids <- df |>
+      dplyr::filter(.data$includeDescendants) |>
+      dplyr::pull(.data$conceptId)
     if (length(desc_ids) > 0) {
       queries$descendants <- .sql_query_descendants(desc_ids)
     }
-    
+
     # Return NULL if no queries were generated to avoid empty strings
-    if (length(queries) == 0) return(NULL)
+    if (length(queries) == 0) {
+      return(NULL)
+    }
     paste(queries, collapse = "\nUNION\n")
   }
-  
-  
+
+
   # --- Main Logic ---
-  
+
   # 1. Build the full INCLUDE query
   include_df <- conceptSetDefinition |> dplyr::filter(!.data$isExcluded)
   include_queries <- list()
-  
+
   base_include_query <- .build_part_query(include_df)
   if (!is.null(base_include_query)) {
     include_queries$base <- base_include_query
   }
 
   full_include_query <- paste(include_queries, collapse = "\nUNION\n")
-  
-  
+
+
   # 2. Build the EXCLUDE query (only need concept_id for exclusion)
   .build_exclude_id_query <- function(df) {
-    if (nrow(df) == 0) return(NULL)
+    if (nrow(df) == 0) {
+      return(NULL)
+    }
     # For exclusion, we only need the concept IDs, not their domains
     query <- .build_part_query(df)
-    if (is.null(query)) return(NULL)
+    if (is.null(query)) {
+      return(NULL)
+    }
     glue::glue("SELECT concept_id FROM ({query}) exclusion_concepts")
   }
   exclude_df <- conceptSetDefinition |> dplyr::filter(.data$isExcluded)
   full_exclude_query <- .build_exclude_id_query(exclude_df)
-  
-  
+
+
   # 3. Assemble the final SQL statement
-  final_sql <- glue::glue(
+  finalSql <- glue::glue(
     "
     -- Create and populate the final codeset table with domain_id
     DROP TABLE IF EXISTS #final_codesets;
@@ -101,84 +113,85 @@
     ",
     .open = "{", .close = "}"
   )
-  
+
   # Append a WHERE NOT IN clause for exclusion, which is safer than a multi-column EXCEPT
   if (!is.null(full_exclude_query)) {
-    final_sql <- glue::glue(
-      "{final_sql}
+    finalSql <- glue::glue(
+      "{finalSql}
       WHERE included.concept_id NOT IN (
         -- Subtract all concept IDs to exclude
         {full_exclude_query}
       )"
     )
   }
-  final_sql <- paste0(final_sql, ";")
-  return(final_sql)
+  finalSql <- paste0(finalSql, ";")
+  return(finalSql)
 }
 
-#' Build the Event Union SQL Based on Settings
+#' Build the Event Union Spec Based on Settings
 #'
 #' @description
 #' This function acts as a router, dynamically constructing a SQL query that
 #' unions together event tables from different domains based on the user's
-#' settings. It handles filtering by domain or by a specific concept set.
-#'
-#' The output is a complete SQL statement that creates a temporary table
-#' named `#events_of_interest`. This table will contain the universe of events
-#' to which costs will be attached.
+#' settings.
 #'
 #' @param settings A `costUtilizationSettings` object.
 #'
-#' @return A character string containing a complete, executable SQL statement.
+#' @param relevantDomains An optional character vector of domain IDs. If provided
+#'                        (typically from a pre-query on a concept set)
+#'
+#' @return A character string containing a complete, executable SQL statement or vector of concept ids
 #'
 #' @noRd
-buildEventUnionSql <- function(settings) {
-  # Get the static mapping of OMOP domains and tables
+buildEventUnionSpec <- function(settings, relevantDomains = NULL) {
   metaData <- cdmMetadata()
+  tables2Query <- NULL
+  # --- Determine which tables to query ---
 
-  
-  if (!is.null(settings$conceptSetDefinition)) {
-    concept_set_sql <- .buildConceptSetSql(settings$conceptSetDefinition)
-
-    
-    
-    
-  } else if (!is.null(settings$costDomains)) {
-
-    tables2Query <- metaData |> dplyr::filter(tolower(.data$domain_id) %in% settings$costDomains)
-    
-    
-    
-  } else {
-    cli::cli_alert_success("-- No domain or concept set filter provided. Costs will be joined directly.")
-  }
-  
-  # Check if any domains are left to query
-  if (nrow(tables2Query) == 0) {
-    stop("The specified costDomains do not match any queryable domains in the metadata.", call. = FALSE)
-  }
-  union_statements <- purrr::pmap_chr(
-    tables2Query, ~ glue::glue(
-        "SELECT  t.person_id,
-          t.{..4} AS event_id,
-          t.{..5} AS event_date,
-          t.{..6} AS event_concept_id,
-          {..1} AS cost_event_field_concept_id
+  # Case 1: Relevant domains were pre-queried from a concept set.
+  if (!is.null(relevantDomains)) {
+    tables2Query <- metaData |>
+      dplyr::filter(tolower(.data$domain_id) %in% tolower(relevantDomains))
+    allUnions <- purrr::pmap_chr(tables2Query, ~ glue::glue("SELECT
+          t.person_id,t.{..4} AS event_id,
+          t.{..5} AS event_date, {..3}' AS domain_id
         FROM @cdm_database_schema.{..2} t
-        ",
-        .open = "{", .close = "}"
-      )
-  ) |> paste(collapse = "\nUNION ALL\n")
+        INNER JOIN #final_codesets cs ON t.{..6} = cs.concept_id
+        ")) |> paste(collapse = "\nUNION ALL\n")
+    
+
+    # Case 2: A list of cost domains is provided directly in settings.
+  } else if (!is.null(settings$costDomains)) {
+    fieldConceptIds <- metaData |>
+      dplyr::filter(tolower(.data$domain_id) %in% tolower(settings$costDomains)) |> 
+      dplyr::pull(.data$domain_concept_id)
+  } 
+
+  if (is.null(tables2Query) || length(fieldConceptIds) == 0) {
+    rlang::abort("Could not identify any relevant domain tables to query based on the provided settings.", call. = FALSE)
+  }
+
+}
 
 
-  final_sql <- glue::glue(
-    "
-    -- Step 1: Create concept set temp tables (if needed)
-    {concept_set_sql$createdSql}
+#' Build the Full Analysis SQL Script
+#'
+#' @description
+#' This function assembles the final, complete SQL script by combining the
+#' concept set resolution SQL (if any) with the event union SQL.
+#'
+#' @param settings A `costUtilizationSettings` object.
+#' @param relevantDomains An optional character vector of pre-queried domains.
+#'
+#' @return A single character string containing the complete SQL script.
+#' @noRd
+buildAnalysisSql <- function(settings, relevantDomains = NULL) {
+  # Step 2: Get the SQL for the UNION ALL block, now optimized
+  eventUnionSql <- buildEventUnionSpec(settings, relevantDomains)
 
-    -- Step 2: Union all relevant event tables into a single source
+  # Step 3: Assemble the final script
+  finalSql <- glue::glue("
     DROP TABLE IF EXISTS #events_of_interest;
-
     SELECT
       d.person_id,
       d.event_id,
@@ -186,11 +199,33 @@ buildEventUnionSql <- function(settings) {
       d.domain_id
     INTO #events_of_interest
     FROM (
-      {all_unions}
-    ) d
-    ",
-    .open = "{", .close = "}"
-  )
-  
-  return(final_sql)
+      {eventUnionSql}
+    ) d;
+
+    -- (The rest of the analysis SQL would follow here...)
+    ")
+
+  return(finalSql)
 }
+
+
+
+conceptSetRoute <- function(costUtilizationSettings, connection, cdmDatabaseSchema) {
+  cli::cli_alert_info("Concept set provided. Pre-querying for relevant domains to optimize SQL.")
+  finalCodeset <- SqlRender::translate("#final_codesets", connection@dbms)
+  tempSql <- purrr::compose(.buildConceptSetSql, \(x) gsub("#final_codesets", finalCodeset, x),
+                            .dir = "forward"
+  )(costUtilizationSettings$conceptSetDefinition)
+  relevantDomains <- DatabaseConnector::renderTranslateQuerySql(
+    connection,
+    sql = paste0(tempSql, glue::glue("select distinct domain_id from {finalCodeset}")),
+    cdm_database_schema = cdmDatabaseSchema
+  ) |> dplyr::pull(.data$DOMAIN_ID)
+  cli::cli_alert_success("Found relevant domains: {paste(relevantDomains, collapse = ', ')}")
+  prefixSql <- buildAnalysisSql(costUtilizationSettings, relevantDomains = relevantDomains)
+  return(
+    sql = prefixSql,
+    finalCodeset = finalCodeset
+  )
+}
+
