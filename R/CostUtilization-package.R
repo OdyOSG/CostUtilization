@@ -10,11 +10,6 @@
 #' @importFrom FeatureExtraction getDbCovariateData
 #' @importFrom SqlRender loadRenderTranslateSql render translate
 #' @importFrom checkmate assertFlag assertIntegerish assertChoice assert assertCharacter assertCount makeAssertCollection reportAssertions assertClass assertList assertString assertInt assertDataFrame assertNames
-#' @importFrom methods setClass
-#' @importFrom stats runif
-#' @importFrom tidyr pivot_longer crossing
-#' @importFrom utils read.csv write.csv globalVariables
-
 #' @import dplyr
 #' @import rlang
 

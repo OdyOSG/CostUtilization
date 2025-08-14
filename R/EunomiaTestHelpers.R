@@ -507,7 +507,7 @@ transformCostToCdmV5dot5 <- function(
     ROW_NUMBER() OVER (ORDER BY person_id, visit_occurrence_id,
                         CASE WHEN visit_detail_id IS NULL THEN 1 ELSE 0 END,
                         visit_detail_id) AS cost_id,
-    person_id, visit_occurrence_id, visit_detail_id, cost_domain_id, effective_date,
+    person_id, visit_occurrence_id, visit_detail_id, cost_domain_id, cost_event_id, effective_date,
     cost_event_field_concept_id, cost_type_concept_id, cost_concept_id, cost_source_value,
     currency_concept_id, cost_source_concept_id, cost, payer_plan_period_id,
     incurred_date, billed_date, paid_date

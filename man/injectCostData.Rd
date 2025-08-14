@@ -4,7 +4,7 @@
 \alias{injectCostData}
 \title{Inject Synthetic Payer Plan and Wide-Format Cost Data into an OMOP CDM (Eunomia) Instance}
 \usage{
-injectCostData(connection)
+injectCostData(connection, seed = 123, cdmDatabaseSchema = "main")
 }
 \value{
 Invisibly returns \code{TRUE} upon successful database insertion. Called for its side effect.

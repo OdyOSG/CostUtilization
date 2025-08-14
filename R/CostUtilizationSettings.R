@@ -1,105 +1,167 @@
-# Copyright 2025 OHDSI
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-#' Create Cost and Utilization Analysis Settings
+#' Create Cost and Utilization Settings
 #'
 #' @description
-#' Creates a settings object for defining a cost and healthcare utilization analysis.
+#' Creates a settings object for configuring a cost and healthcare resource utilization analysis.
+#' This object is used by the `computeCostUtilization` function.
 #'
-#' @param analysisName              A string name for the analysis.
-#' @param timeWindows               A list of numeric vectors defining fixed time windows relative to cohort start.
-#'                                  Can be `NULL` if `useInCohortWindow = TRUE`.
-#' @param useInCohortWindow         A boolean. If `TRUE`, a window from `cohort_start_date` to `cohort_end_date` is included.
-#' @param costDomains               A character vector of OMOP CDM domains to calculate costs for. If NULL, no cost-by-domain is computed.
-#' @param utilizationDomains        A character vector of OMOP CDM domains for which to count occurrences. If NULL, no utilization is computed.
-#' @param conceptIds                A numeric vector of concept IDs for which to calculate costs. If `NULL`, this analysis is skipped.
-#' @param calculateTotalCost        Boolean. If TRUE, calculates the total cost across all specified domains.
-#' @param calculateLengthOfStay     Boolean. If TRUE, calculates the length of stay for inpatient visits.
-#' @param costTypeConceptIds        A numeric vector of `cost_type_concept_id`s to include. If NULL, all are included.
-#' @param currencyConceptId         A single integer for the `currency_concept_id` to use. Defaults to 44818668 (USD).
-#' @param costStandardizationYear   Integer. The year to which all costs will be standardized. If NULL, no standardization is performed.
-#' @param cpiData                   A data frame with 'year' and 'cpi' columns for cost standardization.
+#' @section Precedence Rules:
+#' Some arguments take precedence over others if both are provided:
+#' \itemize{
+#'   \item \strong{`useConceptSet` > `costDomains`}: If `useConceptSet` is specified, it provides a
+#'   precise definition of the events to be included in the analysis. The broader `costDomains`
+#'   argument will be ignored, and a warning will be issued.
+#' }
+#'
+#' @param timeWindows             A list of numeric vectors, where each vector has two elements:
+#'                                the start and end day relative to the cohort start date.
+#'                                For example, `list(c(-365, 0))` defines a 1-year lookback window.
+#' @param useInCohortWindow       A logical flag. If TRUE, the analysis will include the
+#'                                time a person is inside the cohort (from `cohort_start_date` to
+#'                                `cohort_end_date`) as a distinct analysis window.
+#' @param costDomains             A character vector of cost domains to include ('Condition', 'Drug'). 
+#'                                This argument is ignored if `useConceptSet` is provided. (case independent)                               
+#' @param useConceptSet           An optional concept set to restrict the events used for cost and
+#'                                utilization calculation. This provides fine-grained control over
+#'                                which events contribute to the totals. The input can be a numeric
+#'                                vector of concept IDs, a `Capr` object, or a standard list-based
+#'                                concept set expression.
+#' @param costTypeConceptIds      A numeric vector of `cost_type_concept_id`s to restrict the
+#'                                analysis to. If NULL, all cost types are included.
+#' @param currencyConceptId       The `currency_concept_id` to filter costs on. Defaults to
+#'                                44818668 (US Dollar).
+#' @param aggregate               A character vector specifying the aggregation level for per-patient
+#'                                metrics. The calculation is based on the total cost/utilization
+#'                                divided by the total observed person-days in a window, which is then
+#'                                scaled to the desired time unit. Supported options are:
+#'                                \itemize{
+#'                                  \item{\code{'pppd'}: Per-Patient Per-Day. The base rate, calculated as total value / total observation days.}
+#'                                  \item{\code{'pppm'}: Per-Patient Per-Month. The per-day rate multiplied by the average days in a month (30.44).}
+#'                                  \item{\code{'pppq'}: Per-Patient Per-Quarter. The per-day rate multiplied by the average days in a quarter (91.31).}
+#'                                  \item{\code{'pppy'}: Per-Patient Per-Year. The per-day rate multiplied by the average days in a year (365.25).}
+#'                                }
+#' @param standardizationData     A data frame used to standardize costs. If NULL, no
+#'                                standardization is performed.
 #'
 #' @return
-#' An object of class `costUtilSettings`.
+#' An object of class `costUtilizationSettings`.
 #'
 #' @export
-createCostUtilSettings <- function(analysisName = "Cost and Utilization Analysis",
-                                   timeWindows = list(c(-365, -1), c(0, 365)),
-                                   useInCohortWindow = FALSE,
-                                   costDomains = c("Drug", "Procedure", "Visit"),
-                                   utilizationDomains = c("Visit", "Drug", "Procedure"),
-                                   calculateTotalCost = TRUE,
-                                   calculateLengthOfStay = TRUE,
-                                   calculatePerPatientDaysCost = c(),
-                                   costTypeConceptIds = NULL,
-                                   currencyConceptId = 44818668,
-                                   costStandardizationYear = NULL,
-                                   includedConceptIds = c(),
-                                   addDescendantsToInclude = FALSE,
-                                   excludedConceptIds = c(),
-                                   cpiData = NULL) {
+createCostUtilizationSettings <- function(
+    timeWindows = list(c(-365, 0)),
+    useInCohortWindow = FALSE,
+    costDomains = NULL,
+    useConceptSet = NULL,
+    costTypeConceptIds = NULL,
+    currencyConceptId = 44818668, # US dollar
+    aggregate = c('pppm', 'pppy'),
+    standardizationData = NULL) {
+  
+  # --- 1. Initial Argument Validation ---
   errorMessages <- checkmate::makeAssertCollection()
-  checkmate::assertString(analysisName, add = errorMessages)
   checkmate::assertList(timeWindows, types = "numeric", null.ok = TRUE, add = errorMessages)
+  if (!is.null(timeWindows)) {
+    purrr::walk(timeWindows, ~checkmate::assertNumeric(.x, len = 2, add = errorMessages))
+  }
   checkmate::assertFlag(useInCohortWindow, add = errorMessages)
+  if (is.null(timeWindows) && !useInCohortWindow) {
+    errorMessages$push("At least one windowing strategy must be used.")
+  }
   checkmate::assertCharacter(costDomains, null.ok = TRUE, add = errorMessages)
-  checkmate::assertCharacter(utilizationDomains, null.ok = TRUE, add = errorMessages)
-  checkmate::assertIntegerish(conceptIds, null.ok = TRUE, unique = TRUE, add = errorMessages)
-  checkmate::assertFlag(calculateTotalCost, add = errorMessages)
-  checkmate::assertFlag(calculateLengthOfStay, add = errorMessages)
+  if (!is.null(useConceptSet)) {
+    checkmate::assert(
+      checkmate::checkIntegerish(useConceptSet),
+      checkmate::checkList(useConceptSet),
+      checkmate::checkClass(useConceptSet, "ConceptSet"),
+      combine = "or",
+      add = errorMessages,
+      .var.name = "useConceptSet"
+    )
+  }
   checkmate::assertIntegerish(costTypeConceptIds, null.ok = TRUE, add = errorMessages)
   checkmate::assertInt(currencyConceptId, add = errorMessages)
-  checkmate::assertInt(costStandardizationYear, null.ok = TRUE, add = errorMessages)
-  checkmate::assertDataFrame(cpiData, null.ok = TRUE, add = errorMessages)
-  if (!is.null(cpiData)) {
-    checkmate::assertNames(colnames(cpiData), must.include = c("year", "cpi"), add = errorMessages)
-  }
-  if (is.null(timeWindows) && !useInCohortWindow) {
-    errorMessages$push("At least one windowing strategy must be used. Set 'timeWindows' or set 'useInCohortWindow = TRUE'.")
-  }
+  checkmate::assertCharacter(aggregate, min.len = 1, add = errorMessages)
+  checkmate::assertSubset(aggregate, choices = c('pppd', 'pppm', 'pppq', 'pppy'), add = errorMessages)
+  checkmate::assertDataFrame(standardizationData, null.ok = TRUE, add = errorMessages)
   checkmate::reportAssertions(collection = errorMessages)
-
+  
+  settings_env <- as.list(environment())
+  clean_settings <- .normalizeSettings(settings_env)
+  
+  conceptSetDefinition <- tryCatch({
+    .parseConceptSet(clean_settings$useConceptSet)
+  }, error = function(e) {
+    stop(e$message, call. = FALSE)
+  })
+  
   structure(
     list(
-      analysisName = analysisName,
-      timeWindows = timeWindows,
-      useInCohortWindow = useInCohortWindow,
-      costDomains = costDomains,
-      utilizationDomains = utilizationDomains,
-      conceptIds = conceptIds,
-      calculateTotalCost = calculateTotalCost,
-      calculateLengthOfStay = calculateLengthOfStay,
-      costTypeConceptIds = costTypeConceptIds,
-      currencyConceptId = currencyConceptId,
-      costStandardizationYear = costStandardizationYear,
-      cpiData = cpiData
+      timeWindows = clean_settings$timeWindows,
+      useInCohortWindow = clean_settings$useInCohortWindow,
+      costDomains = clean_settings$costDomains,
+      conceptSetDefinition = conceptSetDefinition,
+      costTypeConceptIds = clean_settings$costTypeConceptIds,
+      currencyConceptId = clean_settings$currencyConceptId,
+      aggregate = clean_settings$aggregate,
+      standardizationData = clean_settings$standardizationData
     ),
-    class = "costUtilSettings"
+    class = "costUtilizationSettings"
   )
 }
 
 
-#' Get default Consumer Price Index (CPI) data for Medical Care
+#' Print Cost and Utilization Settings
 #'
 #' @description
-#' Provides a default data frame of the Consumer Price Index for All Urban Consumers: Medical Care in U.S. City Average.
-#' Data is sourced from the U.S. Bureau of Labor Statistics, retrieved via FRED (Series ID: `CPIAUCNS.CPIMEDSL`).
+#' Provides a formatted, human-readable summary of the `costUtilizationSettings` object.
 #'
-#' @return A data frame with `year` and `cpi` columns.
+#' @param x An object of class `costUtilizationSettings`.
+#' @param ... For future extensions. Not used in this method.
 #' @export
-getDefaultCpiTable <- function() {
-  # Data as of early 2024.
-  utils::read.csv(system.file("csv/cpi_data.csv", package = "CostUtilization"))
+print.costUtilizationSettings <- function(x, ...) {
+  cli::cli_h1("Cost & Utilization Analysis Settings")
+  
+  # --- Windowing Strategy ---
+  cli::cli_h2("Windowing Strategy")
+  if (!is.null(x$timeWindows) && length(x$timeWindows) > 0) {
+    window_strings <- purrr::map_chr(x$timeWindows, ~ paste0("(", .x[1], "d to ", .x[2], "d)"))
+    cli::cli_bullets(c("*" = "Fixed Time Windows (relative to cohort start):", " " = window_strings))
+  }
+  cli::cli_alert(paste("Analyze time within cohort period (start to end date):", cli::style_bold(x$useInCohortWindow)))
+  cli::cli_text() # Add a blank line
+  
+  # --- Event & Cost Parameters ---
+  cli::cli_h2("Event & Cost Parameters")
+  cli::cli_text("The primary event filter is determined by the following (in order of precedence):")
+  
+  # This logic now reflects the precedence rule. It shows what is *actually* being used.
+  if (!is.null(x$conceptSetDefinition)) {
+    cli::cli_rule("1. By Custom Concept Set")
+    cli::cli_alert_success("A concept set is being used to define events.")
+    cli::cli_li(items = c("Total entries in concept set: {cli::style_bold(nrow(x$conceptSetDefinition))}"))
+  } else if (!is.null(x$costDomains)) {
+    cli::cli_rule("2. By Cost Domain")
+    domains_str <- paste(x$costDomains, collapse = ", ")
+    cli::cli_alert_info("Events are being filtered by cost domain.")
+    cli::cli_li(items = c("Included domains: {cli::style_bold(domains_str)}"))
+  } else {
+    cli::cli_rule("3. By Default (All Domains)")
+    cli::cli_alert_info("No specific event filter provided; all cost domains will be included.")
+  }
+  cli::cli_rule()
+  cost_types_str <- if (is.null(x$costTypeConceptIds)) "All Types" else paste(x$costTypeConceptIds, collapse = ", ")
+  cli::cli_li(items = c("Cost Type Concept IDs: {cli::style_bold(cost_types_str)}"))
+  cli::cli_li(items = c("Currency Concept ID: {cli::style_bold(x$currencyConceptId)}"))
+  cli::cli_text()
+  
+  # --- Aggregation & Standardization ---
+  cli::cli_h2("Aggregation & Standardization")
+  cli::cli_li(items = c("Aggregation Intervals: {cli::style_bold(toupper(paste(x$aggregate, collapse = ', ')))}"))
+  
+  if (!is.null(x$standardizationData)) {
+    cli::cli_alert_success("Cost Standardization is ENABLED")
+    cli::cli_li(items = c("Standardization Data: Provided ({nrow(x$standardizationData)} rows)"))
+  } else {
+    cli::cli_alert_info("Cost Standardization is DISABLED")
+  }
+  invisible(x)
 }
