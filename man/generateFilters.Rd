@@ -4,7 +4,7 @@
 \alias{generateFilters}
 \title{Generate filter conditions based on settings}
 \usage{
-generateFilters(settings)
+generateFilters(settings, domainConceptIds)
 }
 \description{
 Generate filter conditions based on settings

@@ -4,18 +4,21 @@
 #' @param cohortIds Vector of cohort IDs to analyze
 #' @return Character string containing the complete SQL
 generateCostAnalysisSql <- function(settings, cohortIds = -1, .route) {
-
-  if (purrr::is_null(.route) | is.atomic(.route) && !is.list(.route)) {
+  domainConceptIds <- NULL
+  if (purrr::is_null(.route) | !is.list(.route)) {
     conceptSetPreamble <- ""
-    finalCodesetTable <- NULL
+    finalCodesetTable <- ""
+    if (is.numeric(.route)) domainConceptIds <- .route  
   } else if (is.list(.route)) {
     finalCodesetTable <- purrr::pluck(.route, "finalCodesetTable")
     conceptSetPreamble <- purrr::pluck(.route, "sql")
   } 
   # Generate window definitions
   windowSql <- generateWindowsSql(settings$timeWindows)
-  # Generate filters based on scenario
+  
+  # Generate filters based on the new function
   filters <- generateFilters(settings)
+  
   # Build the complete SQL
   sql <- SqlRender::loadRenderTranslateSql(
     "CostAnalysis.sql",
@@ -24,13 +27,11 @@ generateCostAnalysisSql <- function(settings, cohortIds = -1, .route) {
     useInCohortWindow = settings$useInCohortWindow,
     conceptSetPreamble = conceptSetPreamble,
     cohortIds = cohortIds,
-    currencyFilter = filters$currency,
-    costTypeFilter = filters$costType,
-    domainFilter = filters$domain,
-    conceptSetFilter = filters$conceptSet,
-    conceptSetJoin = filters$conceptSetJoin,
+    # Pass the new, consolidated filter strings
+    dynamic_join = filters$conceptSetJoin,
+    dynamic_where_clause = filters$where_clause,
     final_codeset = finalCodesetTable
-  )
+    )
   return(sql)
 }
 
@@ -54,44 +55,40 @@ generateWindowsSql <- function(timeWindows) {
 }
 
 #' Generate filter conditions based on settings
-generateFilters <- function(settings) {
-  filters <- list(
-    currency = "",
-    costType = "",
-    domain = "",
-    conceptSet = "",
-    conceptSetJoin = ""
+generateFilters <- function(settings, domainConceptIds) {
+  # Helper function to get domain concept IDs from cdmMetadata
+  # This should ideally be in a helper file.
+  # Create a list of all potential WHERE clause conditions
+  where_conditions <- list(
+    # Currency filter
+    if (!is.null(settings$currencyConceptId)) {
+      glue::glue("co.currency_concept_id = {settings$currencyConceptId}")
+    },
+    # Cost type filter
+    if (!is.null(settings$costTypeConceptIds)) {
+      glue::glue("co.cost_type_concept_id IN ({paste(settings$costTypeConceptIds, collapse = ',')})")
+    },
+    # Domain filter (only when no concept set is used)
+    if (!is.null(settings$costDomains) && is.null(settings$conceptSetDefinition)) {
+      glue::glue("co.cost_event_field_concept_id IN ({paste(domainConceptIds, collapse = ',')})")
+    }
   )
-  # Currency filter
-  if (!is.null(settings$currencyConceptId)) {
-    filters$currency <- glue::glue(
-      "AND co.currency_concept_id = {settings$currencyConceptId}"
-    )
-  }
   
-  # Cost type filter
-  if (!is.null(settings$costTypeConceptIds)) {
-    filters$costType <- glue::glue(
-      "AND co.cost_type_concept_id IN ({paste(settings$costTypeConceptIds, collapse = ',')})"
-    )
-  }
+  # Use purrr to remove NULLs and combine the conditions with AND
+  where_clause <- where_conditions |>
+    purrr::compact() |>
+    purrr::map_chr(~ paste0("    ", .x)) |>
+    paste(collapse = "\nAND ")
   
-  # Domain filter (Scenario 2)
-  if (!is.null(settings$costDomains) && is.null(settings$conceptSetDefinition)) {
-    domainConceptIds <- getDomainConceptIds(settings$costDomains)
-    filters$domain <- glue::glue(
-      "AND co.cost_event_field_concept_id IN ({paste(domainConceptIds, collapse = ',')})"
-    )
-  }
-  
-  # Concept set filter (Scenario 3)
-  if (!is.null(settings$conceptSetDefinition)) {
-    filters$conceptSetJoin <- "
-      JOIN #final_codesets cs 
-        ON co.cost_event_id = cs.event_id 
-        AND co.cost_domain_id = cs.domain_id"
-    filters$conceptSet <- "AND 1=1" # Filtering is done via join
-  }
-  return(filters)
+  # Handle the concept set join separately
+  conceptSetJoin <- if (!is.null(settings$conceptSetDefinition)) { "
+    JOIN #events_of_interest eoi
+      ON co.cost_event_id = eoi.event_id
+      AND co.cost_domain_id = eoi.domain_id"
+     } else ""  
+  # Return a list with the join and where clauses
+  list(
+    conceptSetJoin = conceptSetJoin,
+    where_clause = if (nchar(where_clause) > 0) paste0("AND ", where_clause) else ""
+  )
 }
-

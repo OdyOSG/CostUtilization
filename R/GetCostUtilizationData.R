@@ -75,7 +75,7 @@ getDbCostData <- function(
   } else if (!is.null(costUtilizationSettings$costDomains)) {
     .route <- buildEventUnionSpec(costUtilizationSettings)
   } 
-  
+  analysisSql <- generateCostAnalysisSql(costUtilizationSettings, cohortIds, .route)
   
   
 }

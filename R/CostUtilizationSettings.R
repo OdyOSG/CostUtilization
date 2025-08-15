@@ -1,3 +1,16 @@
+# Copyright 2025 OHDSI
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 #' Create Cost and Utilization Settings
 #'
 #' @description
@@ -83,87 +96,28 @@ createCostUtilizationSettings <- function(
   checkmate::assertDataFrame(standardizationData, null.ok = TRUE, add = errorMessages)
   checkmate::reportAssertions(collection = errorMessages)
 
-  settings_env <- as.list(environment())
-  clean_settings <- .normalizeSettings(settings_env$settings)
+  settingsEnvironment <- as.list(environment())
+  cleanSettings <- .normalizeSettings(settingsEnvironment)
 
   conceptSetDefinition <- tryCatch(
     {
-      .parseConceptSet(clean_settings$useConceptSet)
+      .parseConceptSet(cleanSettings$useConceptSet)
     },
     error = function(e) {
       stop(e$message, call. = FALSE)
     }
   )
-
   structure(
     list(
-      timeWindows = clean_settings$timeWindows,
-      useInCohortWindow = clean_settings$useInCohortWindow,
-      costDomains = clean_settings$costDomains,
+      timeWindows = cleanSettings$timeWindows,
+      useInCohortWindow = cleanSettings$useInCohortWindow,
+      costDomains = cleanSettings$costDomains,
       conceptSetDefinition = conceptSetDefinition,
-      costTypeConceptIds = clean_settings$costTypeConceptIds,
-      currencyConceptId = clean_settings$currencyConceptId,
-      aggregate = clean_settings$aggregate,
-      standardizationData = clean_settings$standardizationData
+      costTypeConceptIds = cleanSettings$costTypeConceptIds,
+      currencyConceptId = cleanSettings$currencyConceptId,
+      aggregate = cleanSettings$aggregate,
+      standardizationData = cleanSettings$standardizationData
     ),
     class = "costUtilizationSettings"
   )
 }
-
-
-#' Print Cost and Utilization Settings
-#'
-#' @description
-#' Provides a formatted, human-readable summary of the `costUtilizationSettings` object.
-#'
-#' @param x An object of class `costUtilizationSettings`.
-#' @param ... For future extensions. Not used in this method.
-print.costUtilizationSettings <- function(x, ...) {
-  cli::cli_h1("Cost & Utilization Analysis Settings")
-
-  # --- Windowing Strategy ---
-  cli::cli_h2("Windowing Strategy")
-  if (!is.null(x$timeWindows) && length(x$timeWindows) > 0) {
-    window_strings <- purrr::map_chr(x$timeWindows, ~ paste0("(", .x[1], "d to ", .x[2], "d)"))
-    cli::cli_bullets(c("*" = "Fixed Time Windows (relative to cohort start):", " " = window_strings))
-  }
-  cli::cli_alert(paste("Analyze time within cohort period (start to end date):", cli::style_bold(x$useInCohortWindow)))
-  cli::cli_text() # Add a blank line
-
-  # --- Event & Cost Parameters ---
-  cli::cli_h2("Event & Cost Parameters")
-  cli::cli_text("The primary event filter is determined by the following (in order of precedence):")
-
-  # This logic now reflects the precedence rule. It shows what is *actually* being used.
-  if (!is.null(x$conceptSetDefinition)) {
-    cli::cli_rule("1. By Custom Concept Set")
-    cli::cli_alert_success("A concept set is being used to define events.")
-    cli::cli_li(items = c("Total entries in concept set: {cli::style_bold(nrow(x$conceptSetDefinition))}"))
-  } else if (!is.null(x$costDomains)) {
-    cli::cli_rule("2. By Cost Domain")
-    domains_str <- paste(x$costDomains, collapse = ", ")
-    cli::cli_alert_info("Events are being filtered by cost domain.")
-    cli::cli_li(items = c("Included domains: {cli::style_bold(domains_str)}"))
-  } else {
-    cli::cli_rule("3. By Default (All Domains)")
-    cli::cli_alert_info("No specific event filter provided; all cost domains will be included.")
-  }
-  cli::cli_rule()
-  cost_types_str <- if (is.null(x$costTypeConceptIds)) "All Types" else paste(x$costTypeConceptIds, collapse = ", ")
-  cli::cli_li(items = c("Cost Type Concept IDs: {cli::style_bold(cost_types_str)}"))
-  cli::cli_li(items = c("Currency Concept ID: {cli::style_bold(x$currencyConceptId)}"))
-  cli::cli_text()
-
-  # --- Aggregation & Standardization ---
-  cli::cli_h2("Aggregation & Standardization")
-  cli::cli_li(items = c("Aggregation Intervals: {cli::style_bold(toupper(paste(x$aggregate, collapse = ', ')))}"))
-
-  if (!is.null(x$standardizationData)) {
-    cli::cli_alert_success("Cost Standardization is ENABLED")
-    cli::cli_li(items = c("Standardization Data: Provided ({nrow(x$standardizationData)} rows)"))
-  } else {
-    cli::cli_alert_info("Cost Standardization is DISABLED")
-  }
-  invisible(x)
-}
-se
