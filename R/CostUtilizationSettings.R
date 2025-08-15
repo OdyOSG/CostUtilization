@@ -118,7 +118,6 @@ createCostUtilizationSettings <- function(
 #'
 #' @param x An object of class `costUtilizationSettings`.
 #' @param ... For future extensions. Not used in this method.
-#' @export
 print.costUtilizationSettings <- function(x, ...) {
   cli::cli_h1("Cost & Utilization Analysis Settings")
 
@@ -167,3 +166,4 @@ print.costUtilizationSettings <- function(x, ...) {
   }
   invisible(x)
 }
+se

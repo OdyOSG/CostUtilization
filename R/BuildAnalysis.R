@@ -3,34 +3,34 @@
 #' @param settings Cost utilization settings object
 #' @param cohortIds Vector of cohort IDs to analyze
 #' @return Character string containing the complete SQL
-generateCostAnalysisSql <- function(settings, cohortIds = -1) {
-  
+generateCostAnalysisSql <- function(settings, cohortIds = -1, .route) {
+
+  if (purrr::is_null(.route) | is.atomic(.route) && !is.list(.route)) {
+    conceptSetPreamble <- ""
+    finalCodesetTable <- NULL
+  } else if (is.list(.route)) {
+    finalCodesetTable <- purrr::pluck(.route, "finalCodesetTable")
+    conceptSetPreamble <- purrr::pluck(.route, "sql")
+  } 
   # Generate window definitions
   windowSql <- generateWindowsSql(settings$timeWindows)
-  
   # Generate filters based on scenario
   filters <- generateFilters(settings)
-  
-  # Generate concept set preamble if needed
-  conceptSetPreamble <- ""
-  if (!is.null(settings$conceptSetDefinition)) {
-    conceptSetPreamble <- .buildConceptSetSql(settings$conceptSetDefinition)
-  }
-  
   # Build the complete SQL
-  sql <- SqlRender::render(
-    readSql("inst/sql/sql_server/CostAnalysisDynamic.sql"),
-    conceptSetPreamble = conceptSetPreamble,
+  sql <- SqlRender::loadRenderTranslateSql(
+    "CostAnalysis.sql",
+    packageName = 'CostUtilization',
     timeWindows = windowSql,
     useInCohortWindow = settings$useInCohortWindow,
+    conceptSetPreamble = conceptSetPreamble,
     cohortIds = cohortIds,
     currencyFilter = filters$currency,
     costTypeFilter = filters$costType,
     domainFilter = filters$domain,
     conceptSetFilter = filters$conceptSet,
-    conceptSetJoin = filters$conceptSetJoin
+    conceptSetJoin = filters$conceptSetJoin,
+    final_codeset = finalCodesetTable
   )
-  
   return(sql)
 }
 
@@ -39,7 +39,6 @@ generateWindowsSql <- function(timeWindows) {
   if (is.null(timeWindows) || length(timeWindows) == 0) {
     return("")
   }
-  
   windowQueries <- purrr::map_chr(timeWindows, function(window) {
     glue::glue("
       SELECT 
@@ -51,7 +50,6 @@ generateWindowsSql <- function(timeWindows) {
       FROM target_cohorts
     ")
   })
-  
   paste(windowQueries, collapse = "\nUNION ALL\n")
 }
 
@@ -64,7 +62,6 @@ generateFilters <- function(settings) {
     conceptSet = "",
     conceptSetJoin = ""
   )
-  
   # Currency filter
   if (!is.null(settings$currencyConceptId)) {
     filters$currency <- glue::glue(
@@ -95,14 +92,6 @@ generateFilters <- function(settings) {
         AND co.cost_domain_id = cs.domain_id"
     filters$conceptSet <- "AND 1=1" # Filtering is done via join
   }
-  
   return(filters)
 }
 
-#' Get domain concept IDs from domain names
-getDomainConceptIds <- function(domains) {
-  metadata <- cdmMetadata()
-  metadata %>%
-    filter(tolower(domain_id) %in% tolower(domains)) %>%
-    pull(domain_concept_id)
-}

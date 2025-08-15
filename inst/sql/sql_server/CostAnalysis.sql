@@ -1,7 +1,4 @@
--- Dynamic SQL Template for Cost Analysis
--- This template handles all three scenarios with parameterization
-
-{@conceptSetPreamble}  -- Only populated for scenario 3
+{@conceptSetPreamble}  
 
 WITH target_cohorts AS (
   SELECT
@@ -35,7 +32,6 @@ cohort_costs AS (
     aw.window_name,
     aw.subject_id AS person_id,
     co.cost,
-    co.cost_domain_id,
     co.cost_event_field_concept_id,
     DATEDIFF(day, aw.window_start, aw.window_end) + 1 AS person_days_in_window
   FROM analysis_windows aw
@@ -47,8 +43,8 @@ cohort_costs AS (
     AND co.incurred_date <= aw.window_end
     {@currencyFilter}
     {@costTypeFilter}
-    {@domainFilter}     -- For scenario 2
-    {@conceptSetFilter} -- For scenario 3
+    {@domainFilter}     -- For scenario with Domains
+    {@conceptSetFilter} -- For scenario with Concept Set
 ),
 
 aggregated_costs AS (
@@ -111,4 +107,8 @@ JOIN window_denominators wd
   ON ac.cohort_definition_id = wd.cohort_definition_id
   AND ac.window_name = wd.window_name
 ORDER BY ac.cohort_definition_id, ac.window_name, ac.cost_domain_id;
+
+
+
+{@cohortIds == -1} ? {DROP TABLE IF EXISTS @final_codeset;}
 

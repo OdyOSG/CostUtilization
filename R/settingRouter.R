@@ -165,7 +165,7 @@ buildEventUnionSpec <- function(settings, relevantDomains = NULL) {
       dplyr::filter(tolower(.data$domain_id) %in% tolower(settings$costDomains)) |> 
       dplyr::pull(.data$domain_concept_id)
     return(fieldConceptIds)
-  } else return(NULL)
+  } else rlang::abort('Double-check settings: no relevant domains and no cost domains found')
 
 }
 
@@ -181,7 +181,7 @@ buildEventUnionSpec <- function(settings, relevantDomains = NULL) {
 #'
 #' @return A single character string containing the complete SQL script.
 #' @noRd
-buildAnalysisSql <- function(settings, relevantDomains = NULL) {
+buildAnalysisSql <- function(settings, relevantDomains = NULL, finalCodesetTable) {
   # Step 2: Get the SQL for the UNION ALL block, now optimized
   eventUnionSql <- buildEventUnionSpec(settings, relevantDomains)
 
@@ -193,7 +193,7 @@ buildAnalysisSql <- function(settings, relevantDomains = NULL) {
       d.event_id,
       d.event_date,
       d.domain_id
-    INTO #events_of_interest
+    INTO {finalCodesetTable}
     FROM (
       {eventUnionSql}
     ) d;
@@ -218,7 +218,8 @@ conceptSetRoute <- function(costUtilizationSettings, connection, cdmDatabaseSche
     cdm_database_schema = cdmDatabaseSchema
   ) |> dplyr::pull(.data$DOMAIN_ID)
   cli::cli_alert_success("Found relevant domains: {paste(relevantDomains, collapse = ', ')}")
-  prefixSql <- buildAnalysisSql(costUtilizationSettings, relevantDomains = relevantDomains)
+  prefixSql <-buildAnalysisSql(costUtilizationSettings, relevantDomains = relevantDomains, finalCodesetTable)
+     
   return(
     sql = prefixSql,
     finalCodeset = finalCodesetTable
