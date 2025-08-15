@@ -70,6 +70,21 @@ getDbCostData <- function(
   checkmate::assertCharacter(cohortTable, max.len = 1)
   checkmate::assertNumeric(cohortIds, lower = -1, any.missing = FALSE, min.len = 1)
   .route <- NULL
+  
+  # useInflationAdjustment <- costUtilizationSettings$adjustForInflation
+  # inflationTable <- NULL
+  # if (useInflationAdjustment) {
+  #   inflationTable <- paste0("#inflation_data_", paste(sample(letters, 10), collapse = ""))
+  #   cli::cli_alert_info("Uploading inflation data to `{inflationTable}`.")
+  #   DatabaseConnector::insertTable(
+  #     connection = connection,
+  #     tableName = inflationTable,
+  #     data = costUtilizationSettings$inflationDataTable,
+  #     dropTableIfExists = TRUE,
+  #     createTable = TRUE
+  #   )
+  # }
+  
   if (!is.null(costUtilizationSettings$conceptSetDefinition)) {
     .route <- conceptSetRoute(costUtilizationSettings, connection, cdmDatabaseSchema)
   } else if (!is.null(costUtilizationSettings$costDomains)) {

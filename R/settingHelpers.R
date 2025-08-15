@@ -27,34 +27,49 @@ cdmMetadata <- function() {
     event_concept_id = c("condition_concept_id", "device_concept_id", "drug_concept_id", "measurement_concept_id", "observation_concept_id", "procedure_concept_id", "visit_concept_id")
   )
 }
-
-
+# --- Internal Helper Function ------------------------------------------------
 #' Normalize Settings and Resolve Conflicts
 #'
 #' @description
-#' This internal helper function takes a list of settings, resolves any conflicts
-#' according to predefined precedence rules, and informs the user of any
-#' changes made.
+#' This internal helper function takes a list of settings, resolves any
+#' conflicts according to predefined precedence rules, and informs the user of
+#' any changes made.
 #'
 #' @param settings A list of settings, typically from the environment of the
-#'                 `createCostUtilizationSettings` function.
+#'   `createCostUtilizationSettings` function.
 #'
 #' @return A modified list of settings with conflicts resolved.
 #'
 #' @noRd
 .normalizeSettings <- function(settings) {
   # --- Conflict 1: useConceptSet vs. costDomains ---
-  # Rule: If a concept set is provided, it defines the events of interest.
-  # The broader `costDomains` filter becomes redundant and is ignored.
   if (!is.null(settings$useConceptSet) && !is.null(settings$costDomains)) {
     cli::cli_warn(c(
       "Both {.arg useConceptSet} and {.arg costDomains} were provided.",
       "i" = "Prioritizing {.arg useConceptSet} for fine-grained event selection.",
-      "!" = "The {.arg costDomains} argument will be ignored if not align with Concept Set"
+      "!" = "The {.arg costDomains} argument will be ignored."
     ))
     settings$costDomains <- NULL
   }
-
+  
+  # --- Conflict 2: `aggregate` contains "none" with other values ---
+  if ("none" %in% settings$aggregate && length(settings$aggregate) > 1) {
+    cli::cli_warn(c(
+      "The {.arg aggregate} argument contains {.val 'none'} along with other options.",
+      "i" = "{.val 'none'} is mutually exclusive and disables all aggregation.",
+      "!" = "All other aggregation levels will be ignored."
+    ))
+    settings$aggregate <- "none"
+  }
+  
+  # --- Handle `standardizationData` input (file path or data frame) ---
+  if (!is.null(settings$standardizationData)) {
+    if (is.character(settings$standardizationData) && file.exists(settings$standardizationData)) {
+      cli::cli_inform("Reading standardization data from path: {.path {settings$standardizationData}}")
+      settings$standardizationData <- .readTable(settings$standardizationData)
+    } 
+  }
+  
   return(settings)
 }
 
@@ -77,7 +92,6 @@ cdmMetadata <- function() {
   if (is.null(conceptSet)) {
     return(NULL)
   }
-
   # Case 1: Input is a Capr S4 ConceptSet object.
   # This check must come before is.list() because Capr objects are also lists.
   if (inherits(conceptSet, "ConceptSet")) {
@@ -102,7 +116,6 @@ cdmMetadata <- function() {
       )
     )
   }
-
   # Case 3: Input is a list (from JSON, representing a Circe expression).
   if (checkmate::test_list(conceptSet)) {
     # Detect if it's a full concept set definition or just the items list
@@ -115,7 +128,6 @@ cdmMetadata <- function() {
       ))
     )
   }
-
   # If none of the above, the format is not recognized.
   stop(
     "The 'useConceptSet' argument is not in a recognized format.\n",
@@ -124,8 +136,6 @@ cdmMetadata <- function() {
     call. = FALSE
   )
 }
-
-
 
 generateWindowTibble <- function(settings) {
   fixedWindows <- if (!is.null(settings$timeWindows)) {

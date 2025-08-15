@@ -10,63 +10,97 @@ createCostUtilizationSettings(
   costDomains = NULL,
   useConceptSet = NULL,
   costTypeConceptIds = NULL,
+  costConceptId = NULL,
+  restrictVisitConceptIds = NULL,
   currencyConceptId = 44818668,
-  aggregate = c("pppm", "pppy"),
+  aggregate = c("pppm", "pppy", "cohort_level"),
   standardizationData = NULL
 )
 }
 \arguments{
-\item{timeWindows}{A list of numeric vectors, where each vector has two elements:
-the start and end day relative to the cohort start date.
-For example, \code{list(c(-365, 0))} defines a 1-year lookback window.}
+\item{timeWindows}{A list of numeric vectors, where each vector has two
+elements: the start and end day relative to the cohort start date. For
+example, \code{list(c(-365, 0))} defines a 1-year lookback window.}
 
-\item{useInCohortWindow}{A logical flag. If TRUE, the analysis will include the
-time a person is inside the cohort (from \code{cohort_start_date} to
+\item{useInCohortWindow}{A logical flag. If \code{TRUE}, the analysis will include
+the time a person is inside the cohort (from \code{cohort_start_date} to
 \code{cohort_end_date}) as a distinct analysis window.}
 
-\item{costDomains}{A character vector of cost domains to include ('Condition', 'Drug').
-This argument is ignored if \code{useConceptSet} is provided. (case independent)}
+\item{costDomains}{A character vector of cost domains to include (e.g.,
+'Condition', 'Drug'). This argument is case-insensitive and is ignored if
+\code{useConceptSet} is provided.}
 
-\item{useConceptSet}{An optional concept set to restrict the events used for cost and
-utilization calculation. This provides fine-grained control over
-which events contribute to the totals. The input can be a numeric
-vector of concept IDs, a \code{Capr} object, or a standard list-based
-concept set expression.}
+\item{useConceptSet}{An optional concept set to restrict the events used for
+cost and utilization calculation. This provides fine-grained control over
+which events contribute to the totals. The input can be a numeric vector
+of concept IDs, a \code{Capr} object, or a standard list-based concept set
+expression.}
 
-\item{costTypeConceptIds}{A numeric vector of \code{cost_type_concept_id}s to restrict the
-analysis to. If NULL, all cost types are included.}
+\item{costTypeConceptIds}{A numeric vector of \code{cost_type_concept_id}s to
+restrict the analysis to. If \code{NULL}, all cost types are included.}
 
-\item{currencyConceptId}{The \code{currency_concept_id} to filter costs on. Defaults to
-44818668 (US Dollar).}
+\item{costConceptId}{A single integer \code{concept_id} to filter the cost table on
+the \code{cost_concept_id} field. For example, use \code{31985} for 'Total Cost'.
+If \code{NULL}, all cost concepts are considered.}
 
-\item{aggregate}{A character vector specifying the aggregation level for per-patient
-metrics. The calculation is based on the total cost/utilization
+\item{restrictVisitConceptIds}{A numeric vector of \code{visit_concept_id}s to
+restrict the analysis to costs incurred during specific visit types (e.g., \code{9201} for inpatient visits).
+If \code{NULL}, costs from all visit types are included.}
+
+\item{currencyConceptId}{The \code{currency_concept_id} to filter costs on.
+Defaults to 44818668 (US Dollar).}
+
+\item{aggregate}{A character vector specifying the aggregation level for
+per-patient metrics. The calculation is based on the total cost/utilization
 divided by the total observed person-days in a window, which is then
-scaled to the desired time unit. Supported options are:
+scaled to the desired time unit.
+If \code{"none"} is specified, no aggregation is performed, and this option cannot
+be combined with others.
+Supported options are:
 \itemize{
-\item{\code{'pppd'}: Per-Patient Per-Day. The base rate, calculated as total value / total observation days.}
-\item{\code{'pppm'}: Per-Patient Per-Month. The per-day rate multiplied by the average days in a month (30.44).}
-\item{\code{'pppq'}: Per-Patient Per-Quarter. The per-day rate multiplied by the average days in a quarter (91.31).}
-\item{\code{'pppy'}: Per-Patient Per-Year. The per-day rate multiplied by the average days in a year (365.25).}
+\item{\code{'pppd'}: Per-Patient Per-Day. The base rate.}
+\item{\code{'pppm'}: Per-Patient Per-Month (pppd * 30.44).}
+\item{\code{'pppq'}: Per-Patient Per-Quarter (pppd * 91.31).}
+\item{\code{'pppy'}: Per-Patient Per-Year (pppd * 365.25).}
+\item{\code{'cohort_level'}: Total cost/utilization across the entire cohort.}
+\item{\code{'none'}: Do not perform any aggregation.}
 }}
 
-\item{standardizationData}{A data frame used to standardize costs. If NULL, no
-standardization is performed.}
+\item{standardizationData}{A data frame or a path to a file (e.g., csv or tsv or xlsx)
+containing data used to standardize costs. If \code{NULL}, no standardization
+is performed.}
 }
 \value{
 An object of class \code{costUtilizationSettings}.
 }
 \description{
-Creates a settings object for configuring a cost and healthcare resource utilization analysis.
-This object is used by the \code{computeCostUtilization} function.
+Creates a settings object for configuring a cost and healthcare resource
+utilization analysis. This object is used by analysis functions that compute
+these metrics.
 }
 \section{Precedence Rules}{
 
 Some arguments take precedence over others if both are provided:
 \itemize{
 \item \strong{\code{useConceptSet} > \code{costDomains}}: If \code{useConceptSet} is specified, it provides a
-precise definition of the events to be included in the analysis. The broader \code{costDomains}
+precise definition of the events to be included. The broader \code{costDomains}
 argument will be ignored, and a warning will be issued.
+\item \strong{\code{aggregate = "none"} is exclusive}: If \code{"none"} is included in the \code{aggregate}
+vector, all other aggregation options will be ignored, and a warning will be issued.
 }
 }
 
+\examples{
+# Simple settings for a 1-year lookback for drug costs
+settings <- createCostUtilizationSettings(
+  timeWindows = list(c(-365, 0)),
+  costDomains = "Drug",
+  aggregate = c("pppm", "pppy")
+)
+
+# Settings with conflicting aggregation levels (will trigger a warning)
+settings_with_warning <- createCostUtilizationSettings(
+  aggregate = c("none", 'pppm'),
+  useInCohortWindow = TRUE
+)
+}

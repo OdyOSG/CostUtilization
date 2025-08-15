@@ -4,7 +4,13 @@
 \alias{generateWindowsSql}
 \title{Generate SQL for time windows}
 \usage{
-generateWindowsSql(timeWindows)
+generateWindowsSql(settings)
+}
+\arguments{
+\item{settings}{A costUtilizationSettings object.}
+}
+\value{
+A SQL string for creating a temporary table of time windows.
 }
 \description{
 Generate SQL for time windows

@@ -6,6 +6,8 @@
 \alias{CostUtilization-package}
 \title{CostUtilization: A Package for Standardized Cost and Healthcare Utilization Analysis}
 \description{
+\if{html}{\figure{logo.png}{options: style='float: right' alt='logo' width='120'}}
+
 Provides a framework for executing standardized cost and healthcare utilization analyses on the OMOP Common Data Model. This package computes aggregated or person-level cost and utilization metrics across various domains (e.g., Drug, Visit) and temporal windows relative to a cohort. The primary output is a `CostCovariateData` object, which can be summarized, plotted, and used in downstream OHDSI study pipelines.
 }
 \seealso{

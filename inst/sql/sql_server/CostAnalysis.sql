@@ -1,7 +1,7 @@
 -- This script performs a cost and utilization analysis using temporary tables
 -- for each intermediate step, which can improve performance and readability.
 
--- Preamble for concept set resolution (if used)
+-- Preamble for concept set resolution final_codeset should be already created
 {@conceptSetPreamble}
 
 -- Step 1: Create the target cohort temporary table
@@ -16,8 +16,8 @@ INTO #target_tmp_cohorts
 FROM @cohort_database_schema.@cohort_table
 {@cohortIds == -1} ? {WHERE cohort_definition_id IS NOT NULL} : {WHERE cohort_definition_id IN (@cohortIds)};
 
+
 -- Step 2: Create the analysis windows temporary table
--- This table defines all the time periods (e.g., -365d to 0d) for each person.
 DROP TABLE IF EXISTS #analysis_windows;
 SELECT *
 INTO #analysis_windows
@@ -52,83 +52,29 @@ FROM #analysis_windows aw
 JOIN @cdm_database_schema.cost co
   ON aw.subject_id = co.person_id
 {@dynamic_join}  -- Optional join for concept set analysis
+/*
+-- Join to visit_occurrence to get visit_concept_id for FAC_IP/FAC_OP mapping
+LEFT JOIN @cdm_database_schema.visit_occurrence v
+  ON co.visit_occurrence_id = v.visit_occurrence_id
+
+{@useInflationAdjustment} ? {
+-- Join to get the inflation factor for the year the cost was incurred
+JOIN @inflationTable inf
+  ON inf.STD_PRICE_YR = YEAR(co.incurred_date)
+  AND inf.TOS1 = (CASE
+      WHEN co.cost_domain_id = 'Drug' THEN 'PHARM'
+      WHEN co.cost_domain_id = 'Visit' AND v.visit_concept_id = 9201 THEN 'FAC_IP'
+      WHEN co.cost_domain_id = 'Visit' AND v.visit_concept_id = 9202 THEN 'FAC_OP'
+      WHEN co.cost_domain_id = 'Procedure' THEN 'PROF'
+      ELSE 'PROF'
+    END)
+-- Join to get the target year's inflation factor
+JOIN #target_inflation ti
+  ON ti.TOS1 = inf.TOS1
+}
+*/
 WHERE
   co.incurred_date >= aw.window_start
   AND co.incurred_date <= aw.window_end
   {@dynamic_where_clause}; -- Additional filters for currency, cost type, etc.
 
--- Step 4: Aggregate the costs for each cohort and window
--- This summarizes the raw costs into statistics like total, average, and counts.
-DROP TABLE IF EXISTS #aggregated_costs;
-SELECT
-  cohort_definition_id,
-  window_name,
-  cost_event_field_concept_id AS cost_domain_id, -- Assuming this maps to domain
-  COUNT(DISTINCT person_id) AS person_count,
-  COUNT(*) AS event_count,
-  SUM(cost) AS total_cost,
-  AVG(cost) AS avg_cost,
-  STDEV(cost) AS stddev_cost,
-  MIN(cost) AS min_cost,
-  MAX(cost) AS max_cost
-INTO #aggregated_costs
-FROM #cohort_costs
-GROUP BY cohort_definition_id, window_name, cost_event_field_concept_id;
-
--- Step 5: Calculate the denominators (total persons and person-days) for each window
--- This is crucial for calculating per-patient-per-time metrics.
-DROP TABLE IF EXISTS #window_denominators;
-SELECT
-  cohort_definition_id,
-  window_name,
-  COUNT(DISTINCT subject_id) AS total_persons,
-  SUM(DATEDIFF(day, window_start, window_end) + 1) AS total_person_days
-INTO #window_denominators
-FROM #analysis_windows
-GROUP BY cohort_definition_id, window_name;
-
--- Final Step: Join aggregated results with denominators and calculate final metrics
--- This select statement produces the final output of the analysis.
-SELECT
-  ac.cohort_definition_id,
-  ac.window_name,
-  ac.cost_domain_id,
-  ac.person_count,
-  ac.event_count,
-  ac.total_cost,
-  ac.avg_cost,
-  ac.stddev_cost,
-  ac.min_cost,
-  ac.max_cost,
-  wd.total_persons,
-  wd.total_person_days,
-  -- Per-patient metrics calculated using the denominators
-  CASE
-    WHEN wd.total_person_days > 0
-    THEN ac.total_cost / wd.total_person_days
-    ELSE 0
-  END AS cost_per_person_day,
-  CASE
-    WHEN wd.total_person_days > 0
-    THEN (ac.total_cost / wd.total_person_days) * 30.44
-    ELSE 0
-  END AS cost_pppm,
-  CASE
-    WHEN wd.total_person_days > 0
-    THEN (ac.total_cost / wd.total_person_days) * 365.25
-    ELSE 0
-  END AS cost_pppy
-FROM #aggregated_costs ac
-JOIN #window_denominators wd
-  ON ac.cohort_definition_id = wd.cohort_definition_id
-  AND ac.window_name = wd.window_name
-ORDER BY ac.cohort_definition_id, ac.window_name, ac.cost_domain_id;
-
--- Clean up all temporary tables to free up resources
-DROP TABLE IF EXISTS #target_tmp_cohorts;
-DROP TABLE IF EXISTS #analysis_windows;
-DROP TABLE IF EXISTS #cohort_costs;
-DROP TABLE IF EXISTS #aggregated_costs;
-DROP TABLE IF EXISTS #window_denominators;
--- Clean up concept set table if it was created
-{@final_codeset != ''} ? {DROP TABLE IF EXISTS @final_codeset;}
