@@ -9,7 +9,7 @@ INSERT INTO @diagTable (step_name, n_persons)
 SELECT
   '00_initial_cohort' AS step_name,
   COUNT(DISTINCT subject_id) AS n_persons
-FROM @cohortSchema.@cohortTable
+FROM @cohortDatabaseSchema.@cohortTable
 WHERE cohort_definition_id = @cohortId;
 
 -- 1) Create temp tables instead of CTEs
@@ -17,8 +17,8 @@ WHERE cohort_definition_id = @cohortId;
 DROP TABLE IF EXISTS #cohort_person;
 CREATE TABLE #cohort_person AS
 SELECT c.subject_id AS person_id, c.cohort_start_date, c.cohort_end_date
-FROM @cohortSchema.@cohortTable c
-INNER JOIN @cdmSchema.person p ON p.person_id = c.subject_id
+FROM @cohortDatabaseSchema.@cohortTable c
+INNER JOIN @cdmDatabaseSchema.person p ON p.person_id = c.subject_id
 WHERE c.cohort_definition_id = @cohortId;
 
 -- Analysis window temp table
@@ -31,7 +31,7 @@ SELECT
   CASE WHEN op.observation_period_end_date   < DATEADD(day, @endOffsetDays,   cp.@anchorCol)
     THEN op.observation_period_end_date ELSE DATEADD(day, @endOffsetDays,   cp.@anchorCol) END AS end_date
 FROM #cohort_person cp
-JOIN @cdmSchema.observation_period op ON op.person_id = cp.person_id
+JOIN @cdmDatabaseSchema.observation_period op ON op.person_id = cp.person_id
 WHERE op.observation_period_start_date <= DATEADD(day, @endOffsetDays, cp.@anchorCol)
   AND op.observation_period_end_date   >= DATEADD(day, @startOffsetDays, cp.@anchorCol);
 
@@ -64,7 +64,7 @@ FROM #analysis_window_clean;
 DROP TABLE IF EXISTS #visits_in_window;
 CREATE TABLE #visits_in_window AS
 SELECT vo.person_id, vo.visit_occurrence_id, vo.visit_start_date, vo.visit_concept_id
-FROM @cdmSchema.visit_occurrence vo
+FROM @cdmDatabaseSchema.visit_occurrence vo
 JOIN #analysis_window_clean aw ON aw.person_id = vo.person_id
 WHERE vo.visit_start_date BETWEEN aw.start_date AND aw.end_date
   {@if hasVisitRestriction} AND vo.visit_concept_id IN (SELECT visit_concept_id FROM @restrictVisitTable) {@endif};
@@ -75,23 +75,23 @@ DROP TABLE IF EXISTS #events_by_filter;
 CREATE TABLE #events_by_filter AS
 -- Note: This UNION ALL structure is efficient for finding any event match.
 SELECT ec.filter_id, ec.filter_name, de.person_id, de.visit_occurrence_id, de.visit_detail_id
-FROM @cdmSchema.drug_exposure de
+FROM @cdmDatabaseSchema.drug_exposure de
 JOIN @eventConceptsTable ec ON ec.concept_id = de.drug_concept_id AND (ec.domain_scope IN ('All','Drug'))
 UNION ALL
 SELECT ec.filter_id, ec.filter_name, po.person_id, po.visit_occurrence_id, po.visit_detail_id
-FROM @cdmSchema.procedure_occurrence po
+FROM @cdmDatabaseSchema.procedure_occurrence po
 JOIN @eventConceptsTable ec ON ec.concept_id = po.procedure_concept_id AND (ec.domain_scope IN ('All','Procedure'))
 UNION ALL
 SELECT ec.filter_id, ec.filter_name, co.person_id, co.visit_occurrence_id, NULL
-FROM @cdmSchema.condition_occurrence co
+FROM @cdmDatabaseSchema.condition_occurrence co
 JOIN @eventConceptsTable ec ON ec.concept_id = co.condition_concept_id AND (ec.domain_scope IN ('All','Condition'))
 UNION ALL
 SELECT ec.filter_id, ec.filter_name, ms.person_id, ms.visit_occurrence_id, ms.visit_detail_id
-FROM @cdmSchema.measurement ms
+FROM @cdmDatabaseSchema.measurement ms
 JOIN @eventConceptsTable ec ON ec.concept_id = ms.measurement_concept_id AND (ec.domain_scope IN ('All','Measurement'))
 UNION ALL
 SELECT ec.filter_id, ec.filter_name, ob.person_id, ob.visit_occurrence_id, ob.visit_detail_id
-FROM @cdmSchema.observation ob
+FROM @cdmDatabaseSchema.observation ob
 JOIN @eventConceptsTable ec ON ec.concept_id = ob.observation_concept_id AND (ec.domain_scope IN ('All','Observation'));
 
 DROP TABLE IF EXISTS #event_visits;
@@ -131,7 +131,7 @@ FROM #qualifying_visits;
 DROP TABLE IF EXISTS #costs_raw;
 CREATE TABLE #costs_raw AS
 SELECT cost_event_id, person_id, cost
-FROM @cdmSchema.cost
+FROM @cdmDatabaseSchema.cost
 WHERE cost_concept_id = @costConceptId
   AND currency_concept_id = @currencyConceptId;
 
@@ -157,7 +157,7 @@ SELECT
   qd.visit_detail_id,
   c.cost
 FROM #primary_filter_details qd
-JOIN @cdmSchema.visit_detail vd ON vd.visit_detail_id = qd.visit_detail_id
+JOIN @cdmDatabaseSchema.visit_detail vd ON vd.visit_detail_id = qd.visit_detail_id
 JOIN #costs_raw c ON c.cost_event_id = qd.visit_detail_id AND c.person_id = qd.person_id;
 {@endif}
 
