@@ -10,7 +10,7 @@
 #' @importFrom DatabaseConnector connect disconnect executeSql insertTable querySql querySqlToAndromeda
 #' @importFrom glue glue
 #' @importFrom purrr compact is_null map_chr map_dfr pmap_dfr pluck walk
+#' @importFrom rlang %||%
 #' @importFrom SqlRender loadRenderTranslateSql render translate
-
 ## usethis namespace: end
 NULL

@@ -11,17 +11,17 @@ validateInputs <- function(params) {
   checkmate::assertIntegerish(params$restrictVisitConceptIds, null.ok = TRUE)
   checkmate::assertList(params$eventFilters, null.ok = TRUE, types = "list")
   # ... more checks for each parameter
-  
+
   if (!is.null(params$eventFilters)) {
-    purrr::iwalk(params$eventFilters, ~{
+    purrr::iwalk(params$eventFilters, ~ {
       checkmate::assertList(.x, names = "named")
       checkmate::assertNames(names(.x), must.include = c("name", "concepts", "domainScope"))
       checkmate::assertCharacter(.x$name, len = 1)
       checkmate::assertIntegerish(.x$concepts)
-      checkmate::assertChoice(.x$domainScope, c("All","Condition","Procedure","Drug","Measurement","Observation"))
+      checkmate::assertChoice(.x$domainScope, c("All", "Condition", "Procedure", "Drug", "Measurement", "Observation"))
     })
   }
-  
+
   invisible(TRUE)
 }
 
@@ -34,4 +34,27 @@ checkMicrocostingPrerequisites <- function(conn, cdmSchema) {
     rlang::abort("microCosting=TRUE requires the cdm.visit_detail table, which was not found or is not accessible.")
   }
   invisible(TRUE)
+}
+
+# Validate event filters structure
+validateEventFilters <- function(eventFilters) {
+  if (!is.list(eventFilters)) {
+    stop("eventFilters must be a list")
+  }
+
+  for (i in seq_along(eventFilters)) {
+    filter <- eventFilters[[i]]
+
+    if (!all(c("name", "domain", "conceptIds") %in% names(filter))) {
+      stop(sprintf("Event filter %d missing required fields (name, domain, conceptIds)", i))
+    }
+
+    if (!filter$domain %in% c("All", "Drug", "Procedure", "Condition", "Measurement", "Observation")) {
+      stop(sprintf("Invalid domain '%s' in event filter %d", filter$domain, i))
+    }
+
+    if (!is.numeric(filter$conceptIds) || length(filter$conceptIds) == 0) {
+      stop(sprintf("conceptIds must be non-empty numeric vector in event filter %d", i))
+    }
+  }
 }
