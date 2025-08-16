@@ -5,6 +5,8 @@
 #' and utilization rates within a defined time window.
 #'
 #' @param connection DatabaseConnector connectionection object
+#' @param connectionDetails         An R object of type `connectionDetails` created by the
+#'                                  `DatabaseConnector::createConnectionDetails` function.
 #' @param cdmDatabaseSchema Schema name for CDM tables
 #' @param cohortDatabaseSchema Schema name for cohort table
 #' @param cohortTable Name of the cohort table
@@ -52,7 +54,23 @@ calculateCostOfCare <- function(
     verbose = TRUE,
     logger = NULL) {
   # Start timing
+  
   startTime <- Sys.time()
+  
+  if (is.null(connectionDetails) && is.null(connection)) {
+    stop("Need to provide either connectionDetails or connection")
+  }
+  if (!is.null(connectionDetails) && !is.null(connection)) {
+    stop("Need to provide either connectionDetails or connection, not both")
+  }
+  
+  if (!is.null(connectionDetails)) {
+    checkmate::assertClass(connectionDetails, "ConnectionDetails")
+    connection <- DatabaseConnector::connect(connectionDetails)
+    on.exit(DatabaseConnector::disconnect(connection))
+  } else {
+    checkmate::assertClass(connection, "DatabaseConnectorJdbcConnection")
+  }
 
   # Validate and process arguments
   args <- processArguments(

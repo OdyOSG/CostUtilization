@@ -1,7 +1,7 @@
 validateInputs <- function(params) {
   # Basic type checks
   rlang::check_installed("checkmate")
-  checkmate::assertClass(params$conn, "DatabaseConnection")
+  checkmate::assertClass(params$connection, "DatabaseConnection")  # Not 'conn'
   checkmate::assertString(params$cdmSchema)
   checkmate::assertString(params$cohortSchema)
   checkmate::assertString(params$cohortTable)
@@ -12,18 +12,21 @@ validateInputs <- function(params) {
   checkmate::assertList(params$eventFilters, null.ok = TRUE, types = "list")
   # ... more checks for each parameter
 
-  if (!is.null(params$eventFilters)) {
-    purrr::iwalk(params$eventFilters, ~ {
-      checkmate::assertList(.x, names = "named")
-      checkmate::assertNames(names(.x), must.include = c("name", "concepts", "domainScope"))
-      checkmate::assertCharacter(.x$name, len = 1)
-      checkmate::assertIntegerish(.x$concepts)
-      checkmate::assertChoice(.x$domainScope, c("All", "Condition", "Procedure", "Drug", "Measurement", "Observation"))
-    })
-  }
+  validateInputs <- function(params) {
+
+    if (!is.null(params$eventFilters)) {
+      purrr::iwalk(params$eventFilters, ~ {
+        checkmate::assertList(.x, names = "named")
+        # Fix field names to match actual usage
+        checkmate::assertNames(names(.x), must.include = c("name", "domain", "conceptIds"))
+        checkmate::assertCharacter(.x$name, len = 1)
+        checkmate::assertIntegerish(.x$conceptIds)  # Changed from 'concepts'
+        checkmate::assertChoice(.x$domain, c("All", "Condition", "Procedure", "Drug", "Measurement", "Observation"))
+      })
+    }
 
   invisible(TRUE)
-}
+}}
 
 checkMicrocostingPrerequisites <- function(conn, cdmSchema) {
   sql <- "SELECT TOP 1 visit_detail_id FROM @cdmSchema.visit_detail;"

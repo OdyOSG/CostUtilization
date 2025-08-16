@@ -3,7 +3,7 @@ cleanupTempTables <- function(connection, schema, ...) {
   for (table in tables) {
     if (!is.null(table)) {
       sql <- "DROP TABLE IF EXISTS @schema.@table;"
-      Databaseconnectionector::renderTranslateExecuteSql(
+      DatabaseConnector::renderTranslateExecuteSql(  # Fixed typo
         connection,
         sql,
         schema = schema,
