@@ -67,39 +67,6 @@ NULL
 # Package environment for storing package-level variables
 .pkgenv <- new.env(parent = emptyenv())
 
-#' Get Package Logger
-#'
-#' @description
-#' Returns the package logger instance, creating one if it doesn't exist
-#'
-#' @return ParallelLogger logger instance
-#' @export
-getCostUtilizationLogger <- function() {
-  if (is.null(.pkgenv$logger)) {
-    .pkgenv$logger <- ParallelLogger::createLogger(
-      name = "CostUtilization",
-      threshold = "INFO",
-      appenders = list(ParallelLogger::createConsoleAppender())
-    )
-  }
-  return(.pkgenv$logger)
-}
-
-#' Set Package Logger
-#'
-#' @description
-#' Sets a custom logger for the package
-#'
-#' @param logger A ParallelLogger logger instance
-#'
-#' @return Invisible NULL
-#' @export
-setCostUtilizationLogger <- function(logger) {
-  checkmate::assertClass(logger, "Logger")
-  .pkgenv$logger <- logger
-  invisible(NULL)
-}
-
 #' Get Default Cost Concept IDs
 #'
 #' @description
