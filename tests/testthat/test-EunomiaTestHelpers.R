@@ -41,14 +41,14 @@ testthat::test_that("injectCostData handles an empty database gracefully", {
   )
 })
 
-testthat::test_that("transformCostToCdmV5p4 creates proper long format", {
+testthat::test_that("transformCostToCdmV5dot4 creates proper long format", {
   connectionDetails <- Eunomia::getEunomiaConnectionDetails()
   connection <- withr::local_db_connection(
     DatabaseConnector::connect(connectionDetails)
   )
   
   # Run the full transformation process
-  transformCostToCdmV5p4(connectionDetails)
+  transformCostToCdmV5dot4(connectionDetails)
   
   tables <- tolower(DatabaseConnector::getTableNames(connection, "main"))
   testthat::expect_true("cost_v5_3_backup" %in% tables)
@@ -61,7 +61,7 @@ testthat::test_that("transformCostToCdmV5p4 creates proper long format", {
   testthat::expect_true(all(expectedColumns %in% actualColumns))
 })
 
-testthat::test_that("transformCostToCdmV5p4 auto-injects data if cost table is missing", {
+testthat::test_that("transformCostToCdmV5dot4 auto-injects data if cost table is missing", {
   # This test verifies the new, more robust behavior
   connectionDetails <- DatabaseConnector::createConnectionDetails(
     dbms = "sqlite",
@@ -70,7 +70,7 @@ testthat::test_that("transformCostToCdmV5p4 auto-injects data if cost table is m
   
   # This should NOT error, but instead run injectCostData first
   testthat::expect_no_error({
-    connection <- transformCostToCdmV5p4(connectionDetails)
+    connection <- transformCostToCdmV5dot4(connectionDetails)
     withr::defer(DatabaseConnector::disconnect(connection))
   })
 })
