@@ -4,7 +4,7 @@
 #' Performs cost-of-care analysis for a specified cohort, calculating total costs
 #' and utilization rates within a defined time window.
 #'
-#' @param connection DatabaseConnector connectionection object
+#' @param connection DatabaseConnector connection object
 #' @param connectionDetails         An R object of type `connectionDetails` created by the
 #'                                  `DatabaseConnector::createConnectionDetails` function.
 #' @param cdmDatabaseSchema Schema name for CDM tables
@@ -31,9 +31,28 @@
 #' If returnFormat = "tibble": A tibble with cost and utilization metrics
 #' If returnFormat = "list": A list with results and diagnostics tibbles
 #'
+#' @examples
+#' \dontrun{
+#' connection <- DatabaseConnector::connect(connectionDetails)
+#' 
+#' results <- calculateCostOfCare(
+#'   connection = connection,
+#'   cdmDatabaseSchema = "cdm_schema",
+#'   cohortDatabaseSchema = "results_schema",
+#'   cohortTable = "cohort",
+#'   cohortId = 1,
+#'   anchorCol = "cohort_start_date",
+#'   startOffsetDays = -365,
+#'   endOffsetDays = 0
+#' )
+#' 
+#' DatabaseConnector::disconnect(connection)
+#' }
+#'
 #' @export
 calculateCostOfCare <- function(
-    connection,
+    connection = NULL,
+    connectionDetails = NULL,
     cdmDatabaseSchema,
     cohortDatabaseSchema,
     cohortTable,
@@ -53,15 +72,16 @@ calculateCostOfCare <- function(
     returnFormat = c("tibble", "list"),
     verbose = TRUE,
     logger = NULL) {
-  # Start timing
   
+  # Start timing
   startTime <- Sys.time()
   
+  # Handle connection/connectionDetails
   if (is.null(connectionDetails) && is.null(connection)) {
-    stop("Need to provide either connectionDetails or connection")
+    cli::cli_abort("Need to provide either connectionDetails or connection")
   }
   if (!is.null(connectionDetails) && !is.null(connection)) {
-    stop("Need to provide either connectionDetails or connection, not both")
+    cli::cli_abort("Need to provide either connectionDetails or connection, not both")
   }
   
   if (!is.null(connectionDetails)) {
@@ -71,7 +91,7 @@ calculateCostOfCare <- function(
   } else {
     checkmate::assertClass(connection, "DatabaseConnectorJdbcConnection")
   }
-
+  
   # Validate and process arguments
   args <- processArguments(
     anchorCol = anchorCol,
@@ -83,10 +103,10 @@ calculateCostOfCare <- function(
     eventFilters = eventFilters,
     primaryEventFilterName = primaryEventFilterName
   )
-
+  
   # Log start
   logMessage("Starting cost of care analysis", verbose, logger, "INFO")
-
+  
   # Create execution environment
   execEnv <- createExecutionEnvironment(
     connection = connection,
@@ -95,7 +115,7 @@ calculateCostOfCare <- function(
     verbose = verbose,
     logger = logger
   )
-
+  
   # Setup cleanup
   on.exit(
     {
@@ -110,7 +130,7 @@ calculateCostOfCare <- function(
     },
     add = TRUE
   )
-
+  
   # Materialize helper tables if needed
   helperTables <- materializeHelperTables(
     connection = connection,
@@ -120,7 +140,7 @@ calculateCostOfCare <- function(
     verbose = verbose,
     logger = logger
   )
-
+  
   # Prepare SQL parameters
   sqlParams <- prepareSqlParameters(
     cdmDatabaseSchema = cdmDatabaseSchema,
@@ -139,7 +159,7 @@ calculateCostOfCare <- function(
     helperTables = helperTables,
     execEnv = execEnv
   )
-
+  
   # Execute analysis
   executeCostAnalysis(
     connection = connection,
@@ -149,7 +169,7 @@ calculateCostOfCare <- function(
     verbose = verbose,
     logger = logger
   )
-
+  
   # Retrieve and format results
   results <- retrieveResults(
     connection = connection,
@@ -158,7 +178,7 @@ calculateCostOfCare <- function(
     verbose = verbose,
     logger = logger
   )
-
+  
   return(results)
 }
 
@@ -169,12 +189,12 @@ processArguments <- function(anchorCol, returnFormat, targetDialect, connection,
   # Match arguments
   anchorCol <- rlang::arg_match(anchorCol)
   returnFormat <- rlang::arg_match(returnFormat)
-
+  
   # Auto-detect dialect if needed
   if (is.null(targetDialect)) {
     targetDialect <- DatabaseConnector::dbms(connection)
   }
-
+  
   # Validate inputs
   validateCostOfCareInputs(
     connection = connection,
@@ -183,13 +203,13 @@ processArguments <- function(anchorCol, returnFormat, targetDialect, connection,
     eventFilters = eventFilters,
     primaryEventFilterName = primaryEventFilterName
   )
-
+  
   # Process primary filter ID for micro-costing
   primaryFilterId <- 1L
   if (microCosting && !is.null(eventFilters) && !is.null(primaryEventFilterName)) {
     primaryFilterId <- getPrimaryFilterId(eventFilters, primaryEventFilterName)
   }
-
+  
   list(
     anchorCol = anchorCol,
     returnFormat = returnFormat,
@@ -202,7 +222,7 @@ processArguments <- function(anchorCol, returnFormat, targetDialect, connection,
 createExecutionEnvironment <- function(connection, tempEmulationSchema, asPermanent,
                                        verbose, logger) {
   tablePrefix <- paste0("cu_", paste(sample(letters, 6), collapse = ""))
-
+  
   env <- list(
     tablePrefix = tablePrefix,
     resultsTable = paste0(tablePrefix, "_res"),
@@ -213,10 +233,10 @@ createExecutionEnvironment <- function(connection, tempEmulationSchema, asPerman
     asPermanent = asPermanent,
     tempTables = list()
   )
-
+  
   # Pre-create results tables
   createResultsTables(connection, env, tempEmulationSchema)
-
+  
   return(env)
 }
 
@@ -224,7 +244,7 @@ createExecutionEnvironment <- function(connection, tempEmulationSchema, asPerman
 cleanupExecutionEnvironment <- function(execEnv, connection) {
   # Clean up SQL temp tables
   cleanupSqlTempTables(connection)
-
+  
   # Clean up created tables if not permanent
   if (!execEnv$asPermanent) {
     tablesToClean <- c(
@@ -233,7 +253,7 @@ cleanupExecutionEnvironment <- function(execEnv, connection) {
       execEnv$restrictVisitTable,
       execEnv$eventConceptsTable
     )
-
+    
     cleanupTempTables(
       connection,
       execEnv$tempEmulationSchema,
@@ -242,18 +262,42 @@ cleanupExecutionEnvironment <- function(execEnv, connection) {
   }
 }
 
+# Clean up SQL-specific temp tables
+cleanupSqlTempTables <- function(connection) {
+  # Clean up any SQL-specific temp tables
+  tryCatch({
+    dbms <- tolower(DatabaseConnector::dbms(connection))
+    
+    if (dbms == "sql server") {
+      # SQL Server temp tables
+      DatabaseConnector::executeSql(connection, "IF OBJECT_ID('tempdb..#cohort_person') IS NOT NULL DROP TABLE #cohort_person;")
+      DatabaseConnector::executeSql(connection, "IF OBJECT_ID('tempdb..#time_window') IS NOT NULL DROP TABLE #time_window;")
+      DatabaseConnector::executeSql(connection, "IF OBJECT_ID('tempdb..#visit_costs') IS NOT NULL DROP TABLE #visit_costs;")
+      DatabaseConnector::executeSql(connection, "IF OBJECT_ID('tempdb..#filtered_visits') IS NOT NULL DROP TABLE #filtered_visits;")
+    } else if (dbms %in% c("postgresql", "redshift")) {
+      # PostgreSQL/Redshift temp tables
+      DatabaseConnector::executeSql(connection, "DROP TABLE IF EXISTS cohort_person;")
+      DatabaseConnector::executeSql(connection, "DROP TABLE IF EXISTS time_window;")
+      DatabaseConnector::executeSql(connection, "DROP TABLE IF EXISTS visit_costs;")
+      DatabaseConnector::executeSql(connection, "DROP TABLE IF EXISTS filtered_visits;")
+    }
+  }, error = function(e) {
+    # Silently ignore cleanup errors
+  })
+}
+
 # Materialize helper tables efficiently
 materializeHelperTables <- function(connection, restrictVisitConceptIds, eventFilters,
                                     execEnv, verbose, logger) {
   helperTables <- list()
-
+  
   # Materialize visit restrictions
   if (!is.null(restrictVisitConceptIds)) {
     logMessage("Materializing visit concept restrictions", verbose, logger, "DEBUG")
-
+    
     execEnv$restrictVisitTable <- paste0(execEnv$tablePrefix, "_visit")
     helperTables$restrictVisitTable <- execEnv$restrictVisitTable
-
+    
     materializeConceptTable(
       connection = connection,
       conceptIds = restrictVisitConceptIds,
@@ -262,14 +306,14 @@ materializeHelperTables <- function(connection, restrictVisitConceptIds, eventFi
       tempEmulationSchema = execEnv$tempEmulationSchema
     )
   }
-
+  
   # Materialize event filters
   if (!is.null(eventFilters)) {
     logMessage("Materializing event filter concepts", verbose, logger, "DEBUG")
-
+    
     execEnv$eventConceptsTable <- paste0(execEnv$tablePrefix, "_event")
     helperTables$eventConceptsTable <- execEnv$eventConceptsTable
-
+    
     materializeEventFilterTable(
       connection = connection,
       eventFilters = eventFilters,
@@ -277,7 +321,7 @@ materializeHelperTables <- function(connection, restrictVisitConceptIds, eventFi
       tempEmulationSchema = execEnv$tempEmulationSchema
     )
   }
-
+  
   return(helperTables)
 }
 
@@ -314,18 +358,18 @@ prepareSqlParameters <- function(cdmDatabaseSchema, cohortDatabaseSchema, cohort
 executeCostAnalysis <- function(connection, sqlParams, targetDialect,
                                 tempEmulationSchema, verbose, logger) {
   logMessage("Executing cost analysis SQL", verbose, logger, "INFO")
-
-  # Read and render SQL
+  
+  # Read and render SQL - Fixed case sensitivity
   sql <- SqlRender::readSql(
     system.file("sql", "MainCostUtilization.sql", package = "CostUtilization")
   )
-
+  
   sql <- SqlRender::render(sql, warnOnMissingParameters = FALSE, .params = sqlParams)
   sql <- SqlRender::translate(sql, targetDialect = targetDialect)
-
+  
   # Split and execute
   sqlStatements <- SqlRender::splitSql(sql)
-
+  
   withCallingHandlers(
     {
       for (i in seq_along(sqlStatements)) {
@@ -339,26 +383,26 @@ executeCostAnalysis <- function(connection, sqlParams, targetDialect,
       stop(e)
     }
   )
-
+  
   logMessage("SQL execution completed successfully", verbose, logger, "INFO")
 }
 
 # Retrieve and format results
 retrieveResults <- function(connection, execEnv, returnFormat, verbose, logger) {
   logMessage("Retrieving results", verbose, logger, "DEBUG")
-
+  
   # Retrieve main results
   resultsSql <- sprintf("SELECT * FROM %s", execEnv$resultsTable)
-  results <- DatabaseConnector::querySql(connection, resultsSql) %>%
-    dplyr::as_tibble() %>%
+  results <- DatabaseConnector::querySql(connection, resultsSql) |>
+    dplyr::as_tibble() |>
     standardizeColumnNames()
-
+  
   # Retrieve diagnostics
   diagSql <- sprintf("SELECT * FROM %s", execEnv$diagTable)
-  diagnostics <- DatabaseConnector::querySql(connection, diagSql) %>%
-    dplyr::as_tibble() %>%
+  diagnostics <- DatabaseConnector::querySql(connection, diagSql) |>
+    dplyr::as_tibble() |>
     standardizeColumnNames()
-
+  
   # Log summary
   if (verbose && nrow(results) > 0) {
     logMessage(
@@ -371,7 +415,7 @@ retrieveResults <- function(connection, execEnv, returnFormat, verbose, logger) 
       verbose, logger, "INFO"
     )
   }
-
+  
   # Return based on format
   if (returnFormat == "tibble") {
     return(results)
@@ -390,30 +434,44 @@ retrieveResults <- function(connection, execEnv, returnFormat, verbose, logger) 
 # Validate inputs
 validateCostOfCareInputs <- function(connection, cdmDatabaseSchema, microCosting,
                                      eventFilters, primaryEventFilterName) {
-  # Check connectionection
+  # Check connection
   if (!DatabaseConnector::dbIsValid(connection)) {
-    stop("Invalid database connectionection")
+    cli::cli_abort("Invalid database connection")
   }
-
+  
   # Check schema exists
   if (!schemaExists(connection, cdmDatabaseSchema)) {
-    stop(sprintf("CDM schema '%s' does not exist", cdmDatabaseSchema))
+    cli::cli_abort("CDM schema '{cdmDatabaseSchema}' does not exist")
   }
-
+  
   # Check micro-costing prerequisites
   if (microCosting) {
     if (!tableExists(connection, cdmDatabaseSchema, "visit_detail")) {
-      stop("Micro-costing requires visit_detail table in CDM")
+      cli::cli_abort("Micro-costing requires visit_detail table in CDM")
     }
-
+    
     if (!is.null(primaryEventFilterName) && is.null(eventFilters)) {
-      stop("primaryEventFilterName specified but no eventFilters provided")
+      cli::cli_abort("primaryEventFilterName specified but no eventFilters provided")
     }
   }
-
+  
   # Validate event filters
   if (!is.null(eventFilters)) {
     validateEventFilters(eventFilters)
+  }
+}
+
+# Validate event filters structure
+validateEventFilters <- function(eventFilters) {
+  checkmate::assertList(eventFilters, min.len = 1)
+  
+  for (i in seq_along(eventFilters)) {
+    filter <- eventFilters[[i]]
+    checkmate::assertList(filter, names = "named")
+    checkmate::assertNames(names(filter), must.include = c("name", "domain", "conceptIds"))
+    checkmate::assertCharacter(filter$name, len = 1)
+    checkmate::assertChoice(filter$domain, c("All", "Condition", "Procedure", "Drug", "Measurement", "Observation"))
+    checkmate::assertIntegerish(filter$conceptIds, min.len = 1)
   }
 }
 
@@ -421,14 +479,11 @@ validateCostOfCareInputs <- function(connection, cdmDatabaseSchema, microCosting
 getPrimaryFilterId <- function(eventFilters, primaryEventFilterName) {
   filterNames <- purrr::map_chr(eventFilters, "name")
   id <- which(filterNames == primaryEventFilterName)
-
+  
   if (length(id) == 0) {
-    stop(sprintf(
-      "primaryEventFilterName '%s' not found in eventFilters",
-      primaryEventFilterName
-    ))
+    cli::cli_abort("primaryEventFilterName '{primaryEventFilterName}' not found in eventFilters")
   }
-
+  
   as.integer(id)
 }
 
@@ -458,7 +513,7 @@ createResultsTables <- function(connection, execEnv, tempEmulationSchema) {
     }
   )
   DatabaseConnector::executeSql(connection, resultsSql)
-
+  
   # Diagnostics table
   diagSql <- SqlRender::render(
     "CREATE TABLE @table (
@@ -489,11 +544,11 @@ materializeConceptTable <- function(connection, conceptIds, tableName, columnNam
     column = columnName
   )
   DatabaseConnector::executeSql(connection, createSql)
-
+  
   # Insert in batches for better performance
   batchSize <- 1000
   batches <- split(conceptIds, ceiling(seq_along(conceptIds) / batchSize))
-
+  
   for (batch in batches) {
     values <- paste(sprintf("(%s)", batch), collapse = ", ")
     insertSql <- SqlRender::render(
@@ -528,7 +583,7 @@ materializeEventFilterTable <- function(connection, eventFilters, tableName,
     }
   )
   DatabaseConnector::executeSql(connection, createSql)
-
+  
   # Prepare data for batch insert
   filterData <- purrr::imap_dfr(eventFilters, function(filter, idx) {
     dplyr::tibble(
@@ -538,10 +593,10 @@ materializeEventFilterTable <- function(connection, eventFilters, tableName,
       concept_id = filter$conceptIds
     )
   })
-
-  # Insert data
+  
+  # Insert data - Fixed typo
   DatabaseConnector::insertTable(
-    connectionection = connection,
+    connection = connection,  # Fixed from 'connectionection'
     tableName = tableName,
     databaseSchema = tempEmulationSchema,
     data = filterData,
@@ -553,16 +608,24 @@ materializeEventFilterTable <- function(connection, eventFilters, tableName,
 # Standardize column names from database
 standardizeColumnNames <- function(df) {
   names(df) <- tolower(names(df))
-  names(df) <- gsub("_", "", names(df), fixed = TRUE)
+  # Don't remove underscores - they're meaningful in column names
   df
 }
 
 # Logging helper
 logMessage <- function(message, verbose, logger, level = "INFO") {
   if (verbose) {
-    cat(sprintf("[%s] %s: %s\n", Sys.time(), level, message))
+    if (level == "ERROR") {
+      cli::cli_alert_danger(message)
+    } else if (level == "WARNING") {
+      cli::cli_alert_warning(message)
+    } else if (level == "INFO") {
+      cli::cli_alert_info(message)
+    } else {
+      cli::cli_alert(message)
+    }
   }
-
+  
   if (!is.null(logger) && is.function(logger$log)) {
     logger$log(level, message)
   }
@@ -599,4 +662,20 @@ tableExists <- function(connection, schema, table) {
       FALSE
     }
   )
+}
+
+# Clean up temp tables helper (from utils.R)
+cleanupTempTables <- function(connection, schema, ...) {
+  tables <- list(...)
+  for (table in tables) {
+    if (!is.null(table)) {
+      sql <- "DROP TABLE IF EXISTS @schema.@table;"
+      DatabaseConnector::renderTranslateExecuteSql(
+        connection,
+        sql,
+        schema = schema,
+        table = table
+      )
+    }
+  }
 }
