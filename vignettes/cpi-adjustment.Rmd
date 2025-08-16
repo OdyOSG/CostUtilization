@@ -1,0 +1,330 @@
+---
+title: "Using CPI Adjustment in Cost Analysis"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Using CPI Adjustment in Cost Analysis}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE
+)
+```
+
+```{r setup}
+library(CostUtilization)
+library(DatabaseConnector)
+library(dplyr)
+library(ggplot2)
+```
+
+## Introduction
+
+The CostUtilization package now supports Consumer Price Index (CPI) adjustment for healthcare costs. This feature allows you to adjust historical costs to a common year, making temporal comparisons more meaningful by accounting for inflation.
+
+All CPI calculations are performed directly in SQL for optimal performance, with no R session calculations required.
+
+## Quick Start
+
+The simplest way to use CPI adjustment is to enable it in your cost analysis:
+
+```{r}
+# Connect to your database
+connection <- connect(
+  dbms = "postgresql",
+  server = "localhost/ohdsi",
+  user = "user",
+  password = "password"
+)
+
+# Run analysis with CPI adjustment to 2023 dollars
+results <- calculateCostOfCareWithCpi(
+  connection = connection,
+  cdmDatabaseSchema = "cdm",
+  cohortDatabaseSchema = "results",
+  cohortTable = "cohort",
+  cohortId = 1,
+  cpiAdjustment = TRUE,
+  cpiTargetYear = 2023
+)
+
+# Results now include costs adjusted to 2023 dollars
+head(results)
+```
+
+## Understanding CPI Adjustment
+
+### What is CPI?
+
+The Consumer Price Index (CPI) measures changes in the price level of a basket of consumer goods and services. For healthcare cost analysis, we typically use the Medical Care CPI, which tracks inflation specifically in healthcare services.
+
+### How Adjustment Works
+
+When you enable CPI adjustment:
+
+1. A CPI lookup table is created in your database (if it doesn't exist)
+2. Each cost is joined with the CPI factor for its year
+3. Costs are multiplied by the adjustment factor during aggregation
+4. All costs are expressed in the target year's dollars
+
+The adjustment factor is calculated as:
+```
+adjustment_factor = CPI_target_year / CPI_cost_year
+```
+
+## Setting Up CPI Data
+
+### Using Default Data
+
+The package includes U.S. Medical Care CPI data from 1980-2023:
+
+```{r}
+# Load and examine default CPI data
+cpiData <- loadDefaultCpiData()
+head(cpiData)
+
+# Plot CPI trend
+ggplot(cpiData, aes(x = year, y = cpi_value)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "U.S. Medical Care CPI (1980-2023)",
+       x = "Year",
+       y = "CPI Value") +
+  theme_minimal()
+```
+
+### Using Custom CPI Data
+
+You can use your own CPI data (e.g., for different countries or specific healthcare sectors):
+
+```{r}
+# Create custom CPI data
+customCpi <- data.frame(
+  year = 2015:2023,
+  cpi_value = c(100, 103, 107, 112, 118, 125, 132, 140, 148)
+)
+
+# Create CPI table with custom data
+createCpiTable(
+  connection = connection,
+  cpiDatabaseSchema = "results",
+  cpiTable = "custom_cpi",
+  cpiData = customCpi
+)
+
+# Use custom CPI in analysis
+results <- calculateCostOfCareWithCpi(
+  connection = connection,
+  cdmDatabaseSchema = "cdm",
+  cohortDatabaseSchema = "results",
+  cohortTable = "cohort",
+  cohortId = 1,
+  cpiAdjustment = TRUE,
+  cpiDatabaseSchema = "results",
+  cpiTable = "custom_cpi",
+  cpiTargetYear = 2023
+)
+```
+
+## Advanced Usage
+
+### Updating CPI Data
+
+Keep your CPI data current by updating it periodically:
+
+```{r}
+# Add new years to existing CPI table
+newCpiData <- data.frame(
+  year = c(2024, 2025),
+  cpi_value = c(565.2, 580.1)
+)
+
+updateCpiData(
+  connection = connection,
+  cpiDatabaseSchema = "results",
+  cpiTable = "cpi_factors",
+  newCpiData = newCpiData,
+  replaceAll = FALSE  # Append/update mode
+)
+```
+
+### Interpolating Missing Years
+
+If your CPI data has gaps, you can interpolate missing values:
+
+```{r}
+# Load sparse CPI data
+sparseCpi <- data.frame(
+  year = c(2015, 2018, 2020, 2023),
+  cpi_value = c(100, 112, 120, 135)
+)
+
+# Interpolate missing years
+completeCpi <- interpolateCpiData(sparseCpi, startYear = 2015, endYear = 2023)
+print(completeCpi)
+
+# Create table with interpolated data
+createCpiTable(
+  connection = connection,
+  cpiDatabaseSchema = "results",
+  cpiTable = "interpolated_cpi",
+  cpiData = completeCpi
+)
+```
+
+### Comparing Adjusted vs. Unadjusted Costs
+
+Run analyses with and without CPI adjustment to see the impact:
+
+```{r}
+# Without CPI adjustment
+resultsUnadjusted <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "cdm",
+  cohortDatabaseSchema = "results",
+  cohortTable = "cohort",
+  cohortId = 1
+)
+
+# With CPI adjustment to 2023
+resultsAdjusted <- calculateCostOfCareWithCpi(
+  connection = connection,
+  cdmDatabaseSchema = "cdm",
+  cohortDatabaseSchema = "results",
+  cohortTable = "cohort",
+  cohortId = 1,
+  cpiAdjustment = TRUE,
+  cpiTargetYear = 2023
+)
+
+# Compare results
+comparison <- resultsUnadjusted %>%
+  select(personId, totalCost) %>%
+  rename(unadjustedCost = totalCost) %>%
+  inner_join(
+    resultsAdjusted %>%
+      select(personId, totalCost) %>%
+      rename(adjustedCost = totalCost),
+    by = "personId"
+  ) %>%
+  mutate(
+    inflationImpact = (adjustedCost - unadjustedCost) / unadjustedCost * 100
+  )
+
+# Visualize impact
+ggplot(comparison, aes(x = inflationImpact)) +
+  geom_histogram(bins = 30, fill = "steelblue", alpha = 0.7) +
+  labs(title = "Impact of CPI Adjustment on Costs",
+       x = "Percentage Increase (%)",
+       y = "Number of Patients") +
+  theme_minimal()
+```
+
+## Performance Considerations
+
+### SQL-Based Processing
+
+All CPI adjustments happen in SQL, which provides several benefits:
+
+1. **No data movement**: Costs are adjusted during aggregation, not in R
+2. **Efficient joins**: CPI lookup table is indexed by year
+3. **Scalability**: Works with millions of cost records
+
+### Optimization Tips
+
+1. **Create CPI table once**: The CPI table only needs to be created once per database
+2. **Index on year**: The package automatically creates an index on the year column
+3. **Use appropriate schemas**: Place CPI table in a schema with good read performance
+
+```{r}
+# Check CPI table performance
+sql <- "
+SELECT 
+  COUNT(*) as total_costs,
+  COUNT(DISTINCT YEAR(visit_start_date)) as unique_years
+FROM cdm.visit_occurrence vo
+INNER JOIN cdm.cost c ON vo.visit_occurrence_id = c.cost_event_id
+WHERE vo.person_id IN (SELECT subject_id FROM results.cohort WHERE cohort_definition_id = 1)
+"
+
+stats <- querySql(connection, sql)
+print(stats)
+
+# If you have many years, ensure CPI table covers the range
+yearsNeeded <- 2010:2023
+cpiData <- loadDefaultCpiData()
+missingYears <- setdiff(yearsNeeded, cpiData$year)
+
+if (length(missingYears) > 0) {
+  cli::cli_warn("Missing CPI data for years: {missingYears}")
+}
+```
+
+## Troubleshooting
+
+### Common Issues
+
+1. **"Target year not found in CPI table"**
+   - Ensure your CPI data includes the target year
+   - Use `interpolateCpiData()` to fill gaps
+
+2. **"CPI table does not exist"**
+   - Set `createCpiTable = TRUE` in your function call
+   - Or manually create the table first
+
+3. **Performance issues**
+   - Check that the CPI table has an index on year
+   - Consider placing CPI table in a fast schema
+
+### Validation
+
+Always validate your CPI setup before running large analyses:
+
+```{r}
+# Validate CPI parameters
+validateCpiParameters(
+  connection = connection,
+  cpiDatabaseSchema = "results",
+  cpiTable = "cpi_factors",
+  targetYear = 2023
+)
+
+# Check CPI data quality
+sql <- "
+SELECT 
+  year,
+  cpi_value,
+  LAG(cpi_value) OVER (ORDER BY year) as prev_cpi,
+  (cpi_value - LAG(cpi_value) OVER (ORDER BY year)) / LAG(cpi_value) OVER (ORDER BY year) * 100 as yoy_inflation
+FROM results.cpi_factors
+ORDER BY year
+"
+
+cpiQuality <- querySql(connection, sql)
+print(cpiQuality)
+
+# Flag unusual inflation rates
+unusual <- cpiQuality %>%
+  filter(abs(yoy_inflation) > 10)
+
+if (nrow(unusual) > 0) {
+  cli::cli_warn("Unusual inflation rates detected:")
+  print(unusual)
+}
+```
+
+## Best Practices
+
+1. **Document your CPI source**: Always document where your CPI data comes from
+2. **Be consistent**: Use the same CPI series for all analyses in a project
+3. **Consider regional differences**: Use region-specific CPI when available
+4. **Update regularly**: Keep CPI data current for recent years
+5. **Report both values**: Consider reporting both adjusted and unadjusted costs
+
+## Conclusion
+
+CPI adjustment is a powerful feature for making healthcare costs comparable across time periods. By performing all calculations in SQL, the CostUtilization package ensures efficient processing even with large datasets. Whether you're conducting longitudinal studies or comparing historical cohorts, CPI adjustment helps ensure your cost analyses account for healthcare inflation.
