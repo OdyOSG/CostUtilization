@@ -42,16 +42,23 @@ injectCostData <- function(connection,
     FROM {cdmDatabaseSchema}.observation_period
   ")
   
-  personObsPeriods <- DatabaseConnector::querySql(connection, obsPeriodsSql) |>
-    dplyr::rename_with(tolower) |>
-    dplyr::mutate(
-      dplyr::across(dplyr::ends_with("_date"), as.Date)
-    )
+  personObsPeriods <- tryCatch({
+    DatabaseConnector::querySql(connection, obsPeriodsSql) |>
+      dplyr::rename_with(tolower) |>
+      dplyr::mutate(
+        dplyr::across(dplyr::ends_with("_date"), as.Date)
+      )
+  }, error = function(e) {
+    cli::cli_alert_danger("Failed to fetch observation periods: {e$message}")
+    rlang::abort("Cannot proceed without observation period data", parent = e)
+  })
   
   if (nrow(personObsPeriods) == 0) {
     cli::cli_alert_warning("No observation periods found. Skipping cost data injection.")
     return(invisible(connection))
   }
+  
+  cli::cli_alert_info("Found {nrow(personObsPeriods)} observation periods")
   
   payerPlansDf <- generatePayerPlans(personObsPeriods, seed = seed)
   
@@ -69,9 +76,9 @@ injectCostData <- function(connection,
   cli::cli_alert_info("Generating synthetic cost values")
   costRecordsDf <- generateCostRecords(eventTable, seed = seed)
   
-  # Step 4: Insert tables
+  # Step 4: Insert tables with transaction
   cli::cli_alert_info("Inserting tables into database")
-  insertTablesSafely(
+  insertCostTablesWithTransaction(
     connection = connection,
     cdmDatabaseSchema = cdmDatabaseSchema,
     payerPlansDf = payerPlansDf,
@@ -98,12 +105,12 @@ injectCostData <- function(connection,
 #' @examples
 #' \dontrun{
 #' connectionDetails <- Eunomia::getEunomiaConnectionDetails()
-#' transformCostToCdmV5p4(connectionDetails)
+#' transformCostToCdmV5dot4(connectionDetails)
 #' }
-transformCostToCdmV5p4 <- function(connectionDetails,
-                                   cdmDatabaseSchema = "main",
-                                   sourceCostTable = "cost",
-                                   createIndexes = TRUE) {
+transformCostToCdmV5dot4 <- function(connectionDetails,
+                                     cdmDatabaseSchema = "main",
+                                     sourceCostTable = "cost",
+                                     createIndexes = TRUE) {
   # Input validation
   checkmate::assertClass(connectionDetails, "connectionDetails")
   checkmate::assertString(cdmDatabaseSchema)
@@ -121,33 +128,52 @@ transformCostToCdmV5p4 <- function(connectionDetails,
     # Re-check after injection
     tablesInDb <- tolower(DatabaseConnector::getTableNames(connection, cdmDatabaseSchema))
     if (!tolower(sourceCostTable) %in% tablesInDb) {
-      rlang::abort(glue::glue(
-        "Source cost table '{cdmDatabaseSchema}.{sourceCostTable}' still not found after injection."
-      ))
+      cli::cli_alert_danger("Source cost table '{cdmDatabaseSchema}.{sourceCostTable}' still not found after injection.")
+      rlang::abort("Cannot proceed without source cost table")
     }
   }
   
   cli::cli_h2("Transforming wide cost table to CDM v5.4+ long format")
   
-  # Step 1: Backup existing table
-  cli::cli_alert_info("Backing up existing cost table")
-  backupCostTable(connection, cdmDatabaseSchema, sourceCostTable, tablesInDb)
+  # Use transaction for all operations
+  tryCatch({
+    # Begin transaction
+    DatabaseConnector::executeSql(connection, "BEGIN TRANSACTION;")
+    
+    # Step 1: Backup existing table
+    cli::cli_alert_info("Backing up existing cost table")
+    backupCostTable(connection, cdmDatabaseSchema, sourceCostTable, tablesInDb)
+    
+    # Step 2: Create new table structure
+    cli::cli_alert_info("Creating new cost table with CDM v5.4+ structure")
+    createV5dot4CostTable(connection, cdmDatabaseSchema, sourceCostTable)
+    
+    # Step 3: Transform and insert data
+    cli::cli_alert_info("Transforming and inserting data")
+    transformAndInsertCostData(connection, cdmDatabaseSchema, sourceCostTable)
+    
+    # Step 4: Create indexes
+    if (createIndexes) {
+      cli::cli_alert_info("Creating indexes on the new cost table")
+      createCostIndexes(connection, cdmDatabaseSchema, sourceCostTable)
+    }
+    
+    # Commit transaction
+    DatabaseConnector::executeSql(connection, "COMMIT;")
+    cli::cli_alert_success("Successfully transformed cost table to CDM v5.4+ long format.")
+    
+  }, error = function(e) {
+    # Rollback on error
+    tryCatch(
+      DatabaseConnector::executeSql(connection, "ROLLBACK;"),
+      error = function(rollbackError) {
+        cli::cli_alert_warning("Failed to rollback transaction: {rollbackError$message}")
+      }
+    )
+    cli::cli_alert_danger("Failed to transform cost table: {e$message}")
+    rlang::abort("Cost table transformation failed", parent = e)
+  })
   
-  # Step 2: Create new table structure
-  cli::cli_alert_info("Creating new cost table with CDM v5.4+ structure")
-  createV5p4CostTable(connection, cdmDatabaseSchema, sourceCostTable)
-  
-  # Step 3: Transform and insert data
-  cli::cli_alert_info("Transforming and inserting data")
-  transformAndInsertCostData(connection, cdmDatabaseSchema, sourceCostTable)
-  
-  # Step 4: Create indexes
-  if (createIndexes) {
-    cli::cli_alert_info("Creating indexes on the new cost table")
-    createCostIndexes(connection, cdmDatabaseSchema, sourceCostTable)
-  }
-  
-  cli::cli_alert_success("Successfully transformed cost table to CDM v5.4+ long format.")
   invisible(connection)
 }
 
@@ -155,6 +181,10 @@ transformCostToCdmV5p4 <- function(connectionDetails,
 # Helper Functions --------------------------------------------------------
 
 #' Generate Payer Plans (Vectorized)
+#' 
+#' @param personObsPeriods A tibble containing person observation periods
+#' @param seed Random seed for reproducibility
+#' @return A tibble containing generated payer plan periods
 #' @noRd
 generatePayerPlans <- function(personObsPeriods, seed = 123) {
   withr::with_seed(seed, {
@@ -163,10 +193,12 @@ generatePayerPlans <- function(personObsPeriods, seed = 123) {
       "EPO-Basic-3000", "POS-Premium-1000", "HDHP-HSA-3500"
     )
     
+    cli::cli_alert_info("Generating payer plans for {nrow(personObsPeriods)} observation periods")
+    
     personPlans <- personObsPeriods |>
       dplyr::mutate(
-        startYear = lubridate::year(observation_period_start_date),
-        endYear = lubridate::year(observation_period_end_date),
+        startYear = lubridate::year(observationPeriodStartDate),
+        endYear = lubridate::year(observationPeriodEndDate),
         yearsSpanned = endYear - startYear,
         initialPlan = sample(planOptions, dplyr::n(), replace = TRUE)
       ) |>
@@ -183,12 +215,12 @@ generatePayerPlans <- function(personObsPeriods, seed = 123) {
         changeYears = purrr::map2(possibleYears, nChanges, sample, replace = FALSE),
         changeDates = purrr::map(changeYears, ~ as.Date(paste0(sort(.x), "-01-01")))
       ) |>
-      dplyr::select(person_id, observation_period_start_date, observation_period_end_date, initialPlan, changeDates) |>
+      dplyr::select(personId, observationPeriodStartDate, observationPeriodEndDate, initialPlan, changeDates) |>
       tidyr::unnest(changeDates) |>
-      dplyr::group_by(person_id) |>
+      dplyr::group_by(personId) |>
       dplyr::arrange(changeDates) |>
       dplyr::mutate(
-        planStartDate = dplyr::coalesce(dplyr::lag(changeDates), observation_period_start_date),
+        planStartDate = dplyr::coalesce(dplyr::lag(changeDates), observationPeriodStartDate),
         planEndDate = changeDates - 1
       ) |>
       dplyr::ungroup()
@@ -196,29 +228,29 @@ generatePayerPlans <- function(personObsPeriods, seed = 123) {
     # Combine periods with changes and those without
     finalPlans <- personObsPeriods |>
       dplyr::mutate(initialPlan = sample(planOptions, dplyr::n(), replace = TRUE)) |>
-      dplyr::anti_join(personPlans, by = "person_id") |>
+      dplyr::anti_join(personPlans, by = "personId") |>
       dplyr::select(
-        person_id,
-        planStartDate = observation_period_start_date,
-        planEndDate = observation_period_end_date,
+        personId,
+        planStartDate = observationPeriodStartDate,
+        planEndDate = observationPeriodEndDate,
         initialPlan
       ) |>
       dplyr::bind_rows(
         personPlans |>
-          dplyr::select(person_id, planStartDate, planEndDate, initialPlan)
+          dplyr::select(personId, planStartDate, planEndDate, initialPlan)
       ) |>
       # Add final period for those with changes
       dplyr::bind_rows(
         personPlans |>
-          dplyr::group_by(person_id) |>
+          dplyr::group_by(personId) |>
           dplyr::summarise(
             planStartDate = max(changeDates),
-            planEndDate = max(observation_period_end_date),
+            planEndDate = max(observationPeriodEndDate),
             initialPlan = dplyr::first(initialPlan)
           )
       ) |>
-      dplyr::arrange(person_id, planStartDate) |>
-      dplyr::group_by(person_id) |>
+      dplyr::arrange(personId, planStartDate) |>
+      dplyr::group_by(personId) |>
       # Assign plan names with some continuity
       dplyr::mutate(
         planName = purrr::accumulate(
@@ -242,18 +274,37 @@ generatePayerPlans <- function(personObsPeriods, seed = 123) {
       ) |>
       dplyr::select(
         payerPlanPeriodId,
-        person_id,
+        personId,
         payerPlanPeriodStartDate = planStartDate,
         payerPlanPeriodEndDate = planEndDate,
         payerSourceValue,
         planSourceValue
       )
+    
+    # Fix column names for database insertion
+    finalPlans <- finalPlans |>
+      dplyr::rename(
+        person_id = personId,
+        payer_plan_period_id = payerPlanPeriodId,
+        payer_plan_period_start_date = payerPlanPeriodStartDate,
+        payer_plan_period_end_date = payerPlanPeriodEndDate,
+        payer_source_value = payerSourceValue,
+        plan_source_value = planSourceValue
+      )
+    
+    cli::cli_alert_success("Generated {nrow(finalPlans)} payer plan periods")
   })
   return(finalPlans)
 }
 
 
 #' Fetch Clinical Events
+#' 
+#' @param connection Database connection
+#' @param cdmDatabaseSchema CDM database schema name
+#' @param costDomains Vector of cost domains to fetch
+#' @param payerPlansDf Tibble of payer plan periods
+#' @return A tibble containing clinical events with associated payer plans
 #' @noRd
 fetchClinicalEvents <- function(connection, cdmDatabaseSchema, costDomains, payerPlansDf) {
   costStructure <- list(
@@ -267,6 +318,8 @@ fetchClinicalEvents <- function(connection, cdmDatabaseSchema, costDomains, paye
   )
   costStructure <- costStructure[names(costStructure) %in% costDomains]
   
+  cli::cli_alert_info("Fetching events from {length(costStructure)} domains")
+  
   unionQueries <- purrr::imap_chr(costStructure, function(cols, domain) {
     glue::glue("
       SELECT
@@ -279,21 +332,50 @@ fetchClinicalEvents <- function(connection, cdmDatabaseSchema, costDomains, paye
   })
   fullQuery <- paste(unionQueries, collapse = "\nUNION ALL\n")
   
-  eventTable <- DatabaseConnector::querySql(connection, fullQuery) |>
-    dplyr::rename_with(tolower) |>
-    dplyr::mutate(event_date = as.Date(event_date))
+  eventTable <- tryCatch({
+    DatabaseConnector::querySql(connection, fullQuery) |>
+      dplyr::rename_with(tolower) |>
+      dplyr::mutate(eventDate = as.Date(event_date))
+  }, error = function(e) {
+    cli::cli_alert_danger("Failed to fetch clinical events: {e$message}")
+    rlang::abort("Cannot proceed without clinical event data", parent = e)
+  })
+  
+  cli::cli_alert_info("Fetched {nrow(eventTable)} clinical events")
+  
+  # Convert payer plans to use camelCase for joining
+  payerPlansForJoin <- payerPlansDf |>
+    dplyr::rename(
+      personId = person_id,
+      payerPlanPeriodId = payer_plan_period_id,
+      payerPlanPeriodStartDate = payer_plan_period_start_date,
+      payerPlanPeriodEndDate = payer_plan_period_end_date,
+      payerSourceValue = payer_source_value,
+      planSourceValue = plan_source_value
+    )
   
   eventTableWithPlans <- eventTable |>
-    dplyr::inner_join(payerPlansDf, by = "person_id", relationship = "many-to-many") |>
+    dplyr::rename(
+      eventId = event_id,
+      domainId = domain_id,
+      personId = person_id
+    ) |>
+    dplyr::inner_join(payerPlansForJoin, by = "personId", relationship = "many-to-many") |>
     dplyr::filter(
-      event_date >= payerPlanPeriodStartDate,
-      event_date <= payerPlanPeriodEndDate
+      eventDate >= payerPlanPeriodStartDate,
+      eventDate <= payerPlanPeriodEndDate
     )
+  
+  cli::cli_alert_success("Matched {nrow(eventTableWithPlans)} events to payer plans")
   
   return(eventTableWithPlans)
 }
 
 #' Generate Cost Records
+#' 
+#' @param eventTable A tibble containing clinical events with payer plan information
+#' @param seed Random seed for reproducibility
+#' @return A tibble containing generated cost records
 #' @noRd
 generateCostRecords <- function(eventTable, seed = 123) {
   nRecords <- nrow(eventTable)
@@ -302,12 +384,14 @@ generateCostRecords <- function(eventTable, seed = 123) {
     return(dplyr::tibble())
   }
   
+  cli::cli_alert_info("Generating cost records for {nRecords} events")
+  
   withr::with_seed(seed, {
     domainMultipliers <- c(
       Procedure = 5.0, Visit = 3.0, Drug = 2.0, Device = 4.0,
       Measurement = 1.5, Observation = 1.0, Condition = 2.5
     )
-    domainMult <- domainMultipliers[eventTable$domain_id]
+    domainMult <- domainMultipliers[eventTable$domainId]
     domainMult[is.na(domainMult)] <- 1.0
     
     baseCost <- stats::rlnorm(nRecords, meanlog = 4, sdlog = 1.5) * domainMult
@@ -328,8 +412,8 @@ generateCostRecords <- function(eventTable, seed = 123) {
     paidByPatient <- round(totalCost - paidByPayer, 2)
     
     copayAmount <- dplyr::case_when(
-      eventTable$domain_id == "Visit" ~ sample(c(25, 35, 50), nRecords, replace = TRUE),
-      eventTable$domain_id == "Drug" ~ sample(c(10, 25, 40), nRecords, replace = TRUE),
+      eventTable$domainId == "Visit" ~ sample(c(25, 35, 50), nRecords, replace = TRUE),
+      eventTable$domainId == "Drug" ~ sample(c(10, 25, 40), nRecords, replace = TRUE),
       TRUE ~ 0
     )
     
@@ -339,33 +423,45 @@ generateCostRecords <- function(eventTable, seed = 123) {
     paidPatientDeductible <- round(remainingPatient * 0.2, 2)
     
     costRecordsDf <- dplyr::tibble(
-      costId = seq_len(nRecords),
-      costEventId = eventTable$event_id,
-      costDomainId = eventTable$domain_id,
-      costTypeConceptId = 5032, # Administrative cost record
-      currencyConceptId = 44818668, # USD
-      totalCharge = totalCharge,
-      totalCost = totalCost,
-      totalPaid = paidByPayer + paidByPatient,
-      paidByPayer = paidByPayer,
-      paidByPatient = paidByPatient,
-      paidPatientCopay = paidPatientCopay,
-      paidPatientCoinsurance = paidPatientCoinsurance,
-      paidPatientDeductible = paidPatientDeductible,
-      paidByPrimary = paidByPayer,
-      payerPlanPeriodId = eventTable$payerPlanPeriodId,
-      amountAllowed = totalCost,
-      revenueCodeConceptId = 0,
-      drgConceptId = 0
+      cost_id = seq_len(nRecords),
+      cost_event_id = eventTable$eventId,
+      cost_domain_id = eventTable$domainId,
+      cost_type_concept_id = 5032, # Administrative cost record
+      currency_concept_id = 44818668, # USD
+      total_charge = totalCharge,
+      total_cost = totalCost,
+      total_paid = paidByPayer + paidByPatient,
+      paid_by_payer = paidByPayer,
+      paid_by_patient = paidByPatient,
+      paid_patient_copay = paidPatientCopay,
+      paid_patient_coinsurance = paidPatientCoinsurance,
+      paid_patient_deductible = paidPatientDeductible,
+      paid_by_primary = paidByPayer,
+      payer_plan_period_id = eventTable$payerPlanPeriodId,
+      amount_allowed = totalCost,
+      revenue_code_concept_id = 0,
+      drg_concept_id = 0
     )
   })
+  
+  cli::cli_alert_success("Generated {nrow(costRecordsDf)} cost records")
   return(costRecordsDf)
 }
 
-#' Safely Insert Tables
+#' Insert Cost Tables with Transaction Support
+#' 
+#' @param connection Database connection
+#' @param cdmDatabaseSchema CDM database schema name
+#' @param payerPlansDf Tibble of payer plan periods
+#' @param costRecordsDf Tibble of cost records
 #' @noRd
-insertTablesSafely <- function(connection, cdmDatabaseSchema, payerPlansDf, costRecordsDf) {
+insertCostTablesWithTransaction <- function(connection, cdmDatabaseSchema, payerPlansDf, costRecordsDf) {
   tryCatch({
+    # Begin transaction
+    DatabaseConnector::executeSql(connection, "BEGIN TRANSACTION;")
+    
+    # Insert payer_plan_period table
+    cli::cli_alert_info("Inserting payer_plan_period table with {nrow(payerPlansDf)} records")
     DatabaseConnector::insertTable(
       connection = connection,
       databaseSchema = cdmDatabaseSchema,
@@ -373,14 +469,12 @@ insertTablesSafely <- function(connection, cdmDatabaseSchema, payerPlansDf, cost
       data = payerPlansDf,
       dropTableIfExists = TRUE,
       createTable = TRUE,
-      camelCaseToSnakeCase = TRUE
+      camelCaseToSnakeCase = FALSE  # Already in snake_case
     )
-  }, error = function(e) {
-    rlang::abort("Failed to insert payer_plan_period table.", parent = e)
-  })
-  
-  if (nrow(costRecordsDf) > 0) {
-    tryCatch({
+    
+    # Insert cost table if there are records
+    if (nrow(costRecordsDf) > 0) {
+      cli::cli_alert_info("Inserting cost table with {nrow(costRecordsDf)} records")
       DatabaseConnector::insertTable(
         connection = connection,
         databaseSchema = cdmDatabaseSchema,
@@ -388,36 +482,73 @@ insertTablesSafely <- function(connection, cdmDatabaseSchema, payerPlansDf, cost
         data = costRecordsDf,
         dropTableIfExists = TRUE,
         createTable = TRUE,
-        camelCaseToSnakeCase = TRUE
+        camelCaseToSnakeCase = FALSE  # Already in snake_case
       )
-    }, error = function(e) {
-      rlang::abort("Failed to insert cost table.", parent = e)
-    })
-  }
+    }
+    
+    # Commit transaction
+    DatabaseConnector::executeSql(connection, "COMMIT;")
+    cli::cli_alert_success("Successfully inserted all tables")
+    
+  }, error = function(e) {
+    # Rollback on error
+    tryCatch(
+      DatabaseConnector::executeSql(connection, "ROLLBACK;"),
+      error = function(rollbackError) {
+        cli::cli_alert_warning("Failed to rollback transaction: {rollbackError$message}")
+      }
+    )
+    cli::cli_alert_danger("Failed to insert tables: {e$message}")
+    rlang::abort("Database insertion failed", parent = e)
+  })
 }
 
 #' Backup Cost Table
+#' 
+#' @param connection Database connection
+#' @param cdmDatabaseSchema CDM database schema name
+#' @param sourceTable Name of the source table to backup
+#' @param tablesInDb Vector of existing table names
 #' @noRd
 backupCostTable <- function(connection, cdmDatabaseSchema, sourceTable, tablesInDb) {
   backupName <- "cost_v5_3_backup"
+  
+  # Drop existing backup if it exists
   if (tolower(backupName) %in% tablesInDb) {
+    cli::cli_alert_info("Dropping existing backup table")
     sql <- "DROP TABLE @cdm_schema.@backup_table;"
-    DatabaseConnector::renderTranslateExecuteSql(connection, sql,
-                                                 cdm_schema = cdmDatabaseSchema, backup_table = backupName)
+    DatabaseConnector::renderTranslateExecuteSql(
+      connection, 
+      sql,
+      cdm_schema = cdmDatabaseSchema, 
+      backup_table = backupName
+    )
   }
   
+  # Rename current table to backup
   sql <- "ALTER TABLE @cdm_schema.@source_table RENAME TO @backup_table;"
   tryCatch({
-    DatabaseConnector::renderTranslateExecuteSql(connection, sql,
-                                                 cdm_schema = cdmDatabaseSchema, source_table = sourceTable, backup_table = backupName)
+    DatabaseConnector::renderTranslateExecuteSql(
+      connection, 
+      sql,
+      cdm_schema = cdmDatabaseSchema, 
+      source_table = sourceTable, 
+      backup_table = backupName
+    )
+    cli::cli_alert_success("Backed up cost table to {backupName}")
   }, error = function(e) {
-    rlang::abort(glue::glue("Failed to backup cost table '{sourceTable}'."), parent = e)
+    cli::cli_alert_danger("Failed to backup cost table '{sourceTable}': {e$message}")
+    rlang::abort("Cost table backup failed", parent = e)
   })
 }
 
 #' Create CDM v5.4+ Cost Table
+#' 
+#' @param connection Database connection
+#' @param cdmDatabaseSchema CDM database schema name
+#' @param tableName Name of the table to create
 #' @noRd
-createV5p4CostTable <- function(connection, cdmDatabaseSchema, tableName) {
+createV5dot4CostTable <- function(connection, cdmDatabaseSchema, tableName) {
   sql <- "
     CREATE TABLE @cdm_schema.@table_name (
       cost_id BIGINT NOT NULL,
@@ -439,17 +570,30 @@ createV5p4CostTable <- function(connection, cdmDatabaseSchema, tableName) {
       drg_source_value VARCHAR(50),
       payer_plan_period_id BIGINT
     );"
+  
   tryCatch({
-    DatabaseConnector::renderTranslateExecuteSql(connection, sql,
-                                                 cdm_schema = cdmDatabaseSchema, table_name = tableName)
+    DatabaseConnector::renderTranslateExecuteSql(
+      connection, 
+      sql,
+      cdm_schema = cdmDatabaseSchema, 
+      table_name = tableName
+    )
+    cli::cli_alert_success("Created new cost table structure")
   }, error = function(e) {
-    rlang::abort(glue::glue("Failed to create new cost table '{tableName}'."), parent = e)
+    cli::cli_alert_danger("Failed to create new cost table '{tableName}': {e$message}")
+    rlang::abort("Cost table creation failed", parent = e)
   })
 }
 
 #' Transform and Insert Cost Data
+#' 
+#' @param connection Database connection
+#' @param cdmDatabaseSchema CDM database schema name
+#' @param tableName Name of the target table
 #' @noRd
 transformAndInsertCostData <- function(connection, cdmDatabaseSchema, tableName) {
+  cli::cli_alert_info("Transforming wide-format cost data to long format")
+  
   # This SQL is complex and dialect-specific features might be needed.
   # Using SqlRender is critical.
   sql <- "
@@ -495,15 +639,26 @@ transformAndInsertCostData <- function(connection, cdmDatabaseSchema, tableName)
     INNER JOIN @cdm_schema.payer_plan_period ppp
       ON c.payer_plan_period_id = ppp.payer_plan_period_id;
   "
+  
   tryCatch({
-    DatabaseConnector::renderTranslateExecuteSql(connection, sql,
-                                                 cdm_schema = cdmDatabaseSchema, table_name = tableName)
+    DatabaseConnector::renderTranslateExecuteSql(
+      connection, 
+      sql,
+      cdm_schema = cdmDatabaseSchema, 
+      table_name = tableName
+    )
+    cli::cli_alert_success("Transformed and inserted cost data")
   }, error = function(e) {
-    rlang::abort("Failed to transform and insert cost data.", parent = e)
+    cli::cli_alert_danger("Failed to transform and insert cost data: {e$message}")
+    rlang::abort("Cost data transformation failed", parent = e)
   })
 }
 
 #' Create Indexes on Cost Table
+#' 
+#' @param connection Database connection
+#' @param cdmDatabaseSchema CDM database schema name
+#' @param tableName Name of the table to index
 #' @noRd
 createCostIndexes <- function(connection, cdmDatabaseSchema, tableName) {
   indexes <- list(
@@ -514,12 +669,20 @@ createCostIndexes <- function(connection, cdmDatabaseSchema, tableName) {
     idx_cost_incurred_date = "incurred_date"
   )
   
+  cli::cli_alert_info("Creating {length(indexes)} indexes on cost table")
+  
   purrr::iwalk(indexes, ~{
     sql <- "CREATE INDEX @index_name ON @cdm_schema.@table_name (@columns);"
     tryCatch({
-      DatabaseConnector::renderTranslateExecuteSql(connection, sql,
-                                                   index_name = .y, cdm_schema = cdmDatabaseSchema,
-                                                   table_name = tableName, columns = .x)
+      DatabaseConnector::renderTranslateExecuteSql(
+        connection, 
+        sql,
+        index_name = .y, 
+        cdm_schema = cdmDatabaseSchema,
+        table_name = tableName, 
+        columns = .x
+      )
+      cli::cli_alert_success("Created index {.y}")
     }, error = function(e) {
       cli::cli_alert_warning("Failed to create index {.y}: {e$message}")
     })
