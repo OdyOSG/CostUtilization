@@ -177,6 +177,38 @@ transformCostToCdmV5dot4 <- function(connectionDetails,
   invisible(connection)
 }
 
+#' Transform Wide-Format Cost Table to OMOP CDM v5.5 Long Format
+#'
+#' Alias for \code{\link{transformCostToCdmV5dot4}} to maintain backward
+#' compatibility. Transforms a wide-format cost table into the standard long
+#' format, backing up the original table and creating a new version with proper
+#' indexes.
+#'
+#' @param connectionDetails Connection details from `DatabaseConnector`.
+#' @param cdmDatabaseSchema Name of the CDM database schema.
+#' @param sourceCostTable Name of the wide-format cost table to transform.
+#' @param createIndexes Logical; if TRUE, create indexes on the new table.
+#'
+#' @return Invisibly returns the database connection.
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' connectionDetails <- Eunomia::getEunomiaConnectionDetails()
+#' transformCostToCdmV5dot5(connectionDetails)
+#' }
+transformCostToCdmV5dot5 <- function(connectionDetails,
+                                     cdmDatabaseSchema = "main",
+                                     sourceCostTable = "cost",
+                                     createIndexes = TRUE) {
+  transformCostToCdmV5dot4(
+    connectionDetails = connectionDetails,
+    cdmDatabaseSchema = cdmDatabaseSchema,
+    sourceCostTable = sourceCostTable,
+    createIndexes = createIndexes
+  )
+}
+
 
 # Helper Functions --------------------------------------------------------
 
