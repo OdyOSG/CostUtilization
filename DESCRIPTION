@@ -24,7 +24,6 @@ Imports:
     ggplot2,
     jsonlite,
     methods,
-    ParallelLogger,
     rlang,
     SqlRender (>= 1.6.0),
     utils
