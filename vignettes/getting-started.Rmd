@@ -1,0 +1,440 @@
+---
+title: "Getting Started with CostUtilization"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting Started with CostUtilization}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5,
+  message = FALSE,
+  warning = FALSE,
+  eval = FALSE
+)
+```
+
+## Welcome to CostUtilization! 🎉
+
+The CostUtilization package helps you analyze healthcare costs and utilization patterns using OMOP CDM data. Whether you're studying treatment costs, comparing interventions, or tracking healthcare resource use, this package provides the tools you need.
+
+### What Can You Do With This Package?
+
+- 📊 **Analyze healthcare costs** for specific patient cohorts
+- 🏥 **Track utilization patterns** across different care settings
+- 💊 **Compare costs** between treatment groups
+- 📈 **Study cost trends** over time
+- 🔍 **Filter costs** by specific clinical events
+- 💰 **Adjust for inflation** using CPI data
+
+## Installation and Setup
+
+First, let's get everything set up:
+
+```{r setup}
+# Install the package if you haven't already
+# remotes::install_github("OHDSI/CostUtilization")
+
+# Load required packages
+library(CostUtilization)
+library(DatabaseConnector)
+library(dplyr)
+library(ggplot2)
+library(cli)
+
+# For this tutorial, we'll use Eunomia (synthetic test data)
+if (!requireNamespace("Eunomia", quietly = TRUE)) {
+  install.packages("Eunomia")
+}
+library(Eunomia)
+```
+
+## Connecting to Your Database
+
+For this tutorial, we'll use Eunomia, a synthetic dataset perfect for learning:
+
+```{r connect}
+# Get connection details
+connectionDetails <- Eunomia::getEunomiaConnectionDetails()
+
+# Connect to the database
+connection <- DatabaseConnector::connect(connectionDetails)
+
+cli::cli_alert_success("Connected to database!")
+```
+
+### Setting Up Test Data
+
+Since Eunomia doesn't include cost data by default, we'll add some synthetic costs:
+
+```{r setup-costs}
+# Inject synthetic cost data
+cli::cli_h2("Adding synthetic cost data")
+
+injectCostData(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  seed = 123  # For reproducible results
+)
+
+# Transform to the modern CDM format
+transformCostToCdmV5dot4(
+  connectionDetails = connectionDetails,
+  cdmDatabaseSchema = "main"
+)
+
+cli::cli_alert_success("Cost data ready!")
+```
+
+## Your First Cost Analysis
+
+Let's start with a simple example - analyzing costs for patients with diabetes:
+
+### Step 1: Create a Patient Cohort
+
+```{r create-cohort}
+# Create a cohort of diabetes patients
+DatabaseConnector::executeSql(connection, "
+  CREATE TABLE main.diabetes_cohort AS
+  SELECT DISTINCT
+    1 AS cohort_definition_id,
+    person_id AS subject_id,
+    MIN(condition_start_date) AS cohort_start_date,
+    DATE(MIN(condition_start_date), '+1 year') AS cohort_end_date
+  FROM main.condition_occurrence
+  WHERE condition_concept_id IN (201820, 201826, 443238, 442793)  -- Type 2 diabetes
+  GROUP BY person_id
+")
+
+# Check how many patients we found
+cohortCount <- DatabaseConnector::querySql(
+  connection, 
+  "SELECT COUNT(DISTINCT subject_id) AS n FROM main.diabetes_cohort"
+)
+
+cli::cli_alert_info("Found {cohortCount$n} patients with diabetes")
+```
+
+### Step 2: Run the Cost Analysis
+
+Now let's calculate costs for the year after diabetes diagnosis:
+
+```{r basic-analysis}
+# Calculate costs
+results <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "diabetes_cohort",
+  cohortId = 1,
+  anchorCol = "cohort_start_date",  # Start from diagnosis date
+  startOffsetDays = 0,               # Begin at diagnosis
+  endOffsetDays = 365,               # Analyze 1 year
+  verbose = TRUE                     # Show progress
+)
+
+# View results
+cli::cli_h3("📊 Cost Analysis Results")
+print(results)
+```
+
+### Understanding the Results
+
+The results show several key metrics:
+
+- **`n_persons`**: Number of patients analyzed
+- **`total_cost`**: Total costs for all patients
+- **`cost_pppm`**: Cost Per Person Per Month (useful for comparing different time periods)
+- **`n_visits`**: Total number of healthcare visits
+- **`visits_per_1000_py`**: Visit rate per 1,000 person-years
+
+## Analyzing Specific Types of Care
+
+You can focus on specific types of healthcare visits:
+
+```{r visit-types}
+# Define visit types we're interested in
+inpatientVisits <- c(
+  9201,  # Inpatient Visit
+  9203   # Emergency Room Visit
+)
+
+# Analyze only hospital-based care
+hospitalCosts <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "diabetes_cohort",
+  cohortId = 1,
+  anchorCol = "cohort_start_date",
+  startOffsetDays = 0,
+  endOffsetDays = 365,
+  restrictVisitConceptIds = inpatientVisits,  # Only these visit types
+  verbose = TRUE
+)
+
+cli::cli_h3("🏥 Hospital-Based Care Costs")
+print(hospitalCosts)
+
+# Compare with outpatient costs
+outpatientVisits <- c(9202)  # Outpatient Visit
+
+outpatientCosts <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "diabetes_cohort",
+  cohortId = 1,
+  anchorCol = "cohort_start_date",
+  startOffsetDays = 0,
+  endOffsetDays = 365,
+  restrictVisitConceptIds = outpatientVisits,
+  verbose = FALSE
+)
+
+# Create comparison
+comparison <- bind_rows(
+  hospitalCosts %>% mutate(setting = "Hospital"),
+  outpatientCosts %>% mutate(setting = "Outpatient")
+)
+
+# Visualize the difference
+ggplot(comparison, aes(x = setting, y = cost_pppm, fill = setting)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("Hospital" = "#e74c3c", "Outpatient" = "#3498db")) +
+  labs(
+    title = "Cost Comparison: Hospital vs Outpatient Care",
+    subtitle = "For patients with diabetes",
+    x = "Care Setting",
+    y = "Cost Per Person Per Month ($)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+## Filtering by Clinical Events
+
+Want to analyze costs for specific treatments or procedures? Use event filters:
+
+```{r event-filters}
+# Define what diabetes-related events we want to track
+diabetesEventFilters <- list(
+  list(
+    name = "Diabetes Medications",
+    domain = "Drug",
+    conceptIds = c(1503297, 1502826, 1502855, 1516766)  # Metformin, insulin, etc.
+  ),
+  list(
+    name = "Glucose Testing",
+    domain = "Measurement",
+    conceptIds = c(3004501, 3003309)  # HbA1c, glucose
+  ),
+  list(
+    name = "Diabetes Complications",
+    domain = "Condition",
+    conceptIds = c(443767, 201606, 443735)  # Retinopathy, neuropathy, nephropathy
+  )
+)
+
+# Analyze costs for these specific events
+diabetesEventCosts <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "diabetes_cohort",
+  cohortId = 1,
+  anchorCol = "cohort_start_date",
+  startOffsetDays = 0,
+  endOffsetDays = 365,
+  eventFilters = diabetesEventFilters,
+  verbose = TRUE
+)
+
+cli::cli_h3("💊 Diabetes-Specific Event Costs")
+print(diabetesEventCosts)
+```
+
+## Comparing Time Periods
+
+Let's see how costs change over time:
+
+```{r time-comparison}
+# Define time windows to compare
+timeWindows <- list(
+  "Pre-diagnosis" = c(-365, -1),     # Year before
+  "First 3 months" = c(0, 90),       # Initial period
+  "Months 4-12" = c(91, 365),        # Rest of first year
+  "Year 2" = c(366, 730)             # Second year
+)
+
+# Analyze each time window
+timeResults <- map_dfr(names(timeWindows), function(windowName) {
+  window <- timeWindows[[windowName]]
+  
+  result <- calculateCostOfCare(
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
+    cohortTable = "diabetes_cohort",
+    cohortId = 1,
+    anchorCol = "cohort_start_date",
+    startOffsetDays = window[1],
+    endOffsetDays = window[2],
+    verbose = FALSE
+  )
+  
+  result %>%
+    mutate(period = windowName)
+})
+
+# Create visualization
+timeResults %>%
+  mutate(period = factor(period, levels = names(timeWindows))) %>%
+  ggplot(aes(x = period, y = cost_pppm)) +
+  geom_line(group = 1, color = "#2ecc71", size = 1.5) +
+  geom_point(size = 4, color = "#27ae60") +
+  labs(
+    title = "Cost Trajectory for Diabetes Patients",
+    subtitle = "Cost per person per month across different time periods",
+    x = "Time Period",
+    y = "Cost PPPM ($)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Getting Detailed Diagnostics
+
+For deeper insights, request detailed results:
+
+```{r detailed-results}
+# Get detailed results with diagnostics
+detailedResults <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "diabetes_cohort",
+  cohortId = 1,
+  anchorCol = "cohort_start_date",
+  startOffsetDays = 0,
+  endOffsetDays = 365,
+  returnFormat = "list",  # Returns list with extra info
+  verbose = TRUE
+)
+
+# Main results
+cli::cli_h3("📊 Main Results")
+print(detailedResults$results)
+
+# Diagnostic information shows patient flow
+cli::cli_h3("🔍 Diagnostic Information")
+print(detailedResults$diagnostics)
+
+# Visualize patient attrition
+if (nrow(detailedResults$diagnostics) > 1) {
+  detailedResults$diagnostics %>%
+    filter(step_name != "00_initial_cohort") %>%
+    ggplot(aes(x = reorder(step_name, -n_persons), y = n_persons)) +
+    geom_bar(stat = "identity", fill = "#3498db") +
+    geom_text(aes(label = n_persons), vjust = -0.5) +
+    labs(
+      title = "Patient Flow Through Analysis",
+      x = "Analysis Step",
+      y = "Number of Patients"
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+```
+
+## Pro Tips 💡
+
+### 1. **Start Simple, Then Add Complexity**
+Begin with basic analyses before adding filters and restrictions.
+
+### 2. **Check Your Cohort Size**
+Always verify you have enough patients for meaningful results:
+
+```{r check-cohort}
+# Quick cohort check
+cohortSummary <- DatabaseConnector::querySql(connection, "
+  SELECT 
+    COUNT(DISTINCT subject_id) as n_patients,
+    MIN(cohort_start_date) as earliest_date,
+    MAX(cohort_end_date) as latest_date
+  FROM main.diabetes_cohort
+")
+
+print(cohortSummary)
+```
+
+### 3. **Use Verbose Mode During Development**
+Set `verbose = TRUE` to see what's happening behind the scenes.
+
+### 4. **Save Intermediate Results**
+For complex analyses, save results at each step:
+
+```{r save-results}
+# Save results to CSV
+write.csv(results, "diabetes_cost_results.csv", row.names = FALSE)
+
+# For detailed results
+saveRDS(detailedResults, "diabetes_detailed_results.rds")
+```
+
+## Troubleshooting Common Issues
+
+### No Cost Data Found?
+- Check that cost data exists for your cohort's time period
+- Verify the cost table has been properly transformed
+- Ensure your cohort has valid person IDs
+
+### Results Seem Too High/Low?
+- Remember costs are synthetic in Eunomia
+- Check your time window calculations
+- Verify visit type restrictions aren't too narrow
+
+### Analysis Running Slowly?
+- Consider using a smaller cohort for testing
+- Add database indexes on commonly used columns
+- Use `asPermanent = TRUE` for repeated analyses
+
+## Clean Up
+
+Always disconnect when you're done:
+
+```{r cleanup}
+# Clean up temporary tables
+DatabaseConnector::executeSql(connection, "DROP TABLE IF EXISTS main.diabetes_cohort")
+
+# Disconnect from database
+DatabaseConnector::disconnect(connection)
+
+cli::cli_alert_success("All cleaned up! Great job! 🎉")
+```
+
+## What's Next?
+
+Now that you understand the basics:
+
+1. 📖 Check out the **Working with Eunomia** vignette for more test data examples
+2. 🚀 Explore **Advanced Features** for complex analyses
+3. 📊 Learn about **CPI Adjustment** for multi-year studies
+4. 💻 Try the package with your own CDM data!
+
+## Summary
+
+You've learned how to:
+- ✅ Set up and connect to a database
+- ✅ Create patient cohorts
+- ✅ Run basic cost analyses
+- ✅ Filter by visit types and clinical events
+- ✅ Compare costs across time periods
+- ✅ Extract detailed diagnostic information
+
+Happy analyzing! If you have questions, visit the [OHDSI Forums](https://forums.ohdsi.org/) or check our [GitHub repository](https://github.com/OHDSI/CostUtilization).
