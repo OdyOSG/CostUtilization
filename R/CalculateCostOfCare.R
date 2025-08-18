@@ -18,79 +18,131 @@
 #' @return A list containing two tibbles: `results` and `diagnostics`.
 #' @export
 calculateCostOfCare <- function(
-    connection,
+    connection = NULL,
+    connectionDetails = NULL,
     cdmDatabaseSchema,
     cohortDatabaseSchema,
     cohortTable,
     cohortId,
     costOfCareSettings,
-    resultsDatabaseSchema,
-    resultsTableName = "cost_util_results",
-    diagnosticsTableName = "cost_util_diag",
     tempEmulationSchema = NULL,
     verbose = TRUE
 ) {
-  
-  # --- Input Validation ---
-  checkmate::assertClass(connection, "DatabaseConnectorConnection")
+  errorMessages <- checkmate::makeAssertCollection()
   checkmate::assertClass(costOfCareSettings, "CostOfCareSettings")
-  checkmate::assertString(cdmDatabaseSchema)
-  checkmate::assertString(cohortDatabaseSchema)
-  checkmate::assertString(cohortTable)
-  checkmate::assertInt(cohortId)
-  checkmate::assertString(resultsDatabaseSchema)
-  checkmate::assertString(resultsTableName)
-  checkmate::assertString(diagnosticsTableName)
+  if (is.null(connectionDetails) && is.null(connection)) {
+    stop("Need to provide either connectionDetails or connection")
+  }
+  if (!is.null(connectionDetails) && !is.null(connection)) {
+    stop("Need to provide either connectionDetails or connection, not both")
+  }
   
+  if (!is.null(connectionDetails)) {
+    checkmate::assertClass(connectionDetails, "ConnectionDetails")
+    connection <- DatabaseConnector::connect(connectionDetails)
+    on.exit(DatabaseConnector::disconnect(connection))
+  } else {
+    checkmate::assertClass(connection, "DatabaseConnectorJdbcConnection")
+  }
+  checkmate::assertCharacter(cohortTable, max.len = 1)
+  checkmate::assertNumeric(cohortId, any.missing = FALSE, min.len = 1, max.len = 1)
   # --- Setup ---
   startTime <- Sys.time()
   targetDialect <- DatabaseConnector::dbms(connection)
+
+  # Generate unique names for temp tables to avoid session conflicts
+  sessionPrefix <- paste0("cu_", stringi::stri_rand_strings(1, 10, pattern = "[a-z]"))
+  resultsTableName <- paste0(sessionPrefix, "_results")
+  diagTableName <- paste0(sessionPrefix, "_diag")
+  restrictVisitTableName <- NULL
+  eventConceptsTableName <- NULL
   
-  # Create fully qualified table names
-  resultsTable <- glue::glue("{resultsDatabaseSchema}.{resultsTableName}")
-  diagTable <- glue::glue("{resultsDatabaseSchema}.{diagnosticsTableName}")
+  # Ensure all created tables are dropped on exit, even if an error occurs
+  on.exit({
+    logMessage("Cleaning up temporary tables...", verbose, "INFO")
+    cleanupTempTables(
+      connection = connection,
+      schema = tempEmulationSchema,
+      resultsTableName,
+      diagTableName,
+      restrictVisitTableName,
+      eventConceptsTableName
+    )
+  }, add = TRUE)
   
-  # --- Prepare Helper Tables ---
-  # Upload concept sets for event filters and visit restrictions to the database
-  helperTables <- uploadHelperTables(
-    connection = connection,
-    settings = costOfCareSettings,
-    tempEmulationSchema = tempEmulationSchema
-  )
-  on.exit(
-    cleanupTempTables(connection, tempEmulationSchema, helperTables),
-    add = TRUE
-  )
+  # --- Upload Helper Tables ---
+  if (isTRUE(costOfCareSettings$hasVisitRestriction)) {
+    restrictVisitTableName <- paste0(sessionPrefix, "_visit_restr")
+    visitConcepts <- dplyr::tibble(
+      visit_concept_id = costOfCareSettings$restrictVisitConceptIds
+    )
+    DatabaseConnector::insertTable(
+      connection = connection,
+      tableName = restrictVisitTableName,
+      data = visitConcepts,
+      tempTable = TRUE,
+      tempEmulationSchema = tempEmulationSchema,
+      camelCaseToSnakeCase = TRUE
+    )
+    logMessage(glue::glue("Uploaded {nrow(visitConcepts)} visit concepts to #{restrictVisitTableName}"), verbose, "DEBUG")
+  }
   
-  # --- Prepare SQL Parameters ---
-  sqlParams <- c(
+  if (isTRUE(costOfCareSettings$hasEventFilters)) {
+    eventConceptsTableName <- paste0(sessionPrefix, "_evt_concepts")
+    eventConcepts <- purrr::imap_dfr(costOfCareSettings$eventFilters, ~ dplyr::tibble(
+        filter_id = .y,
+        filter_name = .x$name,
+        domain_scope = .x$domain,
+        concept_id = .x$conceptIds
+      )
+    )
+    DatabaseConnector::insertTable(
+      connection = connection,
+      tableName = eventConceptsTableName,
+      data = eventConcepts,
+      tempTable = TRUE,
+      tempEmulationSchema = tempEmulationSchema,
+      camelCaseToSnakeCase = TRUE
+    )
+    logMessage(glue::glue("Uploaded {nrow(eventConcepts)} event concepts to #{eventConceptsTableName}"), verbose, "DEBUG")
+  }
+  
+  # --- Assemble SQL Parameters ---
+  params <- c(
     list(
       cdmDatabaseSchema = cdmDatabaseSchema,
       cohortDatabaseSchema = cohortDatabaseSchema,
       cohortTable = cohortTable,
       cohortId = cohortId,
-      resultsTable = resultsTable,
-      diagTable = diagTable
+      resultsTable = resultsTableName,
+      diagTable = diagTableName,
+      restrictVisitTable = restrictVisitTableName,
+      eventConceptsTable = eventConceptsTableName
     ),
-    costOfCareSettings,
-    helperTables
+    costOfCareSettings
   )
   
   # --- Execute Analysis ---
-  # This function is now in R/BuildAnalysis.R and is the single execution pathway
   executeSqlPlan(
     connection = connection,
-    params = sqlParams,
+    params = params,
     targetDialect = targetDialect,
     tempEmulationSchema = tempEmulationSchema,
     verbose = verbose
   )
   
   # --- Fetch and Return Results ---
-  results <- list(
-    results = fetchTable(connection, resultsTable),
-    diagnostics = fetchTable(connection, diagTable)
-  )
+  logMessage("Fetching results from database", verbose, "INFO")
+  resultsTableFqn <- if (!is.null(tempEmulationSchema)) paste(tempEmulationSchema, resultsTableName, sep = ".") else resultsTableName
+  diagTableFqn <- if (!is.null(tempEmulationSchema)) paste(tempEmulationSchema, diagTableName, sep = ".") else diagTableName
+  
+  resultsSql <- glue::glue("SELECT * FROM {resultsTableFqn};")
+  results <- DatabaseConnector::querySql(connection, resultsSql, snakeCaseToCamelCase = TRUE) |>
+    dplyr::as_tibble()
+  
+  diagSql <- glue::glue("SELECT * FROM {diagTableFqn} ORDER BY step_name;")
+  diagnostics <- DatabaseConnector::querySql(connection, diagSql, snakeCaseToCamelCase = TRUE) |>
+    dplyr::as_tibble()
   
   logMessage(
     glue::glue("Analysis complete in {round(difftime(Sys.time(), startTime, units = 'secs'), 1)}s."),
@@ -98,103 +150,7 @@ calculateCostOfCare <- function(
     level = "SUCCESS"
   )
   
-  return(results)
+  return(list(results = results, diagnostics = diagnostics))
 }
-
-# Helper function to fetch results (can be placed in utils.R)
-fetchTable <- function(connection, tableName) {
-  sql <- "SELECT * FROM @table;"
-  DatabaseConnector::renderTranslateQuerySql(
-    connection = connection,
-    sql = sql,
-    table = tableName,
-    snakeCaseToCamelCase = TRUE
-  ) |>
-    dplyr::as_tibble()
-}
-
-# Helper to upload concept sets (can be placed in utils.R)
-uploadHelperTables <- function(connection, settings, tempEmulationSchema) {
-  tables <- list()
   
-  if (settings$hasVisitRestriction) {
-    df <- tibble::tibble(visit_concept_id = settings$restrictVisitConceptIds)
-    name <- paste0("visit_restr_", sample.int(1e6, 1))
-    DatabaseConnector::insertTable(connection, name, df, tempEmulationSchema, tempTable = TRUE)
-    tables$restrictVisitTable <- name
-  }
-  
-  if (settings$hasEventFilters) {
-    df <- purrr::imap_dfr(settings$eventFilters, ~{
-      tibble::tibble(
-        filter_id = .y,
-        filter_name = .x$name,
-        domain_scope = .x$domain,
-        concept_id = .x$conceptIds
-      )
-    })
-    name <- paste0("event_filt_", sample.int(1e6, 1))
-    DatabaseConnector::insertTable(connection, name, df, tempEmulationSchema, tempTable = TRUE)
-    tables$eventConceptsTable <- name
-    
-    if (settings$microCosting) {
-      primaryFilter <- df |> dplyr::filter(filter_name == settings$primaryEventFilterName)
-      tables$primaryFilterId <- primaryFilter$filter_id[1]
-    }
-    
-  }
-  
-  
-  
-  # Execute analysis
-  executeCostAnalysis(
-    connection = connection,
-    sqlParams = sqlParams,
-    tempEmulationSchema = tempEmulationSchema,
-    verbose = verbose
-  )
-  
-}
-
-
-
-
-executeCostAnalysis <- function(
-    connection, 
-    sqlParams, 
-    targetDialect,
-    tempEmulationSchema, 
-    verbose = TRUE
-    ) {
-  logMessage("Executing cost analysis SQL", verbose,  "INFO")
-  
-  sql <- SqlRender::loadRenderTranslateSql(
-    "MainCostUtilization.sql", 
-    "CostUtilization",
-    warnOnMissingParameters = FALSE, 
-    .params = sqlParams,
-    targetDialect = DatabaseConnector::dbms(connection)
-    
-  )
-  # Split and execute
-  sqlStatements <- SqlRender::splitSql(sql)
-  
-  withCallingHandlers(
-    {
-      for (i in seq_along(sqlStatements)) {
-        if (nchar(trimws(sqlStatements[i])) > 0) {
-          DatabaseConnector::executeSql(connection, sqlStatements[i])
-        }
-      }
-    },
-    error = function(e) {
-      logMessage(paste("SQL execution error:", e$message), verbose,  "ERROR")
-      stop(e)
-    }
-  )
-  
-  logMessage("SQL execution completed successfully", verbose,  "INFO")
-}
-
-
 

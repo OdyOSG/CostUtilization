@@ -25,7 +25,7 @@
 #' @return A `CostOfCareSettings` object.
 #' @export
 createCostOfCareSettings <- function(
-    anchorCol = c("cohort_start_date", "cohort_end_date"),
+    anchorCol,
     startOffsetDays = 0L,
     endOffsetDays = 365L,
     restrictVisitConceptIds = NULL,
@@ -36,7 +36,7 @@ createCostOfCareSettings <- function(
     currencyConceptId = 44818668L # OMOP 'USD'
 ) {
   # --- Input Validation ---
-  anchorCol <- rlang::arg_match(anchorCol)
+  anchorCol <- checkmate::assertChoice(anchorCol, c("cohort_start_date", "cohort_end_date"))
   checkmate::assertIntegerish(startOffsetDays, len = 1)
   checkmate::assertIntegerish(endOffsetDays, len = 1)
   if (endOffsetDays <= startOffsetDays) {
@@ -63,41 +63,25 @@ createCostOfCareSettings <- function(
   checkmate::assertInt(currencyConceptId)
   
   # --- Create Settings Object ---
-  settings <- list(
-    anchorCol = anchorCol,
-    startOffsetDays = startOffsetDays,
-    endOffsetDays = endOffsetDays,
-    hasVisitRestriction = !is.null(restrictVisitConceptIds),
-    restrictVisitConceptIds = restrictVisitConceptIds,
-    hasEventFilters = !is.null(eventFilters),
-    eventFilters = eventFilters,
-    nFilters = if (is.null(eventFilters)) 0 else length(eventFilters),
-    microCosting = microCosting,
-    primaryEventFilterName = primaryEventFilterName,
-    costConceptId = costConceptId,
-    currencyConceptId = currencyConceptId
-  )
-  
-  class(settings) <- c("CostOfCareSettings", "list")
+  settings <- structure(
+    list(
+      anchorCol = anchorCol,
+      startOffsetDays = startOffsetDays,
+      endOffsetDays = endOffsetDays,
+      hasVisitRestriction = !is.null(restrictVisitConceptIds),
+      restrictVisitConceptIds = restrictVisitConceptIds,
+      hasEventFilters = !is.null(eventFilters),
+      eventFilters = eventFilters,
+      nFilters = if (is.null(eventFilters)) 0 else length(eventFilters),
+      microCosting = microCosting,
+      primaryEventFilterName = primaryEventFilterName,
+      costConceptId = costConceptId,
+      currencyConceptId = currencyConceptId
+    ),
+    class = "CostOfCareSettings"
+  ) 
   return(settings)
 }
 
 
 
-
-
-sqlParams <- list(
-  cdmDatabaseSchema = cdmDatabaseSchema,
-  cohortDatabaseSchema = cohortDatabaseSchema,
-  cohortTable = cohortTable,
-  cohortId = cohortId,
-  anchorCol = anchorCol,
-  start_odffset_days = startOffsetDays,
-  end_odffset_days = endOffsetDays,
-  cost_concept_id = costConceptId,
-  currency_concep_id = currencyConceptId,
-  restrict_visit_concept_ids = restrictVisitConceptIds,
-  eventFilters = eventFilters,
-  micro_costing = microCosting,
-  primary_filter_id = primaryFilterId
-)

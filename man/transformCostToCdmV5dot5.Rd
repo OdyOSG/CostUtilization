@@ -12,26 +12,33 @@ transformCostToCdmV5dot5(
 )
 }
 \arguments{
-\item{connectionDetails}{Connection details from \code{DatabaseConnector}.}
+\item{connectionDetails}{An object of class \code{connectionDetails} as created by the DatabaseConnector package.}
 
-\item{cdmDatabaseSchema}{Name of the CDM database schema.}
+\item{cdmDatabaseSchema}{Name of the database schema containing the OMOP CDM instance. Defaults to \code{"main"}.}
 
-\item{sourceCostTable}{Name of the wide-format cost table to transform.}
-
-\item{createIndexes}{Logical; if TRUE, create indexes on the new table.}
+\item{sourceCostTable}{Name of the wide-format cost table to transform. Defaults to \code{"cost"}.}
 }
 \value{
-Invisibly returns the database connection.
+Invisibly returns the database connection after successful execution.
 }
 \description{
-Alias for \code{\link{transformCostToCdmV5dot4}} to maintain backward
-compatibility. Transforms a wide-format cost table into the standard long
-format, backing up the original table and creating a new version with proper
-indexes.
+Transforms a wide-format \code{cost} table (common in OMOP CDM v5.3 and earlier) into the standard long format required in CDM v5.4+.
+This includes backing up the original table and inserting a new, long-format version.
+}
+\details{
+This function performs the following:
+\enumerate{
+\item Loads the wide-format \code{cost} table (e.g., from \code{injectCostData()}), as well as associated \code{payer_plan_period} information.
+\item Maps cost event records to their corresponding domain-specific visit and date information.
+\item Transforms wide columns (e.g., \code{total_cost}, \code{paid_by_payer}, etc.) into long-form rows using standard \code{cost_concept_id} mappings.
+\item Appends newly required CDM v5.4 fields (e.g., \code{incurred_date}, \code{cost_type_concept_id}, etc.).
+\item Backs up the original \code{cost} table as \code{cost_v5_3_backup} and overwrites it with the new long-format version.
+}
+
+Only non-zero and valid cost entries are included in the final result.
 }
 \examples{
 \dontrun{
-connectionDetails <- Eunomia::getEunomiaConnectionDetails()
-transformCostToCdmV5dot5(connectionDetails)
+con <- transformCostToCdmV5dot5(Eunomia::getEunomiaConnectionDetails())
 }
 }

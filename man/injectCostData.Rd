@@ -2,37 +2,13 @@
 % Please edit documentation in R/EunomiaTestHelpers.R
 \name{injectCostData}
 \alias{injectCostData}
-\title{Inject Synthetic Payer Plan and Wide-Format Cost Data into an OMOP CDM}
+\title{Inject Synthetic Payer Plan and Wide-Format Cost Data into an OMOP CDM (Eunomia) Instance}
 \usage{
-injectCostData(
-  connection,
-  cdmDatabaseSchema = "main",
-  costDomains = c("Procedure", "Measurement", "Visit", "Device", "Drug", "Observation",
-    "Condition"),
-  seed = 123
-)
-}
-\arguments{
-\item{connection}{A database connection from \code{DatabaseConnector::connect()}.}
-
-\item{cdmDatabaseSchema}{The name of the CDM database schema.}
-
-\item{costDomains}{A character vector of domains for which to generate costs.}
-
-\item{seed}{An integer seed for reproducible data generation.}
+injectCostData(connection, seed = 123, cdmDatabaseSchema = "main")
 }
 \value{
-Invisibly returns the database connection.
+Invisibly returns \code{TRUE} upon successful database insertion. Called for its side effect.
 }
 \description{
-Creates synthetic \code{payer_plan_period} and wide-format \code{cost} tables for
-testing, primarily for use with Eunomia datasets.
-}
-\examples{
-\dontrun{
-connectionDetails <- Eunomia::getEunomiaConnectionDetails()
-connection <- DatabaseConnector::connect(connectionDetails)
-injectCostData(connection)
-DatabaseConnector::disconnect(connection)
-}
+Inject Synthetic Payer Plan and Wide-Format Cost Data into an OMOP CDM (Eunomia) Instance
 }
