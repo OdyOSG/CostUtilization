@@ -1,0 +1,667 @@
+---
+title: "Adjusting Healthcare Costs for Inflation Using CPI"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Adjusting Healthcare Costs for Inflation Using CPI}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5,
+  message = FALSE,
+  warning = FALSE,
+  eval = FALSE
+)
+```
+
+## Why Adjust for Inflation? 💸
+
+Healthcare costs change over time, but how much of that change is real versus just inflation? When analyzing costs across multiple years, adjusting for inflation helps you:
+
+- 📊 **Make fair comparisons** between different time periods
+- 📈 **Identify real trends** versus inflationary growth
+- 🎯 **Standardize results** to a common year for reporting
+- 💡 **Understand true cost drivers** in healthcare
+
+This vignette shows you how to use the CostUtilization package's built-in CPI (Consumer Price Index) adjustment features.
+
+```{r setup}
+library(CostUtilization)
+library(DatabaseConnector)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(scales)
+library(cli)
+
+# Set theme for nice plots
+theme_set(theme_minimal() + 
+          theme(plot.title = element_text(face = "bold", size = 14),
+                plot.subtitle = element_text(color = "gray50")))
+```
+
+## Understanding CPI Basics 📚
+
+The Consumer Price Index (CPI) tracks how prices change over time. For healthcare:
+
+- **Medical Care CPI**: Specific to healthcare services
+- **All Items CPI**: General inflation across all goods/services
+- **Base Year**: Reference point (often 100)
+- **Adjustment Factor**: Multiplier to convert between years
+
+### Loading and Exploring CPI Data
+
+```{r explore-cpi}
+# Load the default medical care CPI data
+cpiData <- loadCpiData()
+
+# Examine the data
+cli::cli_h3("📊 CPI Data Structure")
+head(cpiData, 10)
+
+# Calculate average annual inflation
+cpiData <- cpiData %>%
+  arrange(year) %>%
+  mutate(
+    annual_inflation = (cpi / lag(cpi) - 1) * 100
+  )
+
+# Summary statistics
+avgInflation <- mean(cpiData$annual_inflation, na.rm = TRUE)
+cli::cli_alert_info("Average annual medical inflation: {round(avgInflation, 2)}%")
+
+# Visualize CPI trend
+ggplot(cpiData, aes(x = year)) +
+  geom_line(aes(y = cpi), color = "#3498db", size = 1.5) +
+  geom_point(aes(y = cpi), color = "#2980b9", size = 2) +
+  geom_smooth(aes(y = cpi), method = "loess", se = TRUE, alpha = 0.2) +
+  labs(
+    title = "Medical Care CPI Over Time",
+    subtitle = "Rising healthcare costs reflected in CPI values",
+    x = "Year",
+    y = "CPI Index Value",
+    caption = "Source: U.S. Bureau of Labor Statistics"
+  )
+
+# Show inflation rate over time
+cpiData %>%
+  filter(!is.na(annual_inflation)) %>%
+  ggplot(aes(x = year, y = annual_inflation)) +
+  geom_col(fill = "#e74c3c", alpha = 0.7) +
+  geom_hline(yintercept = avgInflation, linetype = "dashed", color = "#c0392b") +
+  geom_text(aes(label = round(annual_inflation, 1)), vjust = -0.5, size = 3) +
+  labs(
+    title = "Annual Medical Care Inflation Rate",
+    subtitle = paste("Average:", round(avgInflation, 2), "% per year"),
+    x = "Year",
+    y = "Annual Inflation Rate (%)"
+  )
+```
+
+## Basic CPI Calculations 🧮
+
+### Understanding Adjustment Factors
+
+```{r basic-calculations}
+# Calculate adjustment factors between years
+calculateAndVisualizeCPI <- function(fromYear, toYear, cpiData) {
+  
+  # Get CPI values
+  fromCPI <- cpiData$cpi[cpiData$year == fromYear]
+  toCPI <- cpiData$cpi[cpiData$year == toYear]
+  
+  # Calculate adjustment factor
+  adjustmentFactor <- toCPI / fromCPI
+  
+  # Create example costs
+  exampleCosts <- c(1000, 5000, 10000, 50000, 100000)
+  
+  # Calculate adjusted values
+  adjustedCosts <- exampleCosts * adjustmentFactor
+  
+  # Create comparison table
+  comparison <- tibble(
+    original_cost = exampleCosts,
+    year = fromYear,
+    adjusted_cost = adjustedCosts,
+    adjusted_year = toYear,
+    percent_increase = (adjustedCosts - exampleCosts) / exampleCosts * 100
+  )
+  
+  cli::cli_h3("💰 Cost Adjustment from {fromYear} to {toYear}")
+  cli::cli_alert_info("Adjustment factor: {round(adjustmentFactor, 3)}")
+  cli::cli_alert_info("Total inflation: {round((adjustmentFactor - 1) * 100, 1)}%")
+  
+  print(comparison)
+  
+  # Visualize the adjustment
+  comparison %>%
+    pivot_longer(cols = c(original_cost, adjusted_cost), 
+                 names_to = "type", 
+                 values_to = "cost") %>%
+    mutate(
+      type = if_else(type == "original_cost", 
+                     paste(fromYear, "Dollars"), 
+                     paste(toYear, "Dollars"))
+    ) %>%
+    ggplot(aes(x = factor(original_cost), y = cost, fill = type)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    scale_y_continuous(labels = dollar) +
+    scale_fill_manual(values = c("#3498db", "#e74c3c")) +
+    labs(
+      title = "Impact of Medical Inflation on Healthcare Costs",
+      subtitle = sprintf("Converting %d dollars to %d dollars", fromYear, toYear),
+      x = "Original Cost (2015 $)",
+      y = "Cost Value",
+      fill = "Year"
+    ) +
+    theme(legend.position = "bottom")
+}
+
+# Example: 2015 to 2023 adjustment
+calculateAndVisualizeCPI(2015, 2023, cpiData)
+
+# Example: 2010 to 2023 adjustment (longer period)
+calculateAndVisualizeCPI(2010, 2023, cpiData)
+```
+
+## Using CPI in Cost Analysis 📊
+
+### Setting Up Test Data
+
+```{r setup-analysis}
+# Connect to database (using Eunomia for example)
+connectionDetails <- Eunomia::getEunomiaConnectionDetails()
+connection <- DatabaseConnector::connect(connectionDetails)
+
+# Add cost data
+injectCostData(connection, cdmDatabaseSchema = "main", seed = 123)
+transformCostToCdmV5dot4(connectionDetails, cdmDatabaseSchema = "main")
+
+# Create a multi-year cohort for demonstration
+DatabaseConnector::executeSql(connection, "
+  CREATE TABLE main.multiyear_cohort AS
+  SELECT 
+    1 AS cohort_definition_id,
+    person_id AS subject_id,
+    visit_start_date AS cohort_start_date,
+    DATE(visit_start_date, '+1 year') AS cohort_end_date
+  FROM main.visit_occurrence
+  WHERE YEAR(visit_start_date) BETWEEN 2010 AND 2019
+    AND visit_concept_id = 9201  -- Inpatient visits
+")
+
+cohortInfo <- DatabaseConnector::querySql(connection, "
+  SELECT 
+    YEAR(cohort_start_date) as year,
+    COUNT(DISTINCT subject_id) as n_patients
+  FROM main.multiyear_cohort
+  GROUP BY YEAR(cohort_start_date)
+  ORDER BY year
+")
+
+cli::cli_h3("📅 Multi-year Cohort Distribution")
+print(cohortInfo)
+```
+
+### Basic CPI-Adjusted Analysis
+
+```{r basic-adjusted-analysis}
+# Run analysis WITHOUT CPI adjustment
+unadjustedResults <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "multiyear_cohort",
+  cohortId = 1,
+  anchorCol = "cohort_start_date",
+  startOffsetDays = 0,
+  endOffsetDays = 365,
+  cpiAdjustment = FALSE,
+  verbose = TRUE
+)
+
+# Run analysis WITH CPI adjustment to 2023 dollars
+adjustedResults <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "multiyear_cohort",
+  cohortId = 1,
+  anchorCol = "cohort_start_date",
+  startOffsetDays = 0,
+  endOffsetDays = 365,
+  cpiAdjustment = TRUE,
+  cpiTargetYear = 2023,
+  returnFormat = "list",
+  verbose = TRUE
+)
+
+# Compare results
+comparison <- bind_rows(
+  unadjustedResults %>% 
+    select(n_persons, total_cost, cost_pppm) %>%
+    mutate(type = "Nominal (Unadjusted)"),
+  adjustedResults$results %>% 
+    select(n_persons, total_cost = adjusted_cost, cost_pppm = adjusted_cost_pppm) %>%
+    mutate(type = "Adjusted to 2023 $")
+)
+
+cli::cli_h3("💵 Comparison: Adjusted vs Unadjusted Costs")
+print(comparison)
+
+# Calculate the impact
+impact <- (comparison$total_cost[2] - comparison$total_cost[1]) / comparison$total_cost[1] * 100
+cli::cli_alert_info("CPI adjustment increased total costs by {round(impact, 1)}%")
+```
+
+## Multi-Year Trend Analysis 📈
+
+### Analyzing Cost Trends Over Time
+
+```{r trend-analysis}
+# Create year-specific cohorts
+years <- 2010:2019
+
+# Create cohorts for each year
+for(year in years) {
+  sql <- sprintf("
+    CREATE TABLE main.cohort_%d AS
+    SELECT 
+      1 AS cohort_definition_id,
+      person_id AS subject_id,
+      MIN(visit_start_date) AS cohort_start_date,
+      DATE(MIN(visit_start_date), '+1 year') AS cohort_end_date
+    FROM main.visit_occurrence
+    WHERE YEAR(visit_start_date) = %d
+      AND visit_concept_id IN (9201, 9203)  -- Inpatient and ER
+    GROUP BY person_id
+  ", year, year)
+  
+  DatabaseConnector::executeSql(connection, sql)
+}
+
+# Analyze each year with and without adjustment
+yearlyResults <- map_dfr(years, function(year) {
+  
+  # Unadjusted analysis
+  unadjusted <- calculateCostOfCare(
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
+    cohortTable = paste0("cohort_", year),
+    cohortId = 1,
+    anchorCol = "cohort_start_date",
+    startOffsetDays = 0,
+    endOffsetDays = 365,
+    cpiAdjustment = FALSE,
+    verbose = FALSE
+  )
+  
+  # Adjusted analysis
+  adjusted <- calculateCostOfCare(
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
+    cohortTable = paste0("cohort_", year),
+    cohortId = 1,
+    anchorCol = "cohort_start_date",
+    startOffsetDays = 0,
+    endOffsetDays = 365,
+    cpiAdjustment = TRUE,
+    cpiTargetYear = 2023,
+    verbose = FALSE
+  )
+  
+  # Combine results
+  tibble(
+    year = year,
+    n_patients = unadjusted$n_persons,
+    nominal_cost = unadjusted$cost_pppm,
+    adjusted_cost = adjusted$adjusted_cost_pppm,
+    nominal_total = unadjusted$total_cost,
+    adjusted_total = adjusted$adjusted_cost
+  )
+})
+
+# Create trend visualization
+yearlyResults %>%
+  pivot_longer(cols = c(nominal_cost, adjusted_cost), 
+               names_to = "type", 
+               values_to = "cost_pppm") %>%
+  mutate(
+    type = if_else(type == "nominal_cost", "Nominal Dollars", "2023 Dollars")
+  ) %>%
+  ggplot(aes(x = year, y = cost_pppm, color = type)) +
+  geom_line(size = 1.5) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("Nominal Dollars" = "#3498db", 
+                                "2023 Dollars" = "#e74c3c")) +
+  scale_y_continuous(labels = dollar) +
+  labs(
+    title = "Healthcare Cost Trends: Nominal vs Inflation-Adjusted",
+    subtitle = "Cost per person per month for hospital-based care",
+    x = "Year",
+    y = "Cost PPPM",
+    color = "Cost Type",
+    caption = "Adjusted using medical care CPI to 2023 dollars"
+  ) +
+  theme(legend.position = "bottom")
+
+# Calculate real vs nominal growth
+firstYear <- yearlyResults$year[1]
+lastYear <- yearlyResults$year[nrow(yearlyResults)]
+nominalGrowth <- (yearlyResults$nominal_cost[nrow(yearlyResults)] / 
+                  yearlyResults$nominal_cost[1] - 1) * 100
+realGrowth <- (yearlyResults$adjusted_cost[nrow(yearlyResults)] / 
+               yearlyResults$adjusted_cost[1] - 1) * 100
+
+cli::cli_h3("📊 Growth Analysis ({firstYear} to {lastYear})")
+cli::cli_alert_info("Nominal growth: {round(nominalGrowth, 1)}%")
+cli::cli_alert_info("Real growth (inflation-adjusted): {round(realGrowth, 1)}%")
+cli::cli_alert_info("Inflation impact: {round(nominalGrowth - realGrowth, 1)} percentage points")
+```
+
+## Using Custom CPI Data 🛠️
+
+### Creating and Using Custom CPI Tables
+
+```{r custom-cpi}
+# Example: Create custom CPI data for a specific region or service
+customCpiData <- tibble(
+  year = 2010:2023,
+  cpi = c(100, 103, 106, 109, 111, 114, 117, 120, 
+          124, 128, 132, 137, 143, 150)  # Example values
+)
+
+# Add calculated inflation rates
+customCpiData <- customCpiData %>%
+  mutate(
+    annual_inflation = (cpi / lag(cpi) - 1) * 100,
+    cumulative_inflation = (cpi / first(cpi) - 1) * 100
+  )
+
+# Visualize custom CPI
+customCpiData %>%
+  ggplot(aes(x = year)) +
+  geom_line(aes(y = cumulative_inflation), color = "#9b59b6", size = 1.5) +
+  geom_point(aes(y = cumulative_inflation), color = "#8e44ad", size = 3) +
+  geom_area(aes(y = cumulative_inflation), fill = "#9b59b6", alpha = 0.2) +
+  labs(
+    title = "Custom CPI: Cumulative Inflation Over Time",
+    subtitle = "Example of region-specific healthcare inflation",
+    x = "Year",
+    y = "Cumulative Inflation (%)",
+    caption = "Base year: 2010 = 100"
+  )
+
+# Save custom CPI data
+write.csv(customCpiData, "custom_healthcare_cpi.csv", row.names = FALSE)
+
+# Use custom CPI in analysis
+customAdjustedResults <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "multiyear_cohort",
+  cohortId = 1,
+  anchorCol = "cohort_start_date",
+  startOffsetDays = 0,
+  endOffsetDays = 365,
+  cpiAdjustment = TRUE,
+  cpiTargetYear = 2023,
+  cpiDataPath = "custom_healthcare_cpi.csv",
+  verbose = FALSE
+)
+
+# Compare different CPI adjustments
+cpiComparison <- bind_rows(
+  unadjustedResults %>% 
+    mutate(adjustment = "None"),
+  adjustedResults$results %>% 
+    select(total_cost = adjusted_cost, cost_pppm = adjusted_cost_pppm) %>%
+    mutate(adjustment = "Standard Medical CPI"),
+  customAdjustedResults %>% 
+    select(total_cost = adjusted_cost, cost_pppm = adjusted_cost_pppm) %>%
+    mutate(adjustment = "Custom Regional CPI")
+)
+
+# Visualize comparison
+cpiComparison %>%
+  ggplot(aes(x = adjustment, y = cost_pppm, fill = adjustment)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("None" = "#95a5a6", 
+                               "Standard Medical CPI" = "#3498db",
+                               "Custom Regional CPI" = "#9b59b6")) +
+  scale_y_continuous(labels = dollar) +
+  labs(
+    title = "Impact of Different CPI Adjustments",
+    subtitle = "Same cohort analyzed with different inflation adjustments",
+    x = "Adjustment Type",
+    y = "Cost Per Person Per Month"
+  ) +
+  theme(legend.position = "none")
+```
+
+## Advanced CPI Features 🚀
+
+### Cohort-Specific CPI Adjustment
+
+```{r advanced-cpi}
+# Function to apply cohort-specific CPI adjustments
+applyCohortSpecificCPI <- function(connection, cohortTable, targetYear = 2023) {
+  
+  # Get cohort years
+  cohortYears <- DatabaseConnector::querySql(connection, sprintf("
+    SELECT DISTINCT YEAR(cohort_start_date) as cohort_year
+    FROM main.%s
+    ORDER BY cohort_year
+  ", cohortTable))
+  
+  # Analyze each cohort year separately
+  results <- map_dfr(cohortYears$COHORT_YEAR, function(year) {
+    
+    # Create year-specific temp table
+    DatabaseConnector::executeSql(connection, sprintf("
+      CREATE TEMPORARY TABLE temp_cohort_%d AS
+      SELECT * FROM main.%s
+      WHERE YEAR(cohort_start_date) = %d
+    ", year, cohortTable, year))
+    
+    # Run analysis with appropriate CPI adjustment
+    result <- calculateCostOfCare(
+      connection = connection,
+      cdmDatabaseSchema = "main",
+      cohortDatabaseSchema = "main",
+      cohortTable = sprintf("temp_cohort_%d", year),
+      cohortId = 1,
+      anchorCol = "cohort_start_date",
+      startOffsetDays = 0,
+      endOffsetDays = 365,
+      cpiAdjustment = TRUE,
+      cpiTargetYear = targetYear,
+      cpiFromYear = year,  # Specify the source year
+      verbose = FALSE
+    )
+    
+    # Clean up
+    DatabaseConnector::executeSql(connection, 
+      sprintf("DROP TABLE temp_cohort_%d", year))
+    
+    result %>%
+      mutate(cohort_year = year)
+  })
+  
+  return(results)
+}
+
+# Example usage
+# cohortSpecificResults <- applyCohortSpecificCPI(connection, "multiyear_cohort")
+```
+
+### Creating CPI Adjustment Reports
+
+```{r cpi-reports}
+# Function to create comprehensive CPI adjustment report
+createCPIAdjustmentReport <- function(results, cpiData, targetYear) {
+  
+  # Calculate summary statistics
+  summary_stats <- results %>%
+    summarise(
+      total_patients = sum(n_patients),
+      total_nominal_cost = sum(nominal_total),
+      total_adjusted_cost = sum(adjusted_total),
+      avg_nominal_pppm = mean(nominal_cost),
+      avg_adjusted_pppm = mean(adjusted_cost),
+      inflation_impact = (total_adjusted_cost - total_nominal_cost) / total_nominal_cost * 100
+    )
+  
+  # Create report visualization
+  p1 <- results %>%
+    ggplot(aes(x = year)) +
+    geom_bar(aes(y = n_patients), stat = "identity", fill = "#34495e", alpha = 0.7) +
+    labs(title = "Patient Distribution by Year", y = "Number of Patients")
+  
+  p2 <- results %>%
+    pivot_longer(cols = c(nominal_total, adjusted_total), 
+                 names_to = "type", values_to = "cost") %>%
+    mutate(type = if_else(type == "nominal_total", "Nominal", "Adjusted")) %>%
+    ggplot(aes(x = year, y = cost, fill = type)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    scale_y_continuous(labels = dollar) +
+    scale_fill_manual(values = c("Nominal" = "#3498db", "Adjusted" = "#e74c3c")) +
+    labs(title = "Total Costs by Year", y = "Total Cost", fill = "Type")
+  
+  # Print report
+  cli::cli_h2("📊 CPI Adjustment Report")
+  cli::cli_h3("Summary Statistics")
+  cli::cli_alert_info("Target year for adjustment: {targetYear}")
+  cli::cli_alert_info("Total patients analyzed: {comma(summary_stats$total_patients)}")
+  cli::cli_alert_info("Total nominal cost: {dollar(summary_stats$total_nominal_cost)}")
+  cli::cli_alert_info("Total adjusted cost: {dollar(summary_stats$total_adjusted_cost)}")
+  cli::cli_alert_info("Overall inflation impact: {round(summary_stats$inflation_impact, 1)}%")
+  
+  return(list(
+    summary = summary_stats,
+    patient_plot = p1,
+    cost_plot = p2
+  ))
+}
+
+# Generate report
+report <- createCPIAdjustmentReport(yearlyResults, cpiData, 2023)
+print(report$patient_plot)
+print(report$cost_plot)
+```
+
+## Best Practices and Tips 💡
+
+### 1. Choose the Right CPI
+
+```{r cpi-selection}
+# Compare different CPI types
+cpiTypes <- tribble(
+  ~type, ~description, ~use_case,
+  "Medical Care", "Healthcare-specific inflation", "Most healthcare cost analyses",
+  "Medical Services", "Professional services only", "Physician cost studies",
+  "Hospital Services", "Inpatient care inflation", "Hospital-specific analyses",
+  "Prescription Drugs", "Pharmaceutical inflation", "Drug cost studies",
+  "All Items", "General inflation", "Comparison with overall economy"
+)
+
+cli::cli_h3("📋 CPI Selection Guide")
+print(cpiTypes)
+```
+
+### 2. Document Your Adjustments
+
+Always document:
+- Which CPI series you used
+- The target year for adjustment
+- Any custom modifications
+- Rationale for your choices
+
+### 3. Consider Regional Variations
+
+Healthcare inflation varies by region. Consider using:
+- Regional CPI data when available
+- State-specific adjustments for local studies
+- Urban vs rural adjustments
+
+### 4. Validate Your Results
+
+```{r validation}
+# Example validation checks
+validateCPIAdjustment <- function(unadjusted, adjusted, cpiData, fromYear, toYear) {
+  
+  # Calculate expected adjustment
+  expectedFactor <- cpiData$cpi[cpiData$year == toYear] / 
+                   cpiData$cpi[cpiData$year == fromYear]
+  
+  # Calculate actual adjustment
+  actualFactor <- adjusted$adjusted_cost / unadjusted$total_cost
+  
+  # Check if adjustment is reasonable
+  difference <- abs(actualFactor - expectedFactor) / expectedFactor * 100
+  
+  cli::cli_h3("✅ CPI Adjustment Validation")
+  cli::cli_alert_info("Expected adjustment factor: {round(expectedFactor, 3)}")
+  cli::cli_alert_info("Actual adjustment factor: {round(actualFactor, 3)}")
+  
+  if(difference < 5) {
+    cli::cli_alert_success("Adjustment validated successfully (difference: {round(difference, 1)}%)")
+  } else {
+    cli::cli_alert_warning("Large difference detected: {round(difference, 1)}%")
+  }
+  
+  return(difference < 5)
+}
+```
+
+## Clean Up
+
+```{r cleanup}
+# Remove temporary tables
+for(year in years) {
+  DatabaseConnector::executeSql(connection, 
+    sprintf("DROP TABLE IF EXISTS main.cohort_%d", year))
+}
+
+DatabaseConnector::executeSql(connection, "DROP TABLE IF EXISTS main.multiyear_cohort")
+
+# Remove custom CPI file
+if(file.exists("custom_healthcare_cpi.csv")) {
+  file.remove("custom_healthcare_cpi.csv")
+}
+
+# Disconnect
+DatabaseConnector::disconnect(connection)
+cli::cli_alert_success("Clean up complete!")
+```
+
+## Summary 🎯
+
+You've learned how to:
+
+- ✅ Understand CPI concepts and calculations
+- ✅ Apply CPI adjustments to cost analyses
+- ✅ Analyze multi-year trends with inflation adjustment
+- ✅ Use custom CPI data for specific needs
+- ✅ Create comprehensive CPI adjustment reports
+- ✅ Validate and document your adjustments
+
+Remember: CPI adjustment is a powerful tool for making healthcare costs comparable across time, but always consider the context and document your methodology clearly.
+
+## Next Steps
+
+1. Explore different CPI series for your specific use case
+2. Consider creating region-specific CPI tables
+3. Combine CPI adjustment with other advanced features
+4. Share your inflation-adjusted analyses with stakeholders
+
+Happy analyzing! 📊
