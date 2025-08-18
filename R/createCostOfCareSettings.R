@@ -13,6 +13,8 @@
 #' @param primaryEventFilterName For micro-costing, the name of the primary event filter that identifies the line-level events to cost.
 #' @param costConceptId Concept ID for the cost type (e.g., total charge). Default: 31978.
 #' @param currencyConceptId Concept ID for the currency. Default: 44818668 (USD).
+#' @param cpiAdjustment Logical; if TRUE, adjusts costs for inflation using CPI data.
+#' @param cpiDataPath Optional path to a custom CSV file with CPI data. The file must contain 'year' and 'cpi' columns.
 #'
 #' @details
 #' The `eventFilters` argument must be a list of lists, where each inner list has:
@@ -33,7 +35,9 @@ createCostOfCareSettings <- function(
     microCosting = FALSE,
     primaryEventFilterName = NULL,
     costConceptId = 31978L, # OMOP 'total charge'
-    currencyConceptId = 44818668L # OMOP 'USD'
+    currencyConceptId = 44818668L, # OMOP 'USD'
+    cpiAdjustment = FALSE,
+    cpiDataPath = NULL
 ) {
   # --- Input Validation ---
   anchorCol <- checkmate::assertChoice(anchorCol, c("cohort_start_date", "cohort_end_date"))
@@ -62,6 +66,15 @@ createCostOfCareSettings <- function(
   checkmate::assertInt(costConceptId)
   checkmate::assertInt(currencyConceptId)
   
+  # CPI validation
+  checkmate::assertFlag(cpiAdjustment)
+  if (cpiAdjustment) {
+    if (!is.null(cpiDataPath)) {
+      checkmate::checkFileExists(cpiDataPath, extension = "csv")
+    }
+  }
+  
+  
   # --- Create Settings Object ---
   settings <- structure(
     list(
@@ -76,12 +89,11 @@ createCostOfCareSettings <- function(
       microCosting = microCosting,
       primaryEventFilterName = primaryEventFilterName,
       costConceptId = costConceptId,
-      currencyConceptId = currencyConceptId
+      currencyConceptId = currencyConceptId,
+      cpiAdjustment = cpiAdjustment,
+      cpiDataPath = cpiDataPath
     ),
     class = "CostOfCareSettings"
-  ) 
+  )
   return(settings)
 }
-
-
-

@@ -49,13 +49,14 @@ calculateCostOfCare <- function(
   # --- Setup ---
   startTime <- Sys.time()
   targetDialect <- DatabaseConnector::dbms(connection)
-
+  
   # Generate unique names for temp tables to avoid session conflicts
   sessionPrefix <- paste0("cu_", stringi::stri_rand_strings(1, 10, pattern = "[a-z]"))
   resultsTableName <- paste0(sessionPrefix, "_results")
   diagTableName <- paste0(sessionPrefix, "_diag")
   restrictVisitTableName <- NULL
   eventConceptsTableName <- NULL
+  cpiAdjTableName <- NULL
   
   # Ensure all created tables are dropped on exit, even if an error occurs
   on.exit({
@@ -66,9 +67,41 @@ calculateCostOfCare <- function(
       resultsTableName,
       diagTableName,
       restrictVisitTableName,
-      eventConceptsTableName
+      eventConceptsTableName,
+      cpiAdjTableName
     )
   }, add = TRUE)
+  
+  # --- CPI Adjustment Setup ---
+  if (isTRUE(costOfCareSettings$cpiAdjustment)) {
+    logMessage("Setting up CPI adjustment...", verbose, "INFO")
+    cpiAdjTableName <- paste0(sessionPrefix, "_cpi_adj")
+    
+    # Load CPI data
+    if (is.null(costOfCareSettings$cpiDataPath)) {
+      defaultCpiPath <- system.file("csv", "cpi_data.csv", package = "CostUtilization", mustWork = TRUE)
+      cpiData <- utils::read.csv(defaultCpiPath)
+    } else {
+      cpiData <- utils::read.csv(costOfCareSettings$cpiDataPath)
+    }
+    
+    # Validate and calculate adjustment factors
+    if (!all(c("year", "cpi") %in% names(cpiData))) {
+      cli::cli_abort("Custom CPI data must contain 'year' and 'cpi' columns.")
+    }
+    cpiData$adj_factor <- targetCpi / cpiData$cpi
+    
+    # Upload to a temp table
+    DatabaseConnector::insertTable(
+      connection = connection,
+      tableName = cpiAdjTableName,
+      data = cpiData[, c("year", "adj_factor")],
+      tempTable = TRUE,
+      tempEmulationSchema = tempEmulationSchema
+    )
+    logMessage(glue::glue("Uploaded CPI adjustment factors to #{cpiAdjTableName}"), verbose, "DEBUG")
+  }
+  
   
   # --- Upload Helper Tables ---
   if (isTRUE(costOfCareSettings$hasVisitRestriction)) {
@@ -90,11 +123,11 @@ calculateCostOfCare <- function(
   if (isTRUE(costOfCareSettings$hasEventFilters)) {
     eventConceptsTableName <- paste0(sessionPrefix, "_evt_concepts")
     eventConcepts <- purrr::imap_dfr(costOfCareSettings$eventFilters, ~ dplyr::tibble(
-        filter_id = .y,
-        filter_name = .x$name,
-        domain_scope = .x$domain,
-        concept_id = .x$conceptIds
-      )
+      filter_id = .y,
+      filter_name = .x$name,
+      domain_scope = .x$domain,
+      concept_id = .x$conceptIds
+    )
     )
     DatabaseConnector::insertTable(
       connection = connection,
@@ -117,7 +150,8 @@ calculateCostOfCare <- function(
       resultsTable = resultsTableName,
       diagTable = diagTableName,
       restrictVisitTable = restrictVisitTableName,
-      eventConceptsTable = eventConceptsTableName
+      eventConceptsTable = eventConceptsTableName,
+      cpiAdjTable = cpiAdjTableName
     ),
     costOfCareSettings
   )
@@ -152,5 +186,6 @@ calculateCostOfCare <- function(
   
   return(list(results = results, diagnostics = diagnostics))
 }
-  
+
+
 

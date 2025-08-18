@@ -1,4 +1,5 @@
 #' Execute SQL Plan for Cost Analysis
+#' Execute SQL Plan for Cost Analysis
 #' @noRd
 executeSqlPlan <- function(
     connection,
@@ -9,14 +10,12 @@ executeSqlPlan <- function(
 ) {
   logMessage("Starting SQL plan execution", verbose,  "INFO")
   sql <- system.file(
-    "sql", 
-    "MainCostUtilization.sql", 
-    package = "CostUtilization", 
+    "sql",
+    "MainCostUtilization.sql",
+    package = "CostUtilization",
     mustWork = TRUE) |> SqlRender::readSql()
   
   renderParams <- prepareSqlRenderParams(params, tempEmulationSchema)
-  
-
   
   logMessage(sprintf("Translating SQL to %s dialect", targetDialect), verbose,  "DEBUG")
   sql <- SqlRender::render(
@@ -36,7 +35,9 @@ executeSqlPlan <- function(
     micro_costing = renderParams$micro_costing,
     primary_filter_id = renderParams$primary_filter_id,
     results_table = renderParams$results_table,
-    diag_table = renderParams$diag_table
+    diag_table = renderParams$diag_table,
+    cpi_adjustment = renderParams$cpi_adjustment,
+    cpi_adj_table = renderParams$cpi_adj_table
   )
   
   sqlStatements <- SqlRender::splitSql(sql)
@@ -73,6 +74,7 @@ prepareSqlRenderParams <- function(params, tempEmulationSchema) {
   sqlParams$has_visit_restriction <- params$hasVisitRestriction
   sqlParams$has_event_filters <- params$hasEventFilters
   sqlParams$micro_costing <- params$microCosting
+  sqlParams$cpi_adjustment <- params$cpiAdjustment
   
   # --- Derived parameters ---
   if (isTRUE(params$microCosting) && !is.null(params$primaryEventFilterName)) {
@@ -91,11 +93,6 @@ prepareSqlRenderParams <- function(params, tempEmulationSchema) {
   }
   
   # --- Schema-qualified table names ---
-  sqlParams$results_table <- params$resultsTable
-  sqlParams$diag_table <- params$diagTable
-  sqlParams$restrict_visit_table <- params$restrictVisitTable
-  sqlParams$event_concepts_table <- params$eventConceptsTable
-  
   qualifyTableName <- function(tableName, schema) {
     if (!is.null(schema) && !is.null(tableName)) {
       return(paste(schema, tableName, sep = "."))
@@ -103,10 +100,12 @@ prepareSqlRenderParams <- function(params, tempEmulationSchema) {
     return(tableName)
   }
   
-  sqlParams$results_table <- qualifyTableName(sqlParams$results_table, tempEmulationSchema)
-  sqlParams$diag_table <- qualifyTableName(sqlParams$diag_table, tempEmulationSchema)
-  sqlParams$restrict_visit_table <- qualifyTableName(sqlParams$restrict_visit_table, tempEmulationSchema)
-  sqlParams$event_concepts_table <- qualifyTableName(sqlParams$event_concepts_table, tempEmulationSchema)
+  sqlParams$results_table <- qualifyTableName(params$resultsTable, tempEmulationSchema)
+  sqlParams$diag_table <- qualifyTableName(params$diagTable, tempEmulationSchema)
+  sqlParams$restrict_visit_table <- qualifyTableName(params$restrictVisitTable, tempEmulationSchema)
+  sqlParams$event_concepts_table <- qualifyTableName(params$eventConceptsTable, tempEmulationSchema)
+  sqlParams$cpi_adj_table <- qualifyTableName(params$cpiAdjTable, tempEmulationSchema)
+  
   
   return(sqlParams)
 }
