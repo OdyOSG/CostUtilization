@@ -1,0 +1,813 @@
+---
+title: "Advanced Features in CostUtilization"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Advanced Features in CostUtilization}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5,
+  message = FALSE,
+  warning = FALSE,
+  eval = FALSE
+)
+```
+
+## Introduction 🚀
+
+Ready to unlock the full power of the CostUtilization package? This vignette covers advanced features that will help you conduct sophisticated healthcare cost analyses. We'll explore complex filtering, multi-cohort comparisons, performance optimization, and more.
+
+```{r setup}
+library(CostUtilization)
+library(DatabaseConnector)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+library(scales)
+library(cli)
+
+# Setup connection to Eunomia for examples
+connectionDetails <- Eunomia::getEunomiaConnectionDetails()
+connection <- DatabaseConnector::connect(connectionDetails)
+
+# Ensure cost data is available
+injectCostData(connection, cdmDatabaseSchema = "main", seed = 123)
+transformCostToCdmV5dot4(connectionDetails, cdmDatabaseSchema = "main")
+
+# Set theme for plots
+theme_set(theme_minimal() + 
+          theme(plot.title = element_text(face = "bold"),
+                plot.subtitle = element_text(color = "gray50")))
+```
+
+## Complex Event Filtering 🔍
+
+### Building Comprehensive Event Filter Sets
+
+Event filters let you analyze costs for specific clinical scenarios. Here's how to build sophisticated filter sets:
+
+```{r complex-filters}
+# Example: Comprehensive cardiovascular care pathway
+cvCarePathway <- list(
+  # === ACUTE EVENTS ===
+  list(
+    name = "Acute MI",
+    domain = "Condition",
+    conceptIds = c(4329847, 314666, 4108217, 4296653, 4185932)
+  ),
+  list(
+    name = "Unstable Angina",
+    domain = "Condition",
+    conceptIds = c(321318, 4219032)
+  ),
+  list(
+    name = "Heart Failure",
+    domain = "Condition",
+    conceptIds = c(316139, 319835, 321319)
+  ),
+  
+  # === DIAGNOSTIC PROCEDURES ===
+  list(
+    name = "Cardiac Catheterization",
+    domain = "Procedure",
+    conceptIds = c(4019824, 4297650)
+  ),
+  list(
+    name = "Echocardiography",
+    domain = "Procedure",
+    conceptIds = c(4305178, 4013419)
+  ),
+  list(
+    name = "Stress Testing",
+    domain = "Procedure",
+    conceptIds = c(4143316, 4327941)
+  ),
+  
+  # === INTERVENTIONS ===
+  list(
+    name = "PCI",
+    domain = "Procedure",
+    conceptIds = c(4336464, 4178904, 4124836)
+  ),
+  list(
+    name = "CABG",
+    domain = "Procedure",
+    conceptIds = c(4336464, 4000733, 4228152)
+  ),
+  
+  # === MEDICATIONS ===
+  list(
+    name = "Antiplatelet Agents",
+    domain = "Drug",
+    conceptIds = c(1308216, 1310149, 1322184, 1318011)  # Aspirin, clopidogrel, ticagrelor, prasugrel
+  ),
+  list(
+    name = "Beta Blockers",
+    domain = "Drug",
+    conceptIds = c(1307046, 1313200, 1308842, 1345858)  # Metoprolol, atenolol, carvedilol, bisoprolol
+  ),
+  list(
+    name = "ACE/ARB",
+    domain = "Drug",
+    conceptIds = c(1308216, 1334456, 1341927, 1367500)  # Lisinopril, losartan, valsartan, ramipril
+  ),
+  list(
+    name = "Statins",
+    domain = "Drug",
+    conceptIds = c(1545958, 1549686, 1592085, 1539403)  # Atorvastatin, simvastatin, rosuvastatin, pravastatin
+  ),
+  
+  # === MONITORING ===
+  list(
+    name = "Lipid Panel",
+    domain = "Measurement",
+    conceptIds = c(3027114, 3023103, 3019900, 3011884)  # Total chol, LDL, HDL, triglycerides
+  ),
+  list(
+    name = "Cardiac Biomarkers",
+    domain = "Measurement",
+    conceptIds = c(3016407, 3005593, 3024561)  # Troponin, BNP, NT-proBNP
+  )
+)
+
+# Create a cardiovascular cohort for testing
+DatabaseConnector::executeSql(connection, "
+  CREATE TABLE main.cv_cohort AS
+  SELECT DISTINCT
+    1 AS cohort_definition_id,
+    co.person_id AS subject_id,
+    MIN(co.condition_start_date) AS cohort_start_date,
+    DATE(MIN(co.condition_start_date), '+1 year') AS cohort_end_date
+  FROM main.condition_occurrence co
+  WHERE co.condition_concept_id IN (4329847, 314666, 316139)  -- MI, angina, HF
+  GROUP BY co.person_id
+")
+
+# Analyze with comprehensive filters
+cvResults <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "cv_cohort",
+  cohortId = 1,
+  anchorCol = "cohort_start_date",
+  startOffsetDays = -30,
+  endOffsetDays = 365,
+  eventFilters = cvCarePathway,
+  returnFormat = "list",
+  verbose = TRUE
+)
+
+cli::cli_h3("💔 Cardiovascular Care Pathway Analysis")
+print(cvResults$results)
+```
+
+### Dynamic Filter Generation
+
+Create filters programmatically based on your needs:
+
+```{r dynamic-filters}
+# Function to create disease-specific filter sets
+createDiseaseFilters <- function(diseaseName, conditionConceptIds, 
+                                drugClasses, procedureTypes) {
+  
+  filters <- list()
+  
+  # Add condition filter
+  filters[[length(filters) + 1]] <- list(
+    name = paste(diseaseName, "Diagnoses"),
+    domain = "Condition",
+    conceptIds = conditionConceptIds
+  )
+  
+  # Add drug filters for each class
+  for(drugClass in names(drugClasses)) {
+    filters[[length(filters) + 1]] <- list(
+      name = paste(diseaseName, "-", drugClass),
+      domain = "Drug",
+      conceptIds = drugClasses[[drugClass]]
+    )
+  }
+  
+  # Add procedure filters
+  for(procType in names(procedureTypes)) {
+    filters[[length(filters) + 1]] <- list(
+      name = paste(diseaseName, "-", procType),
+      domain = "Procedure",
+      conceptIds = procedureTypes[[procType]]
+    )
+  }
+  
+  return(filters)
+}
+
+# Example: Create diabetes filter set
+diabetesDrugs <- list(
+  "Metformin" = c(1503297, 1502826),
+  "Sulfonylureas" = c(1502809, 1502855),
+  "DPP4 Inhibitors" = c(1580747, 1583722),
+  "GLP1 Agonists" = c(1583722, 44816332),
+  "SGLT2 Inhibitors" = c(44785829, 45774435)
+)
+
+diabetesProcedures <- list(
+  "Glucose Monitoring" = c(3004501, 3003309),
+  "Eye Exams" = c(4079938, 4084167),
+  "Foot Exams" = c(4030267, 4144723)
+)
+
+diabetesFilters <- createDiseaseFilters(
+  "Diabetes",
+  conditionConceptIds = c(201820, 201826, 443238, 442793),
+  drugClasses = diabetesDrugs,
+  procedureTypes = diabetesProcedures
+)
+
+# Use the generated filters
+diabetesResults <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "cv_cohort",  # Using existing cohort for demo
+  cohortId = 1,
+  eventFilters = diabetesFilters,
+  verbose = FALSE
+)
+```
+
+## Multi-Cohort Analysis 👥
+
+### Parallel Cohort Processing
+
+Analyze multiple cohorts efficiently:
+
+```{r multi-cohort}
+# Create multiple cohorts for comparison
+createComparisonCohorts <- function(connection) {
+  
+  # Drop existing table
+  DatabaseConnector::executeSql(connection, "DROP TABLE IF EXISTS main.comparison_cohorts")
+  
+  # Create cohort table
+  DatabaseConnector::executeSql(connection, "
+    CREATE TABLE main.comparison_cohorts (
+      cohort_definition_id INTEGER,
+      subject_id INTEGER,
+      cohort_start_date DATE,
+      cohort_end_date DATE
+    )
+  ")
+  
+  # Cohort 1: Diabetes only
+  DatabaseConnector::executeSql(connection, "
+    INSERT INTO main.comparison_cohorts
+    SELECT 
+      1 as cohort_definition_id,
+      person_id as subject_id,
+      MIN(condition_start_date) as cohort_start_date,
+      DATE(MIN(condition_start_date), '+1 year') as cohort_end_date
+    FROM main.condition_occurrence
+    WHERE condition_concept_id IN (201820, 201826)
+    GROUP BY person_id
+  ")
+  
+  # Cohort 2: Hypertension only
+  DatabaseConnector::executeSql(connection, "
+    INSERT INTO main.comparison_cohorts
+    SELECT 
+      2 as cohort_definition_id,
+      person_id as subject_id,
+      MIN(condition_start_date) as cohort_start_date,
+      DATE(MIN(condition_start_date), '+1 year') as cohort_end_date
+    FROM main.condition_occurrence
+    WHERE condition_concept_id IN (316866, 317895)
+    GROUP BY person_id
+  ")
+  
+  # Cohort 3: Both conditions
+  DatabaseConnector::executeSql(connection, "
+    INSERT INTO main.comparison_cohorts
+    SELECT 
+      3 as cohort_definition_id,
+      a.subject_id,
+      MAX(a.cohort_start_date, b.cohort_start_date) as cohort_start_date,
+      MIN(a.cohort_end_date, b.cohort_end_date) as cohort_end_date
+    FROM main.comparison_cohorts a
+    JOIN main.comparison_cohorts b
+      ON a.subject_id = b.subject_id
+    WHERE a.cohort_definition_id = 1
+      AND b.cohort_definition_id = 2
+  ")
+  
+  # Get cohort counts
+  counts <- DatabaseConnector::querySql(connection, "
+    SELECT 
+      cohort_definition_id,
+      COUNT(DISTINCT subject_id) as n_patients
+    FROM main.comparison_cohorts
+    GROUP BY cohort_definition_id
+  ")
+  
+  return(counts)
+}
+
+# Create cohorts
+cohortCounts <- createComparisonCohorts(connection)
+print(cohortCounts)
+
+# Define cohort metadata
+cohortMeta <- tribble(
+  ~cohortId, ~cohortName, ~color,
+  1, "Diabetes Only", "#e74c3c",
+  2, "Hypertension Only", "#3498db",
+  3, "Both Conditions", "#9b59b6"
+)
+
+# Analyze all cohorts with different time windows
+timeWindows <- list(
+  baseline = c(-365, -1),
+  acute = c(0, 30),
+  shortTerm = c(31, 90),
+  longTerm = c(91, 365)
+)
+
+# Run analysis for all combinations
+allResults <- expand_grid(
+  cohortId = cohortMeta$cohortId,
+  windowName = names(timeWindows)
+) %>%
+  pmap_dfr(function(cohortId, windowName) {
+    window <- timeWindows[[windowName]]
+    
+    result <- calculateCostOfCare(
+      connection = connection,
+      cdmDatabaseSchema = "main",
+      cohortDatabaseSchema = "main",
+      cohortTable = "comparison_cohorts",
+      cohortId = cohortId,
+      anchorCol = "cohort_start_date",
+      startOffsetDays = window[1],
+      endOffsetDays = window[2],
+      verbose = FALSE
+    )
+    
+    result %>%
+      mutate(
+        cohortId = cohortId,
+        windowName = windowName
+      )
+  }) %>%
+  left_join(cohortMeta, by = "cohortId")
+
+# Create comprehensive visualization
+allResults %>%
+  mutate(windowName = factor(windowName, levels = names(timeWindows))) %>%
+  ggplot(aes(x = windowName, y = cost_pppm, color = cohortName, group = cohortName)) +
+  geom_line(size = 1.5) +
+  geom_point(size = 3) +
+  scale_color_manual(values = setNames(cohortMeta$color, cohortMeta$cohortName)) +
+  scale_y_continuous(labels = dollar) +
+  labs(
+    title = "Cost Trajectories by Disease Combination",
+    subtitle = "Comparing costs across different time windows relative to diagnosis",
+    x = "Time Window",
+    y = "Cost Per Person Per Month",
+    color = "Cohort"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+### Stratified Analysis
+
+Perform analyses stratified by patient characteristics:
+
+```{r stratified-analysis}
+# Create age and gender stratified cohorts
+createStratifiedCohorts <- function(connection) {
+  
+  DatabaseConnector::executeSql(connection, "DROP TABLE IF EXISTS main.stratified_cohorts")
+  
+  # Create stratified cohorts with age groups and gender
+  DatabaseConnector::executeSql(connection, "
+    CREATE TABLE main.stratified_cohorts AS
+    SELECT 
+      c.*,
+      p.gender_concept_id,
+      CASE 
+        WHEN (YEAR(c.cohort_start_date) - p.year_of_birth) < 40 THEN '18-39'
+        WHEN (YEAR(c.cohort_start_date) - p.year_of_birth) < 65 THEN '40-64'
+        ELSE '65+'
+      END AS age_group
+    FROM main.comparison_cohorts c
+    JOIN main.person p ON c.subject_id = p.person_id
+    WHERE c.cohort_definition_id = 1  -- Diabetes cohort
+  ")
+}
+
+createStratifiedCohorts(connection)
+
+# Define strata
+strata <- expand_grid(
+  age_group = c("18-39", "40-64", "65+"),
+  gender = c(8507, 8532)  # Male, Female
+) %>%
+  mutate(
+    stratum_id = row_number(),
+    gender_name = if_else(gender == 8507, "Male", "Female")
+  )
+
+# Analyze each stratum
+stratumResults <- pmap_dfr(strata, function(age_group, gender, stratum_id, gender_name) {
+  
+  # Create temporary cohort for this stratum
+  sql <- sprintf("
+    CREATE TEMPORARY TABLE temp_stratum AS
+    SELECT * FROM main.stratified_cohorts
+    WHERE age_group = '%s' AND gender_concept_id = %d
+  ", age_group, gender)
+  
+  DatabaseConnector::executeSql(connection, sql)
+  
+  # Check if stratum has patients
+  count <- DatabaseConnector::querySql(connection, 
+    "SELECT COUNT(DISTINCT subject_id) as n FROM temp_stratum"
+  )$n
+  
+  if(count > 0) {
+    result <- calculateCostOfCare(
+      connection = connection,
+      cdmDatabaseSchema = "main",
+      cohortDatabaseSchema = "main",
+      cohortTable = "temp_stratum",
+      cohortId = 1,
+      anchorCol = "cohort_start_date",
+      startOffsetDays = 0,
+      endOffsetDays = 365,
+      verbose = FALSE
+    )
+    
+    result <- result %>%
+      mutate(
+        age_group = age_group,
+        gender = gender_name,
+        stratum_label = paste(age_group, gender_name, sep = ", ")
+      )
+  } else {
+    result <- tibble(
+      n_persons = 0,
+      cost_pppm = 0,
+      age_group = age_group,
+      gender = gender_name,
+      stratum_label = paste(age_group, gender_name, sep = ", ")
+    )
+  }
+  
+  # Clean up
+  DatabaseConnector::executeSql(connection, "DROP TABLE temp_stratum")
+  
+  return(result)
+})
+
+# Visualize stratified results
+stratumResults %>%
+  filter(n_persons > 0) %>%
+  ggplot(aes(x = age_group, y = cost_pppm, fill = gender)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(values = c("Male" = "#3498db", "Female" = "#e74c3c")) +
+  scale_y_continuous(labels = dollar) +
+  labs(
+    title = "Diabetes Costs by Age and Gender",
+    subtitle = "First year following diagnosis",
+    x = "Age Group",
+    y = "Cost Per Person Per Month",
+    fill = "Gender"
+  )
+```
+
+## Performance Optimization ⚡
+
+### Batch Processing Strategies
+
+For large-scale analyses, use batch processing:
+
+```{r batch-processing}
+# Function for efficient batch processing
+batchAnalyzeCohorts <- function(connection, cohortIds, batchSize = 10) {
+  
+  # Split cohorts into batches
+  batches <- split(cohortIds, ceiling(seq_along(cohortIds) / batchSize))
+  
+  cli::cli_progress_bar("Processing cohort batches", total = length(batches))
+  
+  allResults <- map_dfr(batches, function(batch) {
+    
+    batchResults <- map_dfr(batch, function(cohortId) {
+      
+      result <- tryCatch({
+        calculateCostOfCare(
+          connection = connection,
+          cdmDatabaseSchema = "main",
+          cohortDatabaseSchema = "main",
+          cohortTable = "comparison_cohorts",
+          cohortId = cohortId,
+          anchorCol = "cohort_start_date",
+          startOffsetDays = 0,
+          endOffsetDays = 365,
+          verbose = FALSE
+        ) %>%
+        mutate(cohortId = cohortId)
+      }, error = function(e) {
+        cli::cli_alert_warning("Error processing cohort {cohortId}: {e$message}")
+        tibble(cohortId = cohortId, error = TRUE)
+      })
+      
+      return(result)
+    })
+    
+    cli::cli_progress_update()
+    return(batchResults)
+  })
+  
+  cli::cli_progress_done()
+  return(allResults)
+}
+
+# Example: Process multiple cohorts in batches
+# results <- batchAnalyzeCohorts(connection, cohortIds = 1:100, batchSize = 10)
+```
+
+### Using Permanent Tables for Complex Analyses
+
+For repeated analyses, use permanent helper tables:
+
+```{r permanent-tables}
+# Create analysis with permanent tables
+runOptimizedAnalysis <- function(connection, cohortId, eventFilters) {
+  
+  # Generate unique table suffix
+  tableSuffix <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  
+  # Run analysis with permanent tables
+  result <- calculateCostOfCare(
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
+    cohortTable = "comparison_cohorts",
+    cohortId = cohortId,
+    anchorCol = "cohort_start_date",
+    startOffsetDays = -365,
+    endOffsetDays = 365,
+    eventFilters = eventFilters,
+    asPermanent = TRUE,  # Keep helper tables
+    tableSuffix = tableSuffix,
+    verbose = FALSE
+  )
+  
+  # Store table names for cleanup
+  helperTables <- c(
+    paste0("cost_cohort_", tableSuffix),
+    paste0("cost_events_", tableSuffix)
+  )
+  
+  return(list(result = result, helperTables = helperTables))
+}
+
+# Example usage
+# optimizedResult <- runOptimizedAnalysis(connection, 1, cvCarePathway)
+```
+
+## Advanced Diagnostics 📊
+
+### Detailed Patient Flow Analysis
+
+Get comprehensive diagnostics about your analysis:
+
+```{r diagnostics}
+# Run analysis with full diagnostics
+diagnosticResults <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "cv_cohort",
+  cohortId = 1,
+  anchorCol = "cohort_start_date",
+  startOffsetDays = -30,
+  endOffsetDays = 365,
+  eventFilters = cvCarePathway,
+  returnFormat = "list",
+  verbose = TRUE
+)
+
+# Analyze patient attrition
+attrition <- diagnosticResults$diagnostics %>%
+  mutate(
+    step_order = row_number(),
+    retention_rate = n_persons / first(n_persons) * 100,
+    attrition_rate = 100 - retention_rate,
+    persons_lost = lag(n_persons, default = first(n_persons)) - n_persons
+  )
+
+# Create detailed attrition plot
+attrition %>%
+  filter(step_name != "00_initial_cohort") %>%
+  ggplot(aes(x = reorder(step_name, step_order))) +
+  geom_bar(aes(y = n_persons), stat = "identity", fill = "#3498db", alpha = 0.7) +
+  geom_line(aes(y = retention_rate * max(n_persons) / 100, group = 1), 
+            color = "#e74c3c", size = 2) +
+  geom_point(aes(y = retention_rate * max(n_persons) / 100), 
+             color = "#c0392b", size = 3) +
+  geom_text(aes(y = n_persons, label = paste0(round(retention_rate, 1), "%")), 
+            vjust = -0.5, size = 3) +
+  scale_y_continuous(
+    name = "Number of Patients",
+    sec.axis = sec_axis(~ . / max(attrition$n_persons) * 100, 
+                        name = "Retention Rate (%)")
+  ) +
+  labs(
+    title = "Patient Attrition Through Analysis Pipeline",
+    subtitle = "Showing both absolute numbers and retention rates",
+    x = "Analysis Step"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Event distribution analysis
+if("n_events" %in% names(diagnosticResults$diagnostics)) {
+  eventDist <- diagnosticResults$diagnostics %>%
+    filter(n_events > 0) %>%
+    mutate(
+      events_per_person = n_events / n_persons,
+      cost_per_event = if_else(n_events > 0, total_cost / n_events, 0)
+    )
+  
+  # Create event analysis visualization
+  eventDist %>%
+    ggplot(aes(x = reorder(step_name, -events_per_person), 
+               y = events_per_person)) +
+    geom_bar(stat = "identity", fill = "#2ecc71") +
+    geom_text(aes(label = round(events_per_person, 1)), vjust = -0.5) +
+    labs(
+      title = "Healthcare Utilization Intensity",
+      subtitle = "Average events per person by category",
+      x = "Event Category",
+      y = "Events Per Person"
+    ) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+```
+
+## Custom Cost Concepts 💰
+
+### Analyzing Different Cost Types
+
+```{r cost-types}
+# Define different cost concepts
+costConcepts <- tribble(
+  ~conceptId, ~conceptName, ~description,
+  31978L, "Total Charge", "Full billed amount",
+  31980L, "Total Cost", "Actual cost to payer",
+  31981L, "Paid by Payer", "Amount paid by insurance",
+  31982L, "Paid by Patient", "Out-of-pocket costs",
+  31983L, "Paid by Primary", "Primary insurance payment",
+  31984L, "Paid by Secondary", "Secondary insurance payment"
+)
+
+# Analyze each cost type
+costTypeResults <- pmap_dfr(costConcepts, function(conceptId, conceptName, description) {
+  
+  result <- tryCatch({
+    calculateCostOfCare(
+      connection = connection,
+      cdmDatabaseSchema = "main",
+      cohortDatabaseSchema = "main",
+      cohortTable = "cv_cohort",
+      cohortId = 1,
+      anchorCol = "cohort_start_date",
+      startOffsetDays = 0,
+      endOffsetDays = 365,
+      costConceptId = conceptId,
+      verbose = FALSE
+    ) %>%
+    mutate(
+      costType = conceptName,
+      description = description
+    )
+  }, error = function(e) {
+    tibble(
+      costType = conceptName,
+      total_cost = NA_real_,
+      cost_pppm = NA_real_,
+      description = description,
+      error = TRUE
+    )
+  })
+  
+  return(result)
+})
+
+# Visualize cost breakdown
+costTypeResults %>%
+  filter(!is.na(total_cost)) %>%
+  ggplot(aes(x = reorder(costType, total_cost), y = total_cost)) +
+  geom_bar(stat = "identity", fill = "#34495e") +
+  coord_flip() +
+  scale_y_continuous(labels = dollar) +
+  labs(
+    title = "Healthcare Costs by Payment Type",
+    subtitle = "Different perspectives on the same care",
+    x = "Cost Type",
+    y = "Total Cost"
+  )
+```
+
+## Time Window Optimization 📅
+
+### Finding Optimal Analysis Windows
+
+```{r window-optimization}
+# Test different window sizes to find optimal analysis period
+windowSizes <- c(7, 14, 30, 60, 90, 180, 365)
+
+windowAnalysis <- map_dfr(windowSizes, function(days) {
+  
+  result <- calculateCostOfCare(
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
+    cohortTable = "cv_cohort",
+    cohortId = 1,
+    anchorCol = "cohort_start_date",
+    startOffsetDays = 0,
+    endOffsetDays = days,
+    verbose = FALSE
+  )
+  
+  result %>%
+    mutate(
+      windowDays = days,
+      captureRate = n_persons / first(n_persons) * 100
+    )
+})
+
+# Visualize capture rates
+windowAnalysis %>%
+  ggplot(aes(x = windowDays)) +
+  geom_line(aes(y = captureRate), color = "#3498db", size = 1.5) +
+  geom_point(aes(y = captureRate), color = "#2980b9", size = 3) +
+  geom_hline(yintercept = c(80, 90, 95), linetype = "dashed", alpha = 0.5) +
+  scale_x_continuous(breaks = windowSizes) +
+  labs(
+    title = "Patient Capture Rate by Analysis Window",
+    subtitle = "Percentage of cohort with cost data by window size",
+    x = "Window Size (days)",
+    y = "Capture Rate (%)"
+  )
+```
+
+## Clean Up
+
+```{r cleanup}
+# Remove all temporary tables
+tables_to_clean <- c(
+  "cv_cohort", "comparison_cohorts", "stratified_cohorts"
+)
+
+for(table in tables_to_clean) {
+  DatabaseConnector::executeSql(
+    connection, 
+    sprintf("DROP TABLE IF EXISTS main.%s", table)
+  )
+}
+
+# Disconnect
+DatabaseConnector::disconnect(connection)
+cli::cli_alert_success("Advanced analysis complete! 🎉")
+```
+
+## Key Takeaways 🎯
+
+You've mastered:
+
+1. **Complex Event Filtering** - Build comprehensive clinical pathways
+2. **Multi-Cohort Analysis** - Compare multiple populations efficiently
+3. **Stratified Analysis** - Examine subgroups within cohorts
+4. **Performance Optimization** - Handle large-scale analyses
+5. **Advanced Diagnostics** - Understand patient flow in detail
+6. **Custom Cost Concepts** - Analyze different payment perspectives
+
+## Next Steps
+
+- Combine these techniques for your specific research questions
+- Explore the package source code for additional options
+- Share your analyses with the OHDSI community
+- Contribute improvements back to the package
+
+Remember: With great power comes great responsibility. Always validate your results and consider the clinical context!
+
+Happy analyzing! 🚀
