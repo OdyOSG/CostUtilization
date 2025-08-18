@@ -17,9 +17,6 @@
 #' @return Invisible TRUE if all validations pass, otherwise throws error
 #' @noRd
 validateInputs <- function(params) {
-  # Validate connection
-  checkmate::assertClass(params$connection, "DatabaseConnection")
-  
   # Validate schema names
   checkmate::assertCharacter(params$cdmDatabaseSchema, len = 1, min.chars = 1)
   checkmate::assertCharacter(params$cohortDatabaseSchema, len = 1, min.chars = 1)
@@ -77,15 +74,6 @@ validateInputs <- function(params) {
   checkmate::assertIntegerish(params$costConceptId, lower = 1, len = 1)
   checkmate::assertIntegerish(params$currencyConceptId, lower = 1, len = 1)
   
-  # Validate SQL dialect if provided
-  if (!is.null(params$targetDialect)) {
-    validDialects <- c(
-      "oracle", "postgresql", "pdw", "redshift", "impala", 
-      "netezza", "bigquery", "sql server", "spark", "snowflake"
-    )
-    checkmate::assertChoice(tolower(params$targetDialect), validDialects)
-  }
-  
   # Validate temp emulation schema if provided
   if (!is.null(params$tempEmulationSchema)) {
     checkmate::assertCharacter(params$tempEmulationSchema, len = 1, min.chars = 1)
@@ -94,16 +82,6 @@ validateInputs <- function(params) {
   # Validate flags
   checkmate::assertLogical(params$asPermanent, len = 1)
   checkmate::assertLogical(params$verbose, len = 1)
-  
-  # Validate return format
-  checkmate::assertChoice(params$returnFormat, c("tibble", "list"))
-  
-  # Validate logger if provided
-  if (!is.null(params$logger)) {
-    if (!is.list(params$logger) || !is.function(params$logger$log)) {
-      cli::cli_abort("Logger must be a list with a 'log' function")
-    }
-  }
   
   invisible(TRUE)
 }
@@ -478,3 +456,4 @@ createValidationReport <- function(params, connection) {
   
   return(report)
 }
+
