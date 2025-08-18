@@ -209,9 +209,9 @@ test_that("calculateCostOfCare works with basic parameters", {
 
   # Run the function
   result <- calculateCostOfCare(
-    conn = connection,
-    cdmSchema = "main",
-    cohortSchema = "main",
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
     cohortTable = "cohort",
     cohortId = 1,
     anchorCol = "cohort_start_date",
@@ -239,9 +239,9 @@ test_that("calculateCostOfCare returns list format when requested", {
 
   # Run the function with list format
   result <- calculateCostOfCare(
-    conn = connection,
-    cdmSchema = "main",
-    cohortSchema = "main",
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
     cohortTable = "cohort",
     cohortId = 1,
     returnFormat = "list"
@@ -266,9 +266,9 @@ test_that("calculateCostOfCare handles visit restrictions", {
 
   # Run with visit restriction (only inpatient visits - 9201)
   result <- calculateCostOfCare(
-    conn = connection,
-    cdmSchema = "main",
-    cohortSchema = "main",
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
     cohortTable = "cohort",
     cohortId = 1,
     restrictVisitConceptIds = c(9201),
@@ -309,9 +309,9 @@ test_that("calculateCostOfCare handles event filters", {
 
   # Run with event filter
   result <- calculateCostOfCare(
-    conn = connection,
-    cdmSchema = "main",
-    cohortSchema = "main",
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
     cohortTable = "cohort",
     cohortId = 1,
     eventFilters = eventFilters,
@@ -335,9 +335,9 @@ test_that("calculateCostOfCare handles different anchor columns", {
 
   # Test with cohort_end_date as anchor
   result <- calculateCostOfCare(
-    conn = connection,
-    cdmSchema = "main",
-    cohortSchema = "main",
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
     cohortTable = "cohort",
     cohortId = 1,
     anchorCol = "cohort_end_date",
@@ -392,9 +392,9 @@ test_that("calculateCostOfCare handles micro-costing scenario", {
 
   # Run with micro-costing
   result <- calculateCostOfCare(
-    conn = connection,
-    cdmSchema = "main",
-    cohortSchema = "main",
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
     cohortTable = "cohort",
     cohortId = 1,
     eventFilters = eventFilters,
@@ -419,9 +419,9 @@ test_that("calculateCostOfCare handles empty cohort gracefully", {
 
   # Run the function
   result <- calculateCostOfCare(
-    conn = connection,
-    cdmSchema = "main",
-    cohortSchema = "main",
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
     cohortTable = "cohort",
     cohortId = 999, # Non-existent cohort
     returnFormat = "tibble"
@@ -439,8 +439,8 @@ test_that("calculateCostOfCare validates required parameters", {
   # Test missing required parameters
   expect_error(
     calculateCostOfCare(
-      conn = connection,
-      cdmSchema = "main"
+      connection = connection,
+      cdmDatabaseSchema = "main"
       # Missing other required parameters
     ),
     "argument .* is missing"
@@ -465,9 +465,9 @@ test_that("calculateCostOfCare handles different currency concepts", {
 
   # Run with different currency concept
   result <- calculateCostOfCare(
-    conn = connection,
-    cdmSchema = "main",
-    cohortSchema = "main",
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
     cohortTable = "cohort",
     cohortId = 1,
     currencyConceptId = 44818669,
@@ -490,9 +490,9 @@ test_that("calculateCostOfCare cleans up temporary tables", {
 
   # Run the function
   result <- calculateCostOfCare(
-    conn = connection,
-    cdmSchema = "main",
-    cohortSchema = "main",
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
     cohortTable = "cohort",
     cohortId = 1,
     asPermanent = FALSE,
@@ -515,9 +515,9 @@ test_that("calculateCostOfCare handles permanent tables option", {
 
   # Run with permanent tables
   result <- calculateCostOfCare(
-    conn = connection,
-    cdmSchema = "main",
-    cohortSchema = "main",
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
     cohortTable = "cohort",
     cohortId = 1,
     asPermanent = TRUE,
@@ -546,9 +546,9 @@ test_that("calculateCostOfCare handles verbose and logger options", {
 
   # Run with verbose and logger
   result <- calculateCostOfCare(
-    conn = connection,
-    cdmSchema = "main",
-    cohortSchema = "main",
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
     cohortTable = "cohort",
     cohortId = 1,
     verbose = TRUE,

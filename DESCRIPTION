@@ -1,6 +1,6 @@
 Package: CostUtilization
-Title: A Package for Standardized Cost and Healthcare Utilization Analysis
-Version: 0.0.1
+Title: What the Package Does (One Line, Title Case)
+Version: 0.0.0.9000
 Authors@R: c(
     person("Gowtham", "Rao", , "gowthamrao@gmail.com", role = c("aut", "cre")),
     person("Observational Health Data Science and Informatics", role = "cph")
@@ -19,19 +19,16 @@ Imports:
     Andromeda,
     checkmate,
     DatabaseConnector (>= 5.0.0),
-    DBI,
     dplyr,
-    ggplot2,
+    glue,
     jsonlite,
-    methods,
-    ParallelLogger,
+    purrr,
     rlang,
     SqlRender (>= 1.6.0),
     utils
 Suggests:
     covr,
     Eunomia,
-    glue,
     knitr,
     purrr,
     rmarkdown,

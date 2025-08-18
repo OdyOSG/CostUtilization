@@ -1,262 +1,181 @@
 #' Calculate Cost of Care Analysis
 #'
 #' @description
-#' Performs cost-of-care analysis for a specified cohort, calculating total costs
-#' and utilization rates within a defined time window.
+#' Performs cost-of-care analysis for a specified cohort.
 #'
-#' @param connection DatabaseConnector connection object
-#' @param connectionDetails         An R object of type `connectionDetails` created by the
-#'                                  `DatabaseConnector::createConnectionDetails` function.
-#' @param cdmDatabaseSchema Schema name for CDM tables
-#' @param cohortDatabaseSchema Schema name for cohort table
-#' @param cohortTable Name of the cohort table
-#' @param cohortId Cohort definition ID to analyze
-#' @param anchorCol Column to use as anchor for time window ("cohort_start_date" or "cohort_end_date")
-#' @param startOffsetDays Days to add to anchor date for window start (can be negative)
-#' @param endOffsetDays Days to add to anchor date for window end
-#' @param restrictVisitConceptIds Optional vector of visit concept IDs to restrict analysis
-#' @param eventFilters Optional list of event filters, each with name, domain, and conceptIds
-#' @param microCosting Logical; if TRUE, performs line-level costing at visit detail level
-#' @param costConceptId Concept ID for cost type (default: 31978 for total charge)
-#' @param currencyConceptId Concept ID for currency (default: 44818668 for USD)
-#' @param primaryEventFilterName For micro-costing, name of primary event filter
-#' @param tempEmulationSchema Schema for temporary tables (if needed)
-#' @param verbose Print progress messages?
+#' @param connection A `DatabaseConnector` connection object.
+#' @param cdmDatabaseSchema Schema name for CDM tables.
+#' @param cohortDatabaseSchema Schema name for the cohort table.
+#' @param cohortTable Name of the cohort table.
+#' @param cohortId The cohort definition ID to analyze.
+#' @param costOfCareSettings A settings object created by `createCostOfCareSettings()`.
+#' @param resultsDatabaseSchema Schema where result tables will be created.
+#' @param resultsTableName Name of the main results table.
+#' @param diagnosticsTableName Name of the diagnostics table.
+#' @param tempEmulationSchema Schema for temporary tables (if needed).
+#' @param verbose Print progress messages.
 #'
-#' @return
-#' Andromeda object with results
-#'
-#' @examples
-#' \dontrun{
-#' connection <- DatabaseConnector::connect(connectionDetails)
-#' 
-#' results <- calculateCostOfCare(
-#'   connection = connection,
-#'   cdmDatabaseSchema = "cdm_schema",
-#'   cohortDatabaseSchema = "results_schema",
-#'   cohortTable = "cohort",
-#'   cohortId = 1,
-#'   anchorCol = "cohort_start_date",
-#'   startOffsetDays = -365,
-#'   endOffsetDays = 0
-#' )
-#' 
-#' DatabaseConnector::disconnect(connection)
-#' }
-#'
+#' @return A list containing two tibbles: `results` and `diagnostics`.
 #' @export
 calculateCostOfCare <- function(
-    connection = NULL,
-    connectionDetails = NULL,
+    connection,
     cdmDatabaseSchema,
     cohortDatabaseSchema,
     cohortTable,
     cohortId,
-    anchorCol = c("cohort_start_date", "cohort_end_date"),
-    startOffsetDays = 0L,
-    endOffsetDays = 90L,
-    restrictVisitConceptIds = NULL,
-    eventFilters = NULL,
-    microCosting = FALSE,
-    costConceptId = 31978L,
-    currencyConceptId = 44818668L,
-    primaryEventFilterName = NULL,
+    costOfCareSettings,
+    resultsDatabaseSchema,
+    resultsTableName = "cost_util_results",
+    diagnosticsTableName = "cost_util_diag",
     tempEmulationSchema = NULL,
     verbose = TRUE
-    ) {
+) {
   
-  # Start timing
+  # --- Input Validation ---
+  checkmate::assertClass(connection, "DatabaseConnectorConnection")
+  checkmate::assertClass(costOfCareSettings, "CostOfCareSettings")
+  checkmate::assertString(cdmDatabaseSchema)
+  checkmate::assertString(cohortDatabaseSchema)
+  checkmate::assertString(cohortTable)
+  checkmate::assertInt(cohortId)
+  checkmate::assertString(resultsDatabaseSchema)
+  checkmate::assertString(resultsTableName)
+  checkmate::assertString(diagnosticsTableName)
+  
+  # --- Setup ---
   startTime <- Sys.time()
+  targetDialect <- DatabaseConnector::dbms(connection)
   
-  # Handle connection/connectionDetails
-  if (is.null(connectionDetails) && is.null(connection)) {
-    cli::cli_abort("Need to provide either connectionDetails or connection")
-  }
-  if (!is.null(connectionDetails) && !is.null(connection)) {
-    cli::cli_abort("Need to provide either connectionDetails or connection, not both")
-  }
-  if (!is.null(connectionDetails)) {
-    checkmate::assertClass(connectionDetails, "ConnectionDetails")
-    connection <- DatabaseConnector::connect(connectionDetails)
-    on.exit(DatabaseConnector::disconnect(connection))
-  } else {
-    checkmate::assertClass(connection, "DatabaseConnectorJdbcConnection")
-  }
-  # Validate and process arguments
-  args <- processArguments(
-    anchorCol = anchorCol,
-    returnFormat = returnFormat,
-    targetDialect = targetDialect,
-    microCosting = microCosting,
-    cdmDatabaseSchema = cdmDatabaseSchema,
-    eventFilters = eventFilters,
-    primaryEventFilterName = primaryEventFilterName
-  )
+  # Create fully qualified table names
+  resultsTable <- glue::glue("{resultsDatabaseSchema}.{resultsTableName}")
+  diagTable <- glue::glue("{resultsDatabaseSchema}.{diagnosticsTableName}")
   
-  # Log start
-  logMessage("Starting cost of care analysis", verbose,  "INFO")
-  
-  # Create execution environment
-  execEnv <- createExecutionEnvironment(
+  # --- Prepare Helper Tables ---
+  # Upload concept sets for event filters and visit restrictions to the database
+  helperTables <- uploadHelperTables(
     connection = connection,
-    tempEmulationSchema = tempEmulationSchema,
-    asPermanent = asPermanent,
-    verbose = verbose,
-    logger = logger
+    settings = costOfCareSettings,
+    tempEmulationSchema = tempEmulationSchema
   )
-  
-  # Setup cleanup
   on.exit(
-    {
-      cleanupExecutionEnvironment(execEnv, connection)
-      logMessage(
-        sprintf(
-          "Analysis completed in %.2f seconds",
-          as.numeric(difftime(Sys.time(), startTime, units = "secs"))
-        ),
-        verbose,  "INFO"
-      )
-    },
+    cleanupTempTables(connection, tempEmulationSchema, helperTables),
     add = TRUE
   )
   
-  # Prepare SQL parameters
-  sqlParams <- prepareSqlParameters(
-    cdmDatabaseSchema = cdmDatabaseSchema,
-    cohortDatabaseSchema = cohortDatabaseSchema,
-    cohortTable = cohortTable,
-    cohortId = cohortId,
-    anchorCol = args$anchorCol,
-    startOffsetDays = startOffsetDays,
-    endOffsetDays = endOffsetDays,
-    costConceptId = costConceptId,
-    currencyConceptId = currencyConceptId,
-    restrictVisitConceptIds = restrictVisitConceptIds,
-    eventFilters = eventFilters,
-    microCosting = microCosting,
-    primaryFilterId = args$primaryFilterId,
-    helperTables = helperTables,
-    execEnv = execEnv
+  # --- Prepare SQL Parameters ---
+  sqlParams <- c(
+    list(
+      cdmDatabaseSchema = cdmDatabaseSchema,
+      cohortDatabaseSchema = cohortDatabaseSchema,
+      cohortTable = cohortTable,
+      cohortId = cohortId,
+      resultsTable = resultsTable,
+      diagTable = diagTable
+    ),
+    costOfCareSettings,
+    helperTables
   )
   
-  # Execute analysis
-  executeCostAnalysis(
+  # --- Execute Analysis ---
+  # This function is now in R/BuildAnalysis.R and is the single execution pathway
+  executeSqlPlan(
     connection = connection,
-    sqlParams = sqlParams,
-    targetDialect = args$targetDialect,
+    params = sqlParams,
+    targetDialect = targetDialect,
     tempEmulationSchema = tempEmulationSchema,
     verbose = verbose
   )
   
-  # Retrieve and format results
-  results <- retrieveResults(
-    connection = connection,
-    execEnv = execEnv,
-    returnFormat = args$returnFormat,
-    verbose = verbose
+  # --- Fetch and Return Results ---
+  results <- list(
+    results = fetchTable(connection, resultsTable),
+    diagnostics = fetchTable(connection, diagTable)
+  )
+  
+  logMessage(
+    glue::glue("Analysis complete in {round(difftime(Sys.time(), startTime, units = 'secs'), 1)}s."),
+    verbose = verbose,
+    level = "SUCCESS"
   )
   
   return(results)
 }
 
-# Helper function to process and validate arguments
-processArguments <- function(
-    anchorCol, 
-    returnFormat, 
-    targetDialect, 
-    microCosting, 
-    cdmDatabaseSchema, 
-    eventFilters,
-   primaryEventFilterName
-   ) {
-  # Match arguments
-  anchorCol <- rlang::arg_match(anchorCol)
-  returnFormat <- rlang::arg_match(returnFormat)
-
-  # Validate inputs
-  validateCostOfCareInputs(
+# Helper function to fetch results (can be placed in utils.R)
+fetchTable <- function(connection, tableName) {
+  sql <- "SELECT * FROM @table;"
+  DatabaseConnector::renderTranslateQuerySql(
     connection = connection,
-    cdmDatabaseSchema = cdmDatabaseSchema,
-    microCosting = microCosting,
-    eventFilters = eventFilters,
-    primaryEventFilterName = primaryEventFilterName
-  )
-  list(
-    anchorCol = anchorCol,
-    primaryFilterId = primaryFilterId
-  )
+    sql = sql,
+    table = tableName,
+    snakeCaseToCamelCase = TRUE
+  ) |>
+    dplyr::as_tibble()
 }
 
-# Create execution environment with table names and cleanup tracking
-createExecutionEnvironment <- function(connection, tempEmulationSchema, asPermanent,
-                                       verbose) {
-  tablePrefix <- paste0("cu_", paste(sample(letters, 6), collapse = ""))
+# Helper to upload concept sets (can be placed in utils.R)
+uploadHelperTables <- function(connection, settings, tempEmulationSchema) {
+  tables <- list()
   
-  env <- list(
-    tablePrefix = tablePrefix,
-    resultsTable = paste0(tablePrefix, "_res"),
-    diagTable = paste0(tablePrefix, "_diag"),
-    restrictVisitTable = NULL,
-    eventConceptsTable = NULL,
+  if (settings$hasVisitRestriction) {
+    df <- tibble::tibble(visit_concept_id = settings$restrictVisitConceptIds)
+    name <- paste0("visit_restr_", sample.int(1e6, 1))
+    DatabaseConnector::insertTable(connection, name, df, tempEmulationSchema, tempTable = TRUE)
+    tables$restrictVisitTable <- name
+  }
+  
+  if (settings$hasEventFilters) {
+    df <- purrr::imap_dfr(settings$eventFilters, ~{
+      tibble::tibble(
+        filter_id = .y,
+        filter_name = .x$name,
+        domain_scope = .x$domain,
+        concept_id = .x$conceptIds
+      )
+    })
+    name <- paste0("event_filt_", sample.int(1e6, 1))
+    DatabaseConnector::insertTable(connection, name, df, tempEmulationSchema, tempTable = TRUE)
+    tables$eventConceptsTable <- name
+    
+    if (settings$microCosting) {
+      primaryFilter <- df |> dplyr::filter(filter_name == settings$primaryEventFilterName)
+      tables$primaryFilterId <- primaryFilter$filter_id[1]
+    }
+    
+  }
+  
+  
+  
+  # Execute analysis
+  executeCostAnalysis(
+    connection = connection,
+    sqlParams = sqlParams,
     tempEmulationSchema = tempEmulationSchema,
-    asPermanent = asPermanent,
-    tempTables = list()
+    verbose = verbose
   )
-  return(env)
+  
 }
 
-# Prepare all SQL parameters
-prepareSqlParameters <- function(
-    cdmDatabaseSchema, 
-    cohortDatabaseSchema, 
-    cohortTable, 
-    cohortId,
-    anchorCol, 
-    startOffsetDays, 
-    endOffsetDays,
-    costConceptId, 
-    currencyConceptId,
-    restrictVisitConceptIds, 
-    eventFilters,
-    microCosting, 
-    primaryFilterId,
-    helperTables, execEnv
+
+
+
+executeCostAnalysis <- function(
+    connection, 
+    sqlParams, 
+    targetDialect,
+    tempEmulationSchema, 
+    verbose = TRUE
     ) {
-  list(
-    cdmDatabaseSchema = cdmDatabaseSchema,
-    cohortDatabaseSchema = cohortDatabaseSchema,
-    cohortTable = cohortTable,
-    cohortId = cohortId,
-    anchorCol = anchorCol,
-    startOffsetDays = startOffsetDays,
-    endOffsetDays = endOffsetDays,
-    costConceptId = costConceptId,
-    currencyConceptId = currencyConceptId,
-    hasVisitRestriction = !is.null(restrictVisitConceptIds),
-    restrictVisitTable = helperTables$restrictVisitTable,
-    hasEventFilters = !is.null(eventFilters),
-    eventConceptsTable = helperTables$eventConceptsTable,
-    nFilters = length(eventFilters %||% list()),
-    microCosting = microCosting,
-    primaryFilterId = primaryFilterId,
-    resultsTable = execEnv$resultsTable,
-    diagTable = execEnv$diagTable
-  )
-}
-
-# Execute the main cost analysis SQL
-executeCostAnalysis <- function(connection, sqlParams, targetDialect,
-                                tempEmulationSchema, verbose, logger) {
   logMessage("Executing cost analysis SQL", verbose,  "INFO")
   
-  # Read and render SQL - Fixed case sensitivity
-  sql <- SqlRender::readSql(
-    system.file("sql", "MainCostUtilization.sql", package = "CostUtilization")
+  sql <- SqlRender::loadRenderTranslateSql(
+    "MainCostUtilization.sql", 
+    "CostUtilization",
+    warnOnMissingParameters = FALSE, 
+    .params = sqlParams,
+    targetDialect = DatabaseConnector::dbms(connection)
+    
   )
-  
-  sql <- SqlRender::render(sql, warnOnMissingParameters = FALSE, .params = sqlParams)
-  sql <- SqlRender::translate(sql, targetDialect = targetDialect)
-  
   # Split and execute
   sqlStatements <- SqlRender::splitSql(sql)
   
@@ -275,50 +194,6 @@ executeCostAnalysis <- function(connection, sqlParams, targetDialect,
   )
   
   logMessage("SQL execution completed successfully", verbose,  "INFO")
-}
-
-# Retrieve and format results
-retrieveResults <- function(connection, execEnv, returnFormat, verbose, logger) {
-  logMessage("Retrieving results", verbose,  "DEBUG")
-  
-  # Retrieve main results
-  resultsSql <- sprintf("SELECT * FROM %s", execEnv$resultsTable)
-  results <- DatabaseConnector::querySql(connection, resultsSql) |>
-    dplyr::as_tibble() |>
-    standardizeColumnNames()
-  
-  # Retrieve diagnostics
-  diagSql <- sprintf("SELECT * FROM %s", execEnv$diagTable)
-  diagnostics <- DatabaseConnector::querySql(connection, diagSql) |>
-    dplyr::as_tibble() |>
-    standardizeColumnNames()
-  
-  # Log summary
-  if (verbose && nrow(results) > 0) {
-    logMessage(
-      sprintf(
-        "Analysis complete: %d persons, %.2f total cost, %.2f PPPM",
-        diagnostics$n_persons[diagnostics$step_name == "00_initial_cohort"],
-        results$total_cost[1],
-        results$cost_pppm[1]
-      ),
-      verbose,  "INFO"
-    )
-  }
-  
-  # Return based on format
-  if (returnFormat == "tibble") {
-    return(results)
-  } else {
-    return(list(
-      results = results,
-      diagnostics = diagnostics,
-      metadata = list(
-        analysisTime = Sys.time(),
-        parameters = as.list(match.call())
-      )
-    ))
-  }
 }
 
 

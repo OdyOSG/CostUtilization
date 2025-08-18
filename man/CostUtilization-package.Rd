@@ -4,7 +4,7 @@
 \name{CostUtilization-package}
 \alias{CostUtilization}
 \alias{CostUtilization-package}
-\title{CostUtilization: A Package for Standardized Cost and Healthcare Utilization Analysis}
+\title{CostUtilization: What the Package Does (One Line, Title Case)}
 \description{
 \if{html}{\figure{logo.png}{options: style='float: right' alt='logo' width='120'}}
 

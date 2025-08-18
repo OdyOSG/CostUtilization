@@ -1,0 +1,654 @@
+---
+title: "Advanced Features in CostUtilization"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Advanced Features in CostUtilization}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5,
+  message = FALSE,
+  warning = FALSE,
+  eval = FALSE
+)
+```
+
+## Introduction
+
+This vignette covers advanced features of the CostUtilization package, including complex event filtering, custom cost concepts, multi-cohort analysis, and performance optimization techniques.
+
+```{r setup}
+library(CostUtilization)
+library(DatabaseConnector)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+library(cli)
+
+# Setup connection
+connectionDetails <- Eunomia::getEunomiaConnectionDetails()
+connection <- DatabaseConnector::connect(connectionDetails)
+
+# Ensure cost data is available
+injectCostData(connection, cdmDatabaseSchema = "main", seed = 123)
+transformCostToCdmV5dot4(connectionDetails, cdmDatabaseSchema = "main")
+```
+
+## Complex Event Filtering
+
+### Combining Multiple Domains
+
+You can create sophisticated event filters that span multiple clinical domains:
+
+```{r complex-filters}
+# Define comprehensive cardiovascular event filters
+cvEventFilters <- list(
+  # Acute events
+  list(
+    name = "Acute MI",
+    domain = "Condition",
+    conceptIds = c(4329847, 314666, 4108217)  # MI concept IDs
+  ),
+  list(
+    name = "Stroke",
+    domain = "Condition", 
+    conceptIds = c(372924, 375557, 443454)  # Stroke concept IDs
+  ),
+  # Procedures
+  list(
+    name = "Revascularization",
+    domain = "Procedure",
+    conceptIds = c(4336464, 4178904)  # PCI, CABG
+  ),
+  list(
+    name = "Cardiac Imaging",
+    domain = "Procedure",
+    conceptIds = c(4019824, 4305178, 4143316)  # Echo, cath, stress test
+  ),
+  # Medications
+  list(
+    name = "Antiplatelet Therapy",
+    domain = "Drug",
+    conceptIds = c(1308216, 1310149)  # Aspirin, clopidogrel
+  ),
+  list(
+    name = "Statins",
+    domain = "Drug",
+    conceptIds = c(1545958, 1549686, 1592085)  # Various statins
+  ),
+  # Monitoring
+  list(
+    name = "Lipid Panel",
+    domain = "Measurement",
+    conceptIds = c(3027114, 3023103, 3019900)  # Cholesterol tests
+  ),
+  list(
+    name = "Cardiac Biomarkers",
+    domain = "Measurement",
+    conceptIds = c(3016407, 3005593)  # Troponin, BNP
+  )
+)
+
+# Create test cohort of patients with CV conditions
+DatabaseConnector::executeSql(connection, "
+  CREATE TABLE main.cv_cohort AS
+  SELECT DISTINCT
+    1 AS cohort_definition_id,
+    co.person_id AS subject_id,
+    MIN(co.condition_start_date) AS cohort_start_date,
+    DATE(MIN(co.condition_start_date), '+1 year') AS cohort_end_date
+  FROM main.condition_occurrence co
+  WHERE co.condition_concept_id IN (4329847, 314666, 4108217, 372924, 375557, 443454)
+  GROUP BY co.person_id
+")
+
+# Analyze CV-related costs
+cvCostResults <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "cv_cohort",
+  cohortId = 1,
+  anchorCol = "cohort_start_date",
+  startOffsetDays = -30,   # 30 days before event
+  endOffsetDays = 365,     # 1 year after event
+  eventFilters = cvEventFilters,
+  returnFormat = "list",
+  verbose = TRUE
+)
+
+# Examine cost breakdown by event type
+cli::cli_h3("Cardiovascular Event Cost Analysis")
+print(cvCostResults$results)
+```
+
+### Dynamic Event Filter Generation
+
+Create event filters programmatically based on concept hierarchies:
+
+```{r dynamic-filters}
+# Function to create filters from concept ancestors
+createHierarchicalFilters <- function(connection, cdmDatabaseSchema, 
+                                     ancestorConceptIds, filterPrefix) {
+  
+  # Query to get all descendant concepts
+  sql <- glue::glue("
+    SELECT DISTINCT
+      ca.ancestor_concept_id,
+      c.concept_name AS ancestor_name,
+      ca.descendant_concept_id,
+      c2.concept_name AS descendant_name,
+      c2.domain_id
+    FROM {cdmDatabaseSchema}.concept_ancestor ca
+    JOIN {cdmDatabaseSchema}.concept c 
+      ON ca.ancestor_concept_id = c.concept_id
+    JOIN {cdmDatabaseSchema}.concept c2 
+      ON ca.descendant_concept_id = c2.concept_id
+    WHERE ca.ancestor_concept_id IN ({paste(ancestorConceptIds, collapse = ',')})")
+  
+  concepts <- DatabaseConnector::querySql(connection, sql) |>
+    rename_with(tolower)
+  
+  # Group by ancestor and domain
+  filters <- concepts |>
+    group_by(ancestor_concept_id, ancestor_name, domain_id) |>
+    summarise(
+      conceptIds = list(unique(descendant_concept_id)),
+      .groups = "drop"
+    ) |>
+    mutate(
+      name = paste0(filterPrefix, ": ", ancestor_name, " (", domain_id, ")")
+    ) |>
+    pmap(function(name, domain_id, conceptIds, ...) {
+      list(
+        name = name,
+        domain = domain_id,
+        conceptIds = as.integer(conceptIds)
+      )
+    })
+  
+  return(filters)
+}
+
+# Example: Create filters for all diabetes-related concepts
+# Note: This requires a full CDM with concept_ancestor table
+# diabetesFilters <- createHierarchicalFilters(
+#   connection = connection,
+#   cdmDatabaseSchema = "main",
+#   ancestorConceptIds = c(201820, 201826),  # T2DM concepts
+#   filterPrefix = "Diabetes"
+# )
+```
+
+## Custom Cost Analysis
+
+### Analyzing Specific Cost Types
+
+The package supports analysis of different cost components:
+
+```{r cost-types}
+# Analyze different cost concepts
+costTypes <- list(
+  totalCharge = 31978L,
+  totalCost = 31980L,
+  paidByPayer = 31981L,
+  paidByPatient = 31982L
+)
+
+# Run analysis for each cost type
+costTypeResults <- map_dfr(names(costTypes), function(costTypeName) {
+  
+  result <- calculateCostOfCare(
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main", 
+    cohortTable = "cv_cohort",
+    cohortId = 1,
+    anchorCol = "cohort_start_date",
+    startOffsetDays = 0,
+    endOffsetDays = 365,
+    costConceptId = costTypes[[costTypeName]],
+    verbose = FALSE
+  )
+  
+  result |>
+    mutate(costType = costTypeName)
+})
+
+# Visualize cost breakdown
+costTypePlot <- costTypeResults |>
+  ggplot(aes(x = costType, y = total_cost, fill = costType)) +
+  geom_bar(stat = "identity") +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title = "Healthcare Costs by Payment Type",
+    x = "Cost Type",
+    y = "Total Cost ($)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+print(costTypePlot)
+```
+
+### Currency-Specific Analysis
+
+For international studies, analyze costs in different currencies:
+
+```{r currency-analysis}
+# Define currency concepts
+currencies <- list(
+  USD = 44818668L,
+  EUR = 44818669L,
+  GBP = 44818670L
+)
+
+# Note: This example assumes multi-currency cost data exists
+# In practice, you would need cost data with different currency concepts
+
+# Function to analyze costs by currency
+analyzeByCurrency <- function(connection, currencyConceptId, currencyName) {
+  tryCatch({
+    calculateCostOfCare(
+      connection = connection,
+      cdmDatabaseSchema = "main",
+      cohortDatabaseSchema = "main",
+      cohortTable = "cv_cohort", 
+      cohortId = 1,
+      anchorCol = "cohort_start_date",
+      startOffsetDays = 0,
+      endOffsetDays = 365,
+      currencyConceptId = currencyConceptId,
+      verbose = FALSE
+    ) |>
+    mutate(currency = currencyName)
+  }, error = function(e) {
+    tibble(
+      currency = currencyName,
+      total_cost = NA_real_,
+      cost_pppm = NA_real_,
+      error = as.character(e)
+    )
+  })
+}
+
+# Analyze for each currency
+# currencyResults <- map2_dfr(
+#   currencies, 
+#   names(currencies),
+#   ~analyzeByCurrency(connection, .x, .y)
+# )
+```
+
+## Multi-Cohort Analysis
+
+### Parallel Cohort Analysis
+
+Analyze multiple cohorts efficiently:
+
+```{r multi-cohort}
+# Create multiple test cohorts
+createTestCohorts <- function(connection) {
+  # Cohort 1: Diabetes patients
+  DatabaseConnector::executeSql(connection, "
+    CREATE TABLE main.multi_cohort AS
+    SELECT 
+      1 AS cohort_definition_id,
+      person_id AS subject_id,
+      MIN(condition_start_date) AS cohort_start_date,
+      MAX(condition_end_date) AS cohort_end_date
+    FROM main.condition_occurrence
+    WHERE condition_concept_id IN (201820, 201826)
+    GROUP BY person_id
+  ")
+  
+  # Cohort 2: Hypertension patients  
+  DatabaseConnector::executeSql(connection, "
+    INSERT INTO main.multi_cohort
+    SELECT 
+      2 AS cohort_definition_id,
+      person_id AS subject_id,
+      MIN(condition_start_date) AS cohort_start_date,
+      MAX(condition_end_date) AS cohort_end_date
+    FROM main.condition_occurrence
+    WHERE condition_concept_id IN (316866, 317895)
+    GROUP BY person_id
+  ")
+  
+  # Cohort 3: Both conditions
+  DatabaseConnector::executeSql(connection, "
+    INSERT INTO main.multi_cohort
+    SELECT 
+      3 AS cohort_definition_id,
+      a.subject_id,
+      MAX(a.cohort_start_date, b.cohort_start_date) AS cohort_start_date,
+      MIN(a.cohort_end_date, b.cohort_end_date) AS cohort_end_date
+    FROM main.multi_cohort a
+    JOIN main.multi_cohort b
+      ON a.subject_id = b.subject_id
+    WHERE a.cohort_definition_id = 1
+      AND b.cohort_definition_id = 2
+  ")
+}
+
+createTestCohorts(connection)
+
+# Analyze all cohorts
+cohortIds <- c(1, 2, 3)
+cohortNames <- c("Diabetes", "Hypertension", "Both")
+
+multiCohortResults <- map2_dfr(cohortIds, cohortNames, function(cohortId, cohortName) {
+  
+  result <- calculateCostOfCare(
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
+    cohortTable = "multi_cohort",
+    cohortId = cohortId,
+    anchorCol = "cohort_start_date",
+    startOffsetDays = 0,
+    endOffsetDays = 365,
+    verbose = FALSE
+  )
+  
+  result |>
+    mutate(
+      cohortId = cohortId,
+      cohortName = cohortName
+    )
+})
+
+# Compare cohorts
+cohortComparisonPlot <- multiCohortResults |>
+  ggplot(aes(x = cohortName, y = cost_pppm, fill = cohortName)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = scales::dollar(cost_pppm)), 
+            vjust = -0.5) +
+  scale_fill_brewer(palette = "Set3") +
+  labs(
+    title = "Cost Per Person Per Month by Cohort",
+    x = "Cohort",
+    y = "Cost PPPM ($)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+print(cohortComparisonPlot)
+```
+
+### Stratified Analysis
+
+Perform stratified cost analysis by patient characteristics:
+
+```{r stratified-analysis}
+# Create stratified cohorts by age group
+DatabaseConnector::executeSql(connection, "
+  CREATE TABLE main.age_stratified_cohort AS
+  SELECT 
+    c.*,
+    CASE 
+      WHEN (YEAR(c.cohort_start_date) - p.year_of_birth) < 45 THEN 1
+      WHEN (YEAR(c.cohort_start_date) - p.year_of_birth) < 65 THEN 2
+      ELSE 3
+    END AS age_group
+  FROM main.cv_cohort c
+  JOIN main.person p ON c.subject_id = p.person_id
+")
+
+# Analyze each age group
+ageGroups <- list(
+  "1" = "Under 45",
+  "2" = "45-64", 
+  "3" = "65+"
+)
+
+ageStratifiedResults <- map_dfr(names(ageGroups), function(ageGroup) {
+  
+  # Create temporary cohort for this age group
+  DatabaseConnector::executeSql(connection, glue::glue("
+    CREATE TEMPORARY TABLE temp_age_cohort AS
+    SELECT * FROM main.age_stratified_cohort
+    WHERE age_group = {ageGroup}
+  "))
+  
+  result <- calculateCostOfCare(
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
+    cohortTable = "temp_age_cohort",
+    cohortId = 1,
+    anchorCol = "cohort_start_date",
+    startOffsetDays = 0,
+    endOffsetDays = 365,
+    verbose = FALSE
+  )
+  
+  # Clean up
+  DatabaseConnector::executeSql(connection, "DROP TABLE temp_age_cohort")
+  
+  result |>
+    mutate(ageGroup = ageGroups[[ageGroup]])
+})
+
+# Visualize age-stratified results
+ageStratPlot <- ageStratifiedResults |>
+  pivot_longer(
+    cols = c(cost_pppm, visits_per_1000_py),
+    names_to = "metric",
+    values_to = "value"
+  ) |>
+  ggplot(aes(x = ageGroup, y = value, fill = metric)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~metric, scales = "free_y") +
+  labs(
+    title = "Healthcare Utilization by Age Group",
+    x = "Age Group",
+    y = "Value"
+  ) +
+  theme_minimal()
+
+print(ageStratPlot)
+```
+
+## Performance Optimization
+
+### Using Permanent Tables for Large Analyses
+
+For large-scale analyses, use permanent tables to improve performance:
+
+```{r performance-optimization}
+# Create permanent helper tables for repeated analyses
+optimizedAnalysis <- function(connection, cohortIds, eventFilters) {
+  
+  # Use permanent tables for better performance
+  results <- map_dfr(cohortIds, function(cohortId) {
+    
+    calculateCostOfCare(
+      connection = connection,
+      cdmDatabaseSchema = "main",
+      cohortDatabaseSchema = "main",
+      cohortTable = "multi_cohort",
+      cohortId = cohortId,
+      anchorCol = "cohort_start_date",
+      startOffsetDays = -365,
+      endOffsetDays = 365,
+      eventFilters = eventFilters,
+      asPermanent = TRUE,  # Keep helper tables
+      verbose = FALSE
+    ) |>
+    mutate(cohortId = cohortId)
+  })
+  
+  return(results)
+}
+
+# Example with timing
+# system.time({
+#   optimizedResults <- optimizedAnalysis(
+#     connection = connection,
+#     cohortIds = c(1, 2, 3),
+#     eventFilters = cvEventFilters
+#   )
+# })
+```
+
+### Batch Processing for Multiple Time Windows
+
+Process multiple time windows efficiently:
+
+```{r batch-processing}
+# Define multiple time windows for analysis
+timeWindowDefinitions <- tibble(
+  windowName = c("pre_90d", "pre_30d", "index_30d", "post_30d", "post_90d", "post_180d"),
+  startDays = c(-90, -30, 0, 31, 91, 181),
+  endDays = c(-1, -1, 30, 60, 180, 365)
+)
+
+# Batch process all windows
+batchResults <- pmap_dfr(timeWindowDefinitions, function(windowName, startDays, endDays) {
+  
+  result <- calculateCostOfCare(
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
+    cohortTable = "cv_cohort",
+    cohortId = 1,
+    anchorCol = "cohort_start_date",
+    startOffsetDays = startDays,
+    endOffsetDays = endDays,
+    verbose = FALSE
+  )
+  
+  result |>
+    mutate(
+      windowName = windowName,
+      windowDays = endDays - startDays + 1
+    )
+})
+
+# Create timeline visualization
+timelinePlot <- batchResults |>
+  mutate(
+    windowName = factor(windowName, levels = timeWindowDefinitions$windowName),
+    costPerDay = total_cost / windowDays
+  ) |>
+  ggplot(aes(x = windowName, y = costPerDay)) +
+  geom_line(group = 1, color = "darkblue", size = 1.2) +
+  geom_point(size = 3, color = "darkblue") +
+  labs(
+    title = "Daily Cost Trajectory Around Index Event",
+    x = "Time Window",
+    y = "Average Cost Per Day ($)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(timelinePlot)
+```
+
+## Advanced Diagnostics
+
+### Detailed Diagnostic Analysis
+
+Extract and analyze detailed diagnostic information:
+
+```{r advanced-diagnostics}
+# Run analysis with detailed diagnostics
+detailedAnalysis <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "cv_cohort",
+  cohortId = 1,
+  anchorCol = "cohort_start_date",
+  startOffsetDays = 0,
+  endOffsetDays = 365,
+  eventFilters = cvEventFilters,
+  returnFormat = "list",
+  verbose = TRUE
+)
+
+# Analyze patient attrition
+attritionData <- detailedAnalysis$diagnostics |>
+  mutate(
+    step_order = row_number(),
+    retention_rate = n_persons / max(n_persons) * 100
+  )
+
+# Visualize patient flow
+attritionPlot <- attritionData |>
+  ggplot(aes(x = reorder(step_name, step_order))) +
+  geom_bar(aes(y = n_persons), stat = "identity", fill = "steelblue") +
+  geom_line(aes(y = retention_rate * max(n_persons) / 100, group = 1), 
+            color = "red", size = 1.2) +
+  geom_point(aes(y = retention_rate * max(n_persons) / 100), 
+             color = "red", size = 3) +
+  scale_y_continuous(
+    name = "Number of Persons",
+    sec.axis = sec_axis(~ . / max(attritionData$n_persons) * 100, 
+                        name = "Retention Rate (%)")
+  ) +
+  labs(
+    title = "Patient Attrition Through Analysis Steps",
+    x = "Analysis Step"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(attritionPlot)
+
+# Event distribution analysis
+if (nrow(attritionData) > 1) {
+  eventDistribution <- attritionData |>
+    filter(step_name != "00_initial_cohort") |>
+    mutate(
+      events_per_person = n_events / n_persons,
+      step_label = paste0(step_name, "\n(", round(events_per_person, 1), " events/person)")
+    )
+  
+  eventDistPlot <- eventDistribution |>
+    ggplot(aes(x = step_label, y = n_events)) +
+    geom_bar(stat = "identity", fill = "darkgreen") +
+    labs(
+      title = "Event Distribution by Analysis Step",
+      x = "Step (Events per Person)",
+      y = "Total Events"
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  print(eventDistPlot)
+}
+```
+
+## Clean Up
+
+```{r cleanup}
+# Clean up all temporary tables
+DatabaseConnector::executeSql(connection, "DROP TABLE IF EXISTS main.cv_cohort")
+DatabaseConnector::executeSql(connection, "DROP TABLE IF EXISTS main.multi_cohort")
+DatabaseConnector::executeSql(connection, "DROP TABLE IF EXISTS main.age_stratified_cohort")
+
+# Disconnect
+DatabaseConnector::disconnect(connection)
+cli::cli_alert_success("Analysis complete and database cleaned up")
+```
+
+## Summary
+
+This vignette demonstrated advanced features including:
+
+1. **Complex event filtering** with multiple domains and hierarchical concepts
+2. **Custom cost analysis** for different cost types and currencies
+3. **Multi-cohort analysis** with parallel processing and stratification
+4. **Performance optimization** techniques for large-scale analyses
+5. **Advanced diagnostics** for understanding patient flow and event distributions
+
+These features enable sophisticated healthcare cost and utilization analyses that can address complex research questions while maintaining computational efficiency.

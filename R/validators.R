@@ -5,8 +5,6 @@
 #' These functions ensure input parameters meet requirements before analysis execution.
 #'
 #' @keywords internal
-#' @noRd
-
 #' Validate All Input Parameters
 #'
 #' @description
@@ -15,7 +13,7 @@
 #' @param params List of parameters to validate
 #'
 #' @return Invisible TRUE if all validations pass, otherwise throws error
-#' @noRd
+
 validateInputs <- function(params) {
   # Validate schema names
   checkmate::assertCharacter(params$cdmDatabaseSchema, len = 1, min.chars = 1)
@@ -86,6 +84,7 @@ validateInputs <- function(params) {
   invisible(TRUE)
 }
 
+
 #' Validate Event Filters Structure
 #'
 #' @description
@@ -136,199 +135,6 @@ validateEventFilters <- function(eventFilters) {
   invisible(TRUE)
 }
 
-#' Check Database Connection
-#'
-#' @description
-#' Validates that the database connection is active and valid
-#'
-#' @param connection DatabaseConnector connection object
-#'
-#' @return Invisible TRUE if valid, otherwise throws error
-#' @noRd
-checkDatabaseConnection <- function(connection) {
-  checkmate::assertClass(connection, "DatabaseConnection")
-  
-  if (!DatabaseConnector::dbIsValid(connection)) {
-    cli::cli_abort("Database connection is not valid or has been closed")
-  }
-  
-  invisible(TRUE)
-}
-
-#' Check Schema Exists
-#'
-#' @description
-#' Checks if a database schema exists and is accessible
-#'
-#' @param connection DatabaseConnector connection object
-#' @param schema Schema name to check
-#'
-#' @return TRUE if schema exists, FALSE otherwise
-#' @noRd
-checkSchemaExists <- function(connection, schema) {
-  tryCatch(
-    {
-      # Try a simple query to test schema access
-      sql <- "SELECT 1 AS test"
-      result <- DatabaseConnector::renderTranslateQuerySql(
-        connection = connection,
-        sql = sql,
-        snakeCaseToCamelCase = FALSE
-      )
-      return(TRUE)
-    },
-    error = function(e) {
-      return(FALSE)
-    }
-  )
-}
-
-#' Check Table Exists
-#'
-#' @description
-#' Checks if a table exists in the specified schema
-#'
-#' @param connection DatabaseConnector connection object
-#' @param schema Schema name
-#' @param table Table name
-#'
-#' @return TRUE if table exists, FALSE otherwise
-#' @noRd
-checkTableExists <- function(connection, schema, table) {
-  tryCatch(
-    {
-      sql <- SqlRender::render(
-        "SELECT 1 FROM @schema.@table WHERE 1 = 0",
-        schema = schema,
-        table = table
-      )
-      DatabaseConnector::executeSql(connection, sql)
-      return(TRUE)
-    },
-    error = function(e) {
-      return(FALSE)
-    }
-  )
-}
-
-#' Check Micro-costing Prerequisites
-#'
-#' @description
-#' Validates that all required tables and columns exist for micro-costing analysis
-#'
-#' @param connection DatabaseConnector connection object
-#' @param cdmDatabaseSchema CDM schema name
-#'
-#' @return Invisible TRUE if all prerequisites met, otherwise throws error
-#' @noRd
-checkMicrocostingPrerequisites <- function(connection, cdmDatabaseSchema) {
-  # Check for visit_detail table
-  if (!checkTableExists(connection, cdmDatabaseSchema, "visit_detail")) {
-    cli::cli_abort(
-      "Micro-costing requires 'visit_detail' table in CDM schema '{cdmDatabaseSchema}'"
-    )
-  }
-  
-  # Check for cost table
-  if (!checkTableExists(connection, cdmDatabaseSchema, "cost")) {
-    cli::cli_abort(
-      "Micro-costing requires 'cost' table in CDM schema '{cdmDatabaseSchema}'"
-    )
-  }
-  
-  # Check for required columns in cost table
-  sql <- SqlRender::render(
-    "SELECT TOP 1 
-       cost_id,
-       cost_event_id,
-       cost_domain_id,
-       cost_type_concept_id,
-       currency_concept_id,
-       total_charge,
-       total_cost,
-       total_paid
-     FROM @cdm_database_schema.cost",
-    cdm_database_schema = cdmDatabaseSchema
-  )
-  
-  tryCatch(
-    {
-      DatabaseConnector::querySql(connection, sql)
-    },
-    error = function(e) {
-      cli::cli_abort(
-        "Cost table is missing required columns for micro-costing analysis"
-      )
-    }
-  )
-  
-  invisible(TRUE)
-}
-
-#' Validate Cohort Table Structure
-#'
-#' @description
-#' Validates that the cohort table has the required structure
-#'
-#' @param connection DatabaseConnector connection object
-#' @param cohortDatabaseSchema Cohort schema name
-#' @param cohortTable Cohort table name
-#' @param cohortId Cohort ID to check
-#'
-#' @return Invisible TRUE if valid, otherwise throws error
-#' @noRd
-validateCohortTable <- function(connection, cohortDatabaseSchema, cohortTable, cohortId) {
-  # Check table exists
-  if (!checkTableExists(connection, cohortDatabaseSchema, cohortTable)) {
-    cli::cli_abort(
-      "Cohort table '{cohortDatabaseSchema}.{cohortTable}' does not exist"
-    )
-  }
-  
-  # Check required columns
-  sql <- SqlRender::render(
-    "SELECT TOP 1 
-       cohort_definition_id,
-       subject_id,
-       cohort_start_date,
-       cohort_end_date
-     FROM @cohort_database_schema.@cohort_table",
-    cohort_database_schema = cohortDatabaseSchema,
-    cohort_table = cohortTable
-  )
-  
-  tryCatch(
-    {
-      DatabaseConnector::querySql(connection, sql)
-    },
-    error = function(e) {
-      cli::cli_abort(
-        "Cohort table is missing required columns (cohort_definition_id, subject_id, cohort_start_date, cohort_end_date)"
-      )
-    }
-  )
-  
-  # Check if cohort ID exists
-  sql <- SqlRender::render(
-    "SELECT COUNT(*) AS n
-     FROM @cohort_database_schema.@cohort_table
-     WHERE cohort_definition_id = @cohort_id",
-    cohort_database_schema = cohortDatabaseSchema,
-    cohort_table = cohortTable,
-    cohort_id = cohortId
-  )
-  
-  result <- DatabaseConnector::querySql(connection, sql)
-  
-  if (result$N[1] == 0) {
-    cli::cli_abort(
-      "No records found for cohort ID {cohortId} in '{cohortDatabaseSchema}.{cohortTable}'"
-    )
-  }
-  
-  invisible(TRUE)
-}
-
 #' Validate Cost Concept IDs
 #'
 #' @description
@@ -369,7 +175,6 @@ validateCostConceptIds <- function(connection, vocabDatabaseSchema,
       "Cost concept ID {costConceptId} ('{costConcept$CONCEPT_NAME[1]}') is in domain '{costConcept$DOMAIN_ID[1]}', expected 'Type Concept'"
     )
   }
-  
   invisible(TRUE)
 }
 
@@ -391,7 +196,6 @@ validateTimeWindow <- function(startOffsetDays, endOffsetDays, anchorCol) {
       "Invalid time window: endOffsetDays ({endOffsetDays}) must be greater than startOffsetDays ({startOffsetDays})"
     )
   }
-  
   # Check window size
   windowDays <- endOffsetDays - startOffsetDays
   if (windowDays > 3650) {  # More than 10 years
@@ -409,51 +213,3 @@ validateTimeWindow <- function(startOffsetDays, endOffsetDays, anchorCol) {
   
   invisible(TRUE)
 }
-
-#' Create Validation Report
-#'
-#' @description
-#' Creates a comprehensive validation report for the analysis parameters
-#'
-#' @param params List of all parameters
-#' @param connection DatabaseConnector connection object
-#'
-#' @return List containing validation results and warnings
-#' @noRd
-createValidationReport <- function(params, connection) {
-  report <- list(
-    timestamp = Sys.time(),
-    parameters = params,
-    checks = list(),
-    warnings = character(),
-    errors = character()
-  )
-  
-  # Run all validation checks
-  checks <- list(
-    connection = tryCatch(
-      {checkDatabaseConnection(connection); TRUE},
-      error = function(e) {report$errors <- c(report$errors, e$message); FALSE}
-    ),
-    cdmSchema = tryCatch(
-      {checkSchemaExists(connection, params$cdmDatabaseSchema)},
-      error = function(e) {report$errors <- c(report$errors, e$message); FALSE}
-    ),
-    cohortTable = tryCatch(
-      {validateCohortTable(connection, params$cohortDatabaseSchema, 
-                           params$cohortTable, params$cohortId); TRUE},
-      error = function(e) {report$errors <- c(report$errors, e$message); FALSE}
-    ),
-    timeWindow = tryCatch(
-      {validateTimeWindow(params$startOffsetDays, params$endOffsetDays, 
-                          params$anchorCol); TRUE},
-      error = function(e) {report$errors <- c(report$errors, e$message); FALSE}
-    )
-  )
-  
-  report$checks <- checks
-  report$allChecksPassed <- all(unlist(checks))
-  
-  return(report)
-}
-

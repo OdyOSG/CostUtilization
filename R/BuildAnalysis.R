@@ -5,8 +5,6 @@
 #' These functions handle SQL rendering, translation, and execution.
 #'
 #' @keywords internal
-#' @noRd
-
 #' Execute SQL Plan for Cost Analysis
 #'
 #' @description
@@ -17,15 +15,14 @@
 #' @param targetDialect Target SQL dialect
 #' @param tempEmulationSchema Schema for temporary tables
 #' @param verbose Print progress messages
-#' @param logger Optional logger object
 #'
 #' @return Invisible NULL
 #' @noRd
 executeSqlPlan <- function(connection, params, targetDialect, tempEmulationSchema, 
-                           verbose = TRUE, logger = NULL) {
+                           verbose = TRUE) {
   
   # Log start
-  logMessage("Starting SQL plan execution", verbose, logger, "INFO")
+  logMessage("Starting SQL plan execution", verbose,  "INFO")
   
   # Get SQL file path - Fixed case sensitivity
   sqlPath <- system.file("sql", "MainCostUtilization.sql", 
@@ -36,14 +33,14 @@ executeSqlPlan <- function(connection, params, targetDialect, tempEmulationSchem
   }
   
   # Read SQL
-  logMessage("Reading SQL template", verbose, logger, "DEBUG")
+  logMessage("Reading SQL template", verbose,  "DEBUG")
   sql <- SqlRender::readSql(sqlPath)
   
   # Prepare parameters for rendering
   renderParams <- prepareSqlRenderParams(params, tempEmulationSchema)
   
   # Render SQL
-  logMessage("Rendering SQL with parameters", verbose, logger, "DEBUG")
+  logMessage("Rendering SQL with parameters", verbose,  "DEBUG")
   sql <- SqlRender::render(
     sql = sql,
     warnOnMissingParameters = FALSE,
@@ -52,7 +49,7 @@ executeSqlPlan <- function(connection, params, targetDialect, tempEmulationSchem
   
   # Translate SQL
   logMessage(sprintf("Translating SQL to %s dialect", targetDialect), 
-             verbose, logger, "DEBUG")
+             verbose,  "DEBUG")
   sql <- SqlRender::translate(
     sql = sql,
     targetDialect = targetDialect,
@@ -62,7 +59,7 @@ executeSqlPlan <- function(connection, params, targetDialect, tempEmulationSchem
   # Split SQL into statements
   sqlStatements <- SqlRender::splitSql(sql)
   logMessage(sprintf("Executing %d SQL statements", length(sqlStatements)), 
-             verbose, logger, "INFO")
+             verbose,  "INFO")
   
   # Execute statements
   executeSqlStatements(
@@ -72,7 +69,7 @@ executeSqlPlan <- function(connection, params, targetDialect, tempEmulationSchem
     logger = logger
   )
   
-  logMessage("SQL plan execution completed", verbose, logger, "INFO")
+  logMessage("SQL plan execution completed", verbose,  "INFO")
   invisible(NULL)
 }
 
@@ -178,7 +175,7 @@ executeSqlStatements <- function(connection, sqlStatements, verbose, logger) {
       error = function(e) {
         logMessage(
           sprintf("Error executing statement %d/%d: %s", i, totalStatements, e$message),
-          verbose, logger, "ERROR"
+          verbose,  "ERROR"
         )
         
         # Log the failing SQL for debugging
@@ -229,7 +226,7 @@ createProgressCallback <- function(totalStatements, verbose, logger) {
         elapsed
       )
       
-      logMessage(message, verbose, logger, "DEBUG")
+      logMessage(message, verbose,  "DEBUG")
     }
   }
 }
@@ -505,7 +502,7 @@ print.cost_analysis_summary <- function(x, ...) {
 #'
 #' @return Invisible NULL
 #' @noRd
-logMessage <- function(message, verbose, logger, level = "INFO") {
+logMessage <- function(message, verbose,  level = "INFO") {
   if (verbose) {
     if (level == "ERROR") {
       cli::cli_alert_danger(message)
