@@ -1,0 +1,590 @@
+---
+title: "Working with Eunomia Test Data"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Working with Eunomia Test Data}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5,
+  message = FALSE,
+  warning = FALSE,
+  eval = FALSE
+)
+```
+
+## Introduction to Eunomia 🌟
+
+Eunomia is OHDSI's gift to developers - a synthetic dataset that lets you test and learn without worrying about patient privacy. This vignette shows you how to make the most of Eunomia for cost analysis development and testing.
+
+### Why Use Eunomia?
+
+- 🔒 **No privacy concerns** - 100% synthetic data
+- 🚀 **Quick setup** - No database installation needed
+- 🔄 **Reproducible** - Same data every time
+- 📚 **Educational** - Perfect for learning and demos
+
+## Setting Up Your Environment
+
+```{r setup}
+# Load required packages
+library(CostUtilization)
+library(DatabaseConnector)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(cli)
+
+# Install Eunomia if needed
+if (!requireNamespace("Eunomia", quietly = TRUE)) {
+  cli::cli_alert_info("Installing Eunomia package...")
+  install.packages("Eunomia")
+}
+
+library(Eunomia)
+
+# Set a theme for nice plots
+theme_set(theme_minimal())
+```
+
+## Understanding Eunomia's Structure
+
+Let's explore what's in the Eunomia database:
+
+```{r explore-eunomia}
+# Connect to Eunomia
+connectionDetails <- Eunomia::getEunomiaConnectionDetails()
+connection <- DatabaseConnector::connect(connectionDetails)
+
+cli::cli_alert_success("Connected to Eunomia!")
+
+# List all tables
+tables <- DatabaseConnector::getTableNames(connection, "main")
+cli::cli_h3("📋 Available tables in Eunomia:")
+print(sort(tables))
+
+# Check key statistics
+stats <- DatabaseConnector::querySql(connection, "
+  SELECT 
+    (SELECT COUNT(DISTINCT person_id) FROM main.person) as n_persons,
+    (SELECT COUNT(*) FROM main.visit_occurrence) as n_visits,
+    (SELECT COUNT(*) FROM main.condition_occurrence) as n_conditions,
+    (SELECT COUNT(*) FROM main.drug_exposure) as n_drugs,
+    (SELECT COUNT(*) FROM main.procedure_occurrence) as n_procedures
+")
+
+cli::cli_h3("📊 Database Statistics:")
+print(stats)
+```
+
+## Adding Synthetic Cost Data
+
+Eunomia doesn't include cost data by default, but we can add realistic synthetic costs:
+
+```{r inject-costs}
+cli::cli_h2("💰 Creating Synthetic Cost Data")
+
+# Inject cost data with custom parameters
+injectCostData(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  costDomains = c("Procedure", "Drug", "Visit", "Device", "Measurement", "Observation", "Condition"),
+  costTypes = c("Charge", "Paid", "Copay"),  # Multiple cost types
+  seed = 123  # For reproducibility
+)
+
+# Check what was created
+costStats <- DatabaseConnector::querySql(connection, "
+  SELECT 
+    cost_domain_id,
+    COUNT(*) as n_records,
+    AVG(cost) as avg_cost,
+    MIN(cost) as min_cost,
+    MAX(cost) as max_cost
+  FROM main.cost
+  WHERE cost_concept_id = 31978  -- Total charge
+  GROUP BY cost_domain_id
+")
+
+cli::cli_h3("💵 Cost Data Summary by Domain:")
+print(costStats)
+
+# Also check payer plan periods
+payerStats <- DatabaseConnector::querySql(connection, "
+  SELECT 
+    payer_source_value,
+    COUNT(*) as n_periods,
+    COUNT(DISTINCT person_id) as n_persons
+  FROM main.payer_plan_period
+  GROUP BY payer_source_value
+")
+
+cli::cli_h3("🏥 Payer Plan Distribution:")
+print(payerStats)
+```
+
+## Transforming to Modern CDM Format
+
+```{r transform-costs}
+cli::cli_h2("🔄 Transforming Cost Table to CDM v5.4+ Format")
+
+# Transform the cost table
+transformCostToCdmV5dot4(
+  connectionDetails = connectionDetails,
+  cdmDatabaseSchema = "main",
+  createIndexes = TRUE  # Important for performance
+)
+
+# Verify the transformation
+costStructure <- DatabaseConnector::querySql(connection, "
+  SELECT 
+    cost_concept_id,
+    COUNT(*) as n_records,
+    COUNT(DISTINCT cost_event_id) as n_unique_events
+  FROM main.cost
+  GROUP BY cost_concept_id
+")
+
+cli::cli_h3("✅ Transformed Cost Table Structure:")
+print(costStructure)
+```
+
+## Example Analyses with Eunomia
+
+### Example 1: Analyzing Costs for Common Conditions
+
+Let's analyze costs for some common conditions in Eunomia:
+
+```{r common-conditions}
+# Find the most common conditions
+commonConditions <- DatabaseConnector::querySql(connection, "
+  SELECT 
+    c.concept_name,
+    c.concept_id,
+    COUNT(*) as n_occurrences,
+    COUNT(DISTINCT co.person_id) as n_patients
+  FROM main.condition_occurrence co
+  JOIN main.concept c ON co.condition_concept_id = c.concept_id
+  GROUP BY c.concept_id, c.concept_name
+  ORDER BY n_patients DESC
+  LIMIT 10
+")
+
+cli::cli_h3("🏥 Most Common Conditions in Eunomia:")
+print(commonConditions)
+
+# Create cohorts for top 3 conditions
+topConditions <- commonConditions[1:3,]
+
+# Create cohort table
+DatabaseConnector::executeSql(connection, "DROP TABLE IF EXISTS main.condition_cohorts")
+DatabaseConnector::executeSql(connection, "
+  CREATE TABLE main.condition_cohorts (
+    cohort_definition_id INTEGER,
+    subject_id INTEGER,
+    cohort_start_date DATE,
+    cohort_end_date DATE
+  )
+")
+
+# Populate cohorts
+for(i in 1:nrow(topConditions)) {
+  sql <- sprintf("
+    INSERT INTO main.condition_cohorts
+    SELECT 
+      %d as cohort_definition_id,
+      person_id as subject_id,
+      MIN(condition_start_date) as cohort_start_date,
+      DATE(MIN(condition_start_date), '+90 days') as cohort_end_date
+    FROM main.condition_occurrence
+    WHERE condition_concept_id = %d
+    GROUP BY person_id
+  ", i, topConditions$CONCEPT_ID[i])
+  
+  DatabaseConnector::executeSql(connection, sql)
+}
+
+# Analyze costs for each condition
+conditionResults <- map_dfr(1:3, function(cohortId) {
+  result <- calculateCostOfCare(
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
+    cohortTable = "condition_cohorts",
+    cohortId = cohortId,
+    anchorCol = "cohort_start_date",
+    startOffsetDays = 0,
+    endOffsetDays = 90,
+    verbose = FALSE
+  )
+  
+  result %>%
+    mutate(
+      condition = topConditions$CONCEPT_NAME[cohortId],
+      cohortId = cohortId
+    )
+})
+
+# Visualize results
+ggplot(conditionResults, aes(x = reorder(condition, -cost_pppm), y = cost_pppm)) +
+  geom_bar(stat = "identity", fill = "#3498db") +
+  geom_text(aes(label = paste0("$", round(cost_pppm, 0))), vjust = -0.5) +
+  labs(
+    title = "Cost Comparison Across Common Conditions",
+    subtitle = "90-day costs following first diagnosis",
+    x = "Condition",
+    y = "Cost Per Person Per Month ($)"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Example 2: Drug Cost Comparison Study
+
+Let's compare costs between different drug exposures:
+
+```{r drug-comparison}
+# Common drugs in Eunomia for comparison
+drugCohorts <- tribble(
+  ~cohortId, ~drugConceptId, ~drugName,
+  1, 1118084, "Celecoxib",
+  2, 1124300, "Diclofenac",
+  3, 1125315, "Acetaminophen"
+)
+
+# Create drug exposure cohorts
+DatabaseConnector::executeSql(connection, "DROP TABLE IF EXISTS main.drug_cohorts")
+
+createDrugCohortSql <- "
+  CREATE TABLE main.drug_cohorts AS
+  SELECT 
+    1 as cohort_definition_id,
+    person_id as subject_id,
+    MIN(drug_exposure_start_date) as cohort_start_date,
+    DATE(MIN(drug_exposure_start_date), '+30 days') as cohort_end_date
+  FROM main.drug_exposure
+  WHERE drug_concept_id = 1118084
+  GROUP BY person_id
+"
+
+DatabaseConnector::executeSql(connection, createDrugCohortSql)
+
+# Add other drug cohorts
+for(i in 2:nrow(drugCohorts)) {
+  sql <- sprintf("
+    INSERT INTO main.drug_cohorts
+    SELECT 
+      %d as cohort_definition_id,
+      person_id as subject_id,
+      MIN(drug_exposure_start_date) as cohort_start_date,
+      DATE(MIN(drug_exposure_start_date), '+30 days') as cohort_end_date
+    FROM main.drug_exposure
+    WHERE drug_concept_id = %d
+    GROUP BY person_id
+  ", i, drugCohorts$drugConceptId[i])
+  
+  DatabaseConnector::executeSql(connection, sql)
+}
+
+# Analyze with event filters for related conditions
+painFilters <- list(
+  list(
+    name = "Pain Diagnoses",
+    domain = "Condition",
+    conceptIds = c(4129418, 77670, 4144583)  # Various pain conditions
+  ),
+  list(
+    name = "Pain Procedures",
+    domain = "Procedure",
+    conceptIds = c(4142875, 4298121)  # Pain-related procedures
+  )
+)
+
+# Run analysis for each drug
+drugResults <- map_dfr(1:nrow(drugCohorts), function(cohortId) {
+  result <- calculateCostOfCare(
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
+    cohortTable = "drug_cohorts",
+    cohortId = cohortId,
+    anchorCol = "cohort_start_date",
+    startOffsetDays = -7,  # Week before
+    endOffsetDays = 30,    # Month after
+    eventFilters = painFilters,
+    verbose = FALSE
+  )
+  
+  result %>%
+    mutate(drug = drugCohorts$drugName[cohortId])
+})
+
+# Create comparison visualization
+drugResults %>%
+  pivot_longer(cols = c(total_cost, n_visits), names_to = "metric", values_to = "value") %>%
+  mutate(
+    metric_label = case_when(
+      metric == "total_cost" ~ "Total Cost ($)",
+      metric == "n_visits" ~ "Number of Visits"
+    )
+  ) %>%
+  ggplot(aes(x = drug, y = value, fill = drug)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~metric_label, scales = "free_y") +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title = "Pain Medication Cost and Utilization Comparison",
+    subtitle = "Costs and visits from 1 week before to 1 month after initiation",
+    x = "Medication",
+    y = "Value"
+  ) +
+  theme(legend.position = "none")
+```
+
+### Example 3: Time Series Analysis
+
+Let's look at cost patterns over time:
+
+```{r time-series}
+# Create a cohort with clear index date (first GI bleed)
+DatabaseConnector::executeSql(connection, "DROP TABLE IF EXISTS main.gi_bleed_cohort")
+DatabaseConnector::executeSql(connection, "
+  CREATE TABLE main.gi_bleed_cohort AS
+  SELECT DISTINCT
+    1 AS cohort_definition_id,
+    person_id AS subject_id,
+    MIN(condition_start_date) AS cohort_start_date,
+    DATE(MIN(condition_start_date), '+1 year') AS cohort_end_date
+  FROM main.condition_occurrence
+  WHERE condition_concept_id IN (192671, 4112343)
+  GROUP BY person_id
+")
+
+# Define monthly windows for a year
+monthlyWindows <- tibble(
+  month = 1:12,
+  startDays = (0:11) * 30,
+  endDays = (1:12) * 30 - 1
+)
+
+# Analyze each month
+monthlyResults <- pmap_dfr(monthlyWindows, function(month, startDays, endDays) {
+  result <- calculateCostOfCare(
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
+    cohortTable = "gi_bleed_cohort",
+    cohortId = 1,
+    anchorCol = "cohort_start_date",
+    startOffsetDays = startDays,
+    endOffsetDays = endDays,
+    verbose = FALSE
+  )
+  
+  result %>%
+    mutate(
+      month = month,
+      monthLabel = paste("Month", month)
+    )
+})
+
+# Create time series visualization
+ggplot(monthlyResults, aes(x = month)) +
+  geom_line(aes(y = cost_pppm), color = "#e74c3c", size = 1.5) +
+  geom_point(aes(y = cost_pppm), color = "#c0392b", size = 3) +
+  geom_area(aes(y = cost_pppm), fill = "#e74c3c", alpha = 0.2) +
+  scale_x_continuous(breaks = 1:12, labels = paste("M", 1:12)) +
+  labs(
+    title = "Monthly Cost Trajectory Following GI Bleed",
+    subtitle = "Cost per person per month over 12 months",
+    x = "Months Since Diagnosis",
+    y = "Cost PPPM ($)"
+  ) +
+  theme(panel.grid.minor = element_blank())
+```
+
+## Testing Edge Cases
+
+When developing with Eunomia, test these scenarios:
+
+```{r edge-cases}
+# Test 1: Empty cohort handling
+DatabaseConnector::executeSql(connection, "
+  CREATE TABLE main.empty_cohort AS
+  SELECT 
+    1 AS cohort_definition_id,
+    person_id AS subject_id,
+    CURRENT_DATE AS cohort_start_date,
+    CURRENT_DATE AS cohort_end_date
+  FROM main.person
+  WHERE 1 = 0  -- No results
+")
+
+emptyResult <- tryCatch({
+  calculateCostOfCare(
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
+    cohortTable = "empty_cohort",
+    cohortId = 1,
+    verbose = FALSE
+  )
+}, error = function(e) {
+  cli::cli_alert_warning("Empty cohort handled gracefully: {e$message}")
+  NULL
+})
+
+# Test 2: Very short time windows
+shortWindowResult <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "gi_bleed_cohort",
+  cohortId = 1,
+  anchorCol = "cohort_start_date",
+  startOffsetDays = 0,
+  endOffsetDays = 1,  # Just 2 days
+  verbose = FALSE
+)
+
+cli::cli_alert_info("Short window result - Patients with costs: {shortWindowResult$n_persons}")
+
+# Test 3: Multiple event filters
+complexFilters <- list(
+  list(name = "Conditions", domain = "Condition", conceptIds = c(192671, 4112343)),
+  list(name = "Procedures", domain = "Procedure", conceptIds = c(4019977, 4301351)),
+  list(name = "Drugs", domain = "Drug", conceptIds = c(19122137, 1367500)),
+  list(name = "Measurements", domain = "Measurement", conceptIds = c(3000963, 3004249))
+)
+
+complexResult <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "gi_bleed_cohort",
+  cohortId = 1,
+  eventFilters = complexFilters,
+  verbose = TRUE
+)
+```
+
+## Performance Tips for Eunomia
+
+### 1. Use Indexes for Better Performance
+
+```{r performance}
+# Create useful indexes
+DatabaseConnector::executeSql(connection, "
+  CREATE INDEX IF NOT EXISTS idx_cost_person ON main.cost(person_id)
+")
+
+DatabaseConnector::executeSql(connection, "
+  CREATE INDEX IF NOT EXISTS idx_cost_event ON main.cost(cost_event_id, cost_domain_id)
+")
+```
+
+### 2. Profile Your Queries
+
+```{r profiling}
+# Example: Time different approaches
+system.time({
+  result1 <- calculateCostOfCare(
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
+    cohortTable = "gi_bleed_cohort",
+    cohortId = 1,
+    verbose = FALSE
+  )
+})
+```
+
+## Creating Reusable Test Scenarios
+
+Build a library of test scenarios:
+
+```{r test-scenarios}
+# Function to create standard test cohorts
+createStandardTestCohorts <- function(connection) {
+  
+  testCohorts <- list(
+    smallCohort = "SELECT person_id FROM main.person LIMIT 100",
+    mediumCohort = "SELECT person_id FROM main.person LIMIT 1000",
+    largeCohort = "SELECT person_id FROM main.person",
+    youngPatients = "SELECT person_id FROM main.person WHERE year_of_birth > 1980",
+    oldPatients = "SELECT person_id FROM main.person WHERE year_of_birth < 1960",
+    frequentVisitors = "
+      SELECT person_id 
+      FROM main.visit_occurrence 
+      GROUP BY person_id 
+      HAVING COUNT(*) > 10
+    "
+  )
+  
+  # Create each test cohort
+  cohortId <- 1
+  for(cohortName in names(testCohorts)) {
+    sql <- sprintf("
+      INSERT INTO main.test_cohorts
+      SELECT 
+        %d as cohort_definition_id,
+        person_id as subject_id,
+        DATE('2010-01-01') as cohort_start_date,
+        DATE('2010-12-31') as cohort_end_date
+      FROM (%s)
+    ", cohortId, testCohorts[[cohortName]])
+    
+    DatabaseConnector::executeSql(connection, sql)
+    cohortId <- cohortId + 1
+  }
+  
+  cli::cli_alert_success("Created {length(testCohorts)} test cohorts")
+}
+```
+
+## Clean Up
+
+```{r cleanup}
+# Remove temporary tables
+tables_to_drop <- c(
+  "condition_cohorts", "drug_cohorts", "gi_bleed_cohort", 
+  "empty_cohort", "test_cohorts"
+)
+
+for(table in tables_to_drop) {
+  DatabaseConnector::executeSql(
+    connection, 
+    sprintf("DROP TABLE IF EXISTS main.%s", table)
+  )
+}
+
+# Disconnect
+DatabaseConnector::disconnect(connection)
+cli::cli_alert_success("Cleaned up and disconnected!")
+```
+
+## Summary
+
+You've learned how to:
+
+- 🔧 Set up Eunomia with synthetic cost data
+- 📊 Run various cost analyses on test data
+- 🧪 Test edge cases and performance
+- 📈 Create visualizations of results
+- 🔄 Build reusable test scenarios
+
+Eunomia is your sandbox - experiment freely and build confidence before working with real data!
+
+## Next Steps
+
+1. Try modifying the `injectCostData()` parameters to create different cost distributions
+2. Experiment with complex event filters
+3. Test performance with larger cohorts
+4. Create your own test scenarios
+
+Happy testing! 🚀
