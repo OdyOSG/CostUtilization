@@ -144,8 +144,7 @@ INNER JOIN #analysis_window_clean aw
         filter_name VARCHAR(255),
         person_id BIGINT NOT NULL,
         visit_occurrence_id BIGINT,
-        visit_detail_id BIGINT,
-        INDEX idx_filter_person_visit (filter_id, person_id, visit_occurrence_id)
+        visit_detail_id BIGINT
     );
 
     -- Efficiently collect events across all domains
@@ -217,8 +216,7 @@ INNER JOIN #analysis_window_clean aw
     DROP TABLE IF EXISTS #event_visits;
     CREATE TABLE #event_visits (
         person_id BIGINT NOT NULL,
-        visit_occurrence_id BIGINT NOT NULL,
-        PRIMARY KEY (person_id, visit_occurrence_id)
+        visit_occurrence_id BIGINT NOT NULL
     );
 
     INSERT INTO #event_visits

@@ -1,6 +1,4 @@
 #' Execute SQL Plan for Cost Analysis
-#' Execute SQL Plan for Cost Analysis
-#' @noRd
 executeSqlPlan <- function(
     connection,
     params,
@@ -54,7 +52,7 @@ executeSqlPlan <- function(
 }
 
 #' Prepare SQL Render Parameters
-#' @noRd
+
 prepareSqlRenderParams <- function(params, tempEmulationSchema) {
   sqlParams <- list()
   

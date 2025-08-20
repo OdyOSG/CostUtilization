@@ -13,7 +13,9 @@ createCostOfCareSettings(
   microCosting = FALSE,
   primaryEventFilterName = NULL,
   costConceptId = 31978L,
-  currencyConceptId = 44818668L
+  currencyConceptId = 44818668L,
+  cpiAdjustment = FALSE,
+  cpiDataPath = NULL
 )
 }
 \arguments{
@@ -34,6 +36,10 @@ createCostOfCareSettings(
 \item{costConceptId}{Concept ID for the cost type (e.g., total charge). Default: 31978.}
 
 \item{currencyConceptId}{Concept ID for the currency. Default: 44818668 (USD).}
+
+\item{cpiAdjustment}{Logical; if TRUE, adjusts costs for inflation using CPI data.}
+
+\item{cpiDataPath}{Optional path to a custom CSV file with CPI data. The file must contain 'year' and 'cpi' columns.}
 }
 \value{
 A \code{CostOfCareSettings} object.
