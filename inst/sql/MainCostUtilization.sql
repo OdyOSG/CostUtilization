@@ -266,25 +266,31 @@ FROM #qualifying_visits;
 -- SECTION 3: COST CALCULATION
 -- ============================================================================
 
--- 3.1) Extract and adjust costs
+-- 3.1) Extract and adjust costs from OMOP CDM v5.5 cost table
 DROP TABLE IF EXISTS #costs_raw;
 CREATE TABLE #costs_raw (
-    cost_event_id BIGINT NOT NULL,
+    cost_id BIGINT NOT NULL,
     person_id BIGINT NOT NULL,
+    cost_event_id BIGINT NOT NULL,
+    cost_domain_id VARCHAR(20),
     cost DECIMAL(19, 4),
-    adjusted_cost DECIMAL(19, 4)
+    adjusted_cost DECIMAL(19, 4),
+    incurred_date DATE
 );
 
 INSERT INTO #costs_raw
 SELECT
-    c.cost_event_id,
+    c.cost_id,
     c.person_id,
+    c.cost_event_id,
+    c.cost_domain_id,
     c.cost,
     {@cpi_adjustment} ? {
         c.cost * COALESCE(cpi.adj_factor, 1.0) AS adjusted_cost
     } : {
         c.cost AS adjusted_cost
-    }
+    },
+    c.incurred_date
 FROM @cdm_database_schema.cost c
 {@cpi_adjustment} ? {
     LEFT JOIN @cpi_adj_table cpi
@@ -292,6 +298,7 @@ FROM @cdm_database_schema.cost c
 }
 WHERE c.cost_concept_id = @cost_concept_id
     AND c.currency_concept_id = @currency_concept_id
+    AND c.cost_domain_id = 'visit'
     AND c.cost IS NOT NULL;
 
 -- 3.2) Aggregate costs at appropriate level
@@ -306,6 +313,7 @@ WHERE c.cost_concept_id = @cost_concept_id
         adjusted_cost DECIMAL(19, 4)
     );
 
+    -- For micro-costing, get visit detail costs from the cost table
     INSERT INTO #line_level_cost
     SELECT
         qd.person_id,
@@ -317,26 +325,35 @@ WHERE c.cost_concept_id = @cost_concept_id
     FROM #primary_filter_details qd
     INNER JOIN @cdm_database_schema.visit_detail vd 
         ON vd.visit_detail_id = qd.visit_detail_id
-    INNER JOIN #costs_raw c 
+    INNER JOIN @cdm_database_schema.cost c
         ON c.cost_event_id = qd.visit_detail_id 
-        AND c.person_id = qd.person_id;
+        AND c.person_id = qd.person_id
+        AND c.cost_domain_id = 'visit_detail'
+        AND c.cost_concept_id = @cost_concept_id
+        AND c.currency_concept_id = @currency_concept_id
+        AND c.cost IS NOT NULL
+    {@cpi_adjustment} ? {
+        LEFT JOIN @cpi_adj_table cpi
+            ON cpi.year = YEAR(c.incurred_date)
+    };
 } : {
     DROP TABLE IF EXISTS #visit_level_cost;
     CREATE TABLE #visit_level_cost (
         person_id BIGINT NOT NULL,
         visit_occurrence_id BIGINT NOT NULL,
         visit_start_date DATE,
-        total_cost DECIMAL(19, 4),
-        total_adjusted_cost DECIMAL(19, 4)
+        cost DECIMAL(19, 4),
+        adjusted_cost DECIMAL(19, 4)
     );
 
+    -- Join qualifying visits with costs using visit_occurrence_id
     INSERT INTO #visit_level_cost
     SELECT 
         qv.person_id, 
         qv.visit_occurrence_id, 
         qv.visit_start_date,
-        SUM(c.cost) AS total_cost,
-        SUM(c.adjusted_cost) AS total_adjusted_cost
+        SUM(c.cost) AS cost,
+        SUM(c.adjusted_cost) AS adjusted_cost
     FROM #qualifying_visits qv
     INNER JOIN #costs_raw c
         ON c.cost_event_id = qv.visit_occurrence_id
@@ -409,8 +426,8 @@ CREATE TABLE #numerators (
     INSERT INTO #numerators
     SELECT
         'visit_level' AS metric_type,
-        SUM(total_cost) AS total_cost,
-        SUM(total_adjusted_cost) AS total_adjusted_cost,
+        SUM(cost) AS total_cost,
+        SUM(adjusted_cost) AS total_adjusted_cost,
         COUNT(DISTINCT person_id) AS n_persons_with_cost,
         COUNT(DISTINCT visit_occurrence_id) AS distinct_visits,
         COUNT(DISTINCT visit_occurrence_id) AS distinct_events
