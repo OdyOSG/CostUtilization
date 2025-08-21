@@ -1,0 +1,349 @@
+---
+title: "Getting Started with CostUtilization"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting Started with CostUtilization}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5,
+  message = FALSE,
+  warning = FALSE,
+  eval = FALSE
+)
+```
+
+## Introduction
+
+The CostUtilization package provides tools for analyzing healthcare costs and utilization patterns using OMOP CDM data. This vignette demonstrates the basic functionality using the Eunomia test dataset with synthetic cost data.
+
+## Setup
+
+First, let's load the required packages and set up our test environment:
+
+```{r setup}
+library(CostUtilization)
+library(DatabaseConnector)
+library(dplyr)
+library(ggplot2)
+library(cli)
+
+# Get connection to Eunomia test database
+connectionDetails <- Eunomia::getEunomiaConnectionDetails()
+connection <- DatabaseConnector::connect(connectionDetails)
+
+# Inject synthetic cost data for testing
+cli::cli_h2("Setting up test data")
+injectCostData(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  seed = 123
+)
+
+# Transform to CDM v5.5 format
+transformCostToCdmV5dot5(
+  connectionDetails = connectionDetails,
+  cdmDatabaseSchema = "main"
+)
+```
+
+## Basic Cost Analysis
+
+Let's perform a basic cost analysis for a cohort. First, we need to create a test cohort:
+
+```{r create-cohort}
+# Create a simple cohort of all patients with at least one visit
+DatabaseConnector::executeSql(connection, "
+  CREATE TABLE main.test_cohort AS
+  SELECT DISTINCT
+    1 AS cohort_definition_id,
+    person_id AS subject_id,
+    MIN(visit_start_date) AS cohort_start_date,
+    MAX(visit_end_date) AS cohort_end_date
+  FROM main.visit_occurrence
+  GROUP BY person_id
+")
+
+# Check cohort size
+cohortCount <- DatabaseConnector::querySql(
+  connection, 
+  "SELECT COUNT(DISTINCT subject_id) AS n FROM main.test_cohort"
+)
+cli::cli_alert_info("Created cohort with {cohortCount$n} subjects")
+```
+
+Now let's calculate costs for the year following cohort entry:
+
+```{r basic-analysis}
+# Create settings object
+costSettings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date",
+  startOffsetDays = 0,
+  endOffsetDays = 365
+)
+
+# Calculate cost of care
+results <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "test_cohort",
+  cohortId = 1,
+  costOfCareSettings = costSettings,
+  verbose = TRUE
+)
+
+# Display results
+cli::cli_h3("Cost Analysis Results")
+print(results$results)
+```
+
+## Analysis with Visit Restrictions
+
+You can restrict the analysis to specific visit types:
+
+```{r visit-restriction}
+# Analyze only inpatient and emergency visits
+inpatientEmergencyVisits <- c(
+  9201,  # Inpatient Visit
+  9203   # Emergency Room Visit
+)
+
+# Create settings with visit restriction
+restrictedSettings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date",
+  startOffsetDays = 0,
+  endOffsetDays = 365,
+  restrictVisitConceptIds = inpatientEmergencyVisits
+)
+
+resultsRestricted <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "test_cohort",
+  cohortId = 1,
+  costOfCareSettings = restrictedSettings,
+  verbose = TRUE
+)
+
+cli::cli_h3("Restricted Visit Analysis Results")
+print(resultsRestricted$results)
+```
+
+## Event-Based Cost Analysis
+
+You can analyze costs associated with specific clinical events using event filters:
+
+```{r event-filters}
+# Define event filters for diabetes-related costs
+diabetesFilters <- list(
+  list(
+    name = "Diabetes Diagnoses",
+    domain = "Condition",
+    conceptIds = c(201820, 201826, 443238, 442793)  # Type 2 diabetes
+  ),
+  list(
+    name = "Diabetes Medications",
+    domain = "Drug",
+    conceptIds = c(1503297, 1502826, 1502855)  # Metformin, insulin, etc.
+  ),
+  list(
+    name = "Diabetes Labs",
+    domain = "Measurement",
+    conceptIds = c(3004501, 3003309)  # HbA1c, glucose
+  )
+)
+
+# Create settings with event filters
+filteredSettings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date",
+  startOffsetDays = -365,  # 1 year before
+  endOffsetDays = 365,     # to 1 year after
+  eventFilters = diabetesFilters
+)
+
+resultsFiltered <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "test_cohort",
+  cohortId = 1,
+  costOfCareSettings = filteredSettings,
+  verbose = TRUE
+)
+
+cli::cli_h3("Diabetes-Related Cost Analysis Results")
+print(resultsFiltered$results)
+```
+
+## Micro-Costing Analysis
+
+For detailed cost analysis at the visit detail level:
+
+```{r micro-costing}
+# First, ensure visit_detail table exists and has data
+# (In real CDM, this would already exist)
+DatabaseConnector::executeSql(connection, "
+  CREATE TABLE IF NOT EXISTS main.visit_detail AS
+  SELECT 
+    ROW_NUMBER() OVER () AS visit_detail_id,
+    person_id,
+    visit_occurrence_id,
+    9201 AS visit_detail_concept_id,
+    visit_start_date AS visit_detail_start_date,
+    visit_end_date AS visit_detail_end_date
+  FROM main.visit_occurrence
+")
+
+# Create settings for micro-costing
+microSettings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date",
+  startOffsetDays = 0,
+  endOffsetDays = 90,
+  eventFilters = diabetesFilters,
+  microCosting = TRUE,
+  primaryEventFilterName = "Diabetes Medications"
+)
+
+resultsMicro <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "test_cohort",
+  cohortId = 1,
+  costOfCareSettings = microSettings,
+  verbose = TRUE
+)
+
+cli::cli_h3("Micro-Costing Analysis Results")
+print(resultsMicro$results)
+```
+
+## Comparing Time Windows
+
+Let's analyze costs across different time windows:
+
+```{r time-windows}
+# Define time windows
+timeWindows <- list(
+  preCohort = c(-365, -1),    # 1 year before
+  during = c(0, 90),           # First 90 days
+  postCohort = c(91, 365)      # Rest of first year
+)
+
+# Run analysis for each window
+windowResults <- purrr::map_dfr(names(timeWindows), function(windowName) {
+  window <- timeWindows[[windowName]]
+  
+  settings <- createCostOfCareSettings(
+    anchorCol = "cohort_start_date",
+    startOffsetDays = window[1],
+    endOffsetDays = window[2]
+  )
+  
+  result <- calculateCostOfCare(
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
+    cohortTable = "test_cohort",
+    cohortId = 1,
+    costOfCareSettings = settings,
+    verbose = FALSE
+  )
+  
+  result$results |>
+    mutate(timeWindow = windowName)
+})
+
+# Display comparative results
+cli::cli_h3("Cost Analysis by Time Window")
+print(windowResults)
+
+# Visualize results
+ggplot(windowResults, aes(x = timeWindow, y = cost_pppm)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(
+    title = "Cost Per Person Per Month by Time Window",
+    x = "Time Window",
+    y = "Cost PPPM ($)"
+  ) +
+  theme_minimal()
+```
+
+## Getting Detailed Results
+
+The analysis returns both results and diagnostics:
+
+```{r detailed-results}
+# Get detailed results including diagnostics
+settings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date",
+  startOffsetDays = 0,
+  endOffsetDays = 365
+)
+
+detailedResults <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "test_cohort",
+  cohortId = 1,
+  costOfCareSettings = settings,
+  verbose = TRUE
+)
+
+# Examine components
+cli::cli_h3("Main Results")
+print(detailedResults$results)
+
+cli::cli_h3("Diagnostics")
+print(detailedResults$diagnostics)
+
+# Plot diagnostic information
+diagPlot <- detailedResults$diagnostics |>
+  filter(stepName != "00_initial_cohort") |>
+  ggplot(aes(x = stepName, y = nPersons)) +
+  geom_bar(stat = "identity", fill = "darkgreen") +
+  labs(
+    title = "Patient Flow Through Analysis Steps",
+    x = "Analysis Step",
+    y = "Number of Persons"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(diagPlot)
+```
+
+## Clean Up
+
+Don't forget to disconnect from the database when finished:
+
+```{r cleanup}
+# Clean up test cohort
+DatabaseConnector::executeSql(connection, "DROP TABLE IF EXISTS main.test_cohort")
+
+# Disconnect
+DatabaseConnector::disconnect(connection)
+cli::cli_alert_success("Disconnected from database")
+```
+
+## Summary
+
+This vignette demonstrated:
+
+1. **Basic cost analysis** - Calculating total costs and utilization for a cohort
+2. **Visit restrictions** - Limiting analysis to specific visit types
+3. **Event filters** - Analyzing costs for specific clinical events
+4. **Micro-costing** - Detailed analysis at the visit detail level
+5. **Time window comparisons** - Analyzing costs across different time periods
+6. **Detailed results** - Getting diagnostic information about the analysis
+
+The CostUtilization package provides a flexible framework for healthcare cost analysis that can be adapted to many different research questions and study designs.
