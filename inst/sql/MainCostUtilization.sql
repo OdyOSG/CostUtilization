@@ -28,8 +28,7 @@ DROP TABLE IF EXISTS #cohort_person;
 CREATE TABLE #cohort_person (
     person_id BIGINT NOT NULL,
     cohort_start_date DATE NOT NULL,
-    cohort_end_date DATE,
-    INDEX idx_person (person_id)
+    cohort_end_date DATE
 );
 
 INSERT INTO #cohort_person
@@ -45,8 +44,7 @@ DROP TABLE IF EXISTS #analysis_window;
 CREATE TABLE #analysis_window (
     person_id BIGINT NOT NULL,
     start_date DATE NOT NULL,
-    end_date DATE NOT NULL,
-    INDEX idx_person_dates (person_id, start_date, end_date)
+    end_date DATE NOT NULL
 );
 
 INSERT INTO #analysis_window
@@ -72,9 +70,7 @@ CREATE TABLE #analysis_window_clean (
     person_id BIGINT NOT NULL,
     start_date DATE NOT NULL,
     end_date DATE NOT NULL,
-    person_days INT,
-    INDEX idx_person (person_id),
-    INDEX idx_dates (start_date, end_date)
+    person_days INT
 );
 
 INSERT INTO #analysis_window_clean
@@ -116,9 +112,7 @@ CREATE TABLE #visits_in_window (
     person_id BIGINT NOT NULL,
     visit_occurrence_id BIGINT NOT NULL,
     visit_start_date DATE NOT NULL,
-    visit_concept_id INT,
-    INDEX idx_person_visit (person_id, visit_occurrence_id),
-    INDEX idx_visit_date (visit_start_date)
+    visit_concept_id INT
 );
 
 INSERT INTO #visits_in_window
@@ -242,8 +236,7 @@ INNER JOIN #analysis_window_clean aw
         CREATE TABLE #primary_filter_details (
             person_id BIGINT NOT NULL,
             visit_occurrence_id BIGINT NOT NULL,
-            visit_detail_id BIGINT NOT NULL,
-            INDEX idx_person_detail (person_id, visit_detail_id)
+            visit_detail_id BIGINT NOT NULL
         );
 
         INSERT INTO #primary_filter_details
@@ -279,8 +272,7 @@ CREATE TABLE #costs_raw (
     cost_event_id BIGINT NOT NULL,
     person_id BIGINT NOT NULL,
     cost DECIMAL(19, 4),
-    adjusted_cost DECIMAL(19, 4),
-    INDEX idx_event_person (cost_event_id, person_id)
+    adjusted_cost DECIMAL(19, 4)
 );
 
 INSERT INTO #costs_raw
@@ -311,8 +303,7 @@ WHERE c.cost_concept_id = @cost_concept_id
         visit_detail_start_date DATE,
         visit_detail_id BIGINT NOT NULL,
         cost DECIMAL(19, 4),
-        adjusted_cost DECIMAL(19, 4),
-        INDEX idx_person (person_id)
+        adjusted_cost DECIMAL(19, 4)
     );
 
     INSERT INTO #line_level_cost
@@ -336,8 +327,7 @@ WHERE c.cost_concept_id = @cost_concept_id
         visit_occurrence_id BIGINT NOT NULL,
         visit_start_date DATE,
         total_cost DECIMAL(19, 4),
-        total_adjusted_cost DECIMAL(19, 4),
-        INDEX idx_person (person_id)
+        total_adjusted_cost DECIMAL(19, 4)
     );
 
     INSERT INTO #visit_level_cost

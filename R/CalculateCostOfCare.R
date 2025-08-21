@@ -51,7 +51,7 @@ calculateCostOfCare <- function(
   targetDialect <- DatabaseConnector::dbms(connection)
   
   # Generate unique names for temp tables to avoid session conflicts
-  sessionPrefix <- paste0("cu_", stringi::stri_rand_strings(1, 10, pattern = "[a-z]"))
+  sessionPrefix <- paste0("cu_", stringi::stri_rand_strings(1, 5, pattern = "[a-z]"))
   resultsTableName <- paste0(sessionPrefix, "_results")
   diagTableName <- paste0(sessionPrefix, "_diag")
   restrictVisitTableName <- NULL
@@ -89,7 +89,7 @@ calculateCostOfCare <- function(
     if (!all(c("year", "cpi") %in% names(cpiData))) {
       cli::cli_abort("Custom CPI data must contain 'year' and 'cpi' columns.")
     }
-    cpiData$adj_factor <- targetCpi / cpiData$cpi
+    cpiData$adj_factor <- cpiData$cpi
     
     # Upload to a temp table
     DatabaseConnector::insertTable(
@@ -188,4 +188,114 @@ calculateCostOfCare <- function(
 }
 
 
-
+formatAsFeatureExtraction <- function(results, diagnostics, costOfCareSettings, cohortId, aggregated) {
+  
+  # Generate base covariate IDs
+  baseAnalysisId <- 5000  # Base ID for cost analyses
+  
+  # Create analysis reference
+  analysisRef <- dplyr::tibble(
+    analysisId = baseAnalysisId,
+    analysisName = "Cost of Care Analysis",
+    domainId = "Cost",
+    startDay = costOfCareSettings$startOffsetDays,
+    endDay = costOfCareSettings$endOffsetDays,
+    isBinary = FALSE,
+    missingMeansZero = TRUE
+  )
+  
+  # Create covariate reference
+  covariateRef <- dplyr::tibble(
+    covariateId = c(
+      baseAnalysisId * 1000 + 1,  # Total cost
+      baseAnalysisId * 1000 + 2,  # Cost PPPM
+      baseAnalysisId * 1000 + 3,  # Visits per 1000 PY
+      baseAnalysisId * 1000 + 4,  # Visit dates per 1000 PY
+      baseAnalysisId * 1000 + 5   # N persons with cost
+    ),
+    covariateName = c(
+      glue::glue("Total cost [{costOfCareSettings$startOffsetDays}d to {costOfCareSettings$endOffsetDays}d]"),
+      glue::glue("Cost per person per month [{costOfCareSettings$startOffsetDays}d to {costOfCareSettings$endOffsetDays}d]"),
+      glue::glue("Visits per 1000 person-years [{costOfCareSettings$startOffsetDays}d to {costOfCareSettings$endOffsetDays}d]"),
+      glue::glue("Visit dates per 1000 person-years [{costOfCareSettings$startOffsetDays}d to {costOfCareSettings$endOffsetDays}d]"),
+      glue::glue("Number of persons with cost [{costOfCareSettings$startOffsetDays}d to {costOfCareSettings$endOffsetDays}d]")
+    ),
+    analysisId = baseAnalysisId,
+    conceptId = 0
+  )
+  
+  # Add event-specific covariates if applicable
+  if (costOfCareSettings$hasEventFilters) {
+    eventCovariates <- purrr::imap_dfr(costOfCareSettings$eventFilters, function(filter, idx) {
+      dplyr::tibble(
+        covariateId = baseAnalysisId * 1000 + 100 + idx,
+        covariateName = glue::glue("{filter$name} cost [{costOfCareSettings$startOffsetDays}d to {costOfCareSettings$endOffsetDays}d]"),
+        analysisId = baseAnalysisId,
+        conceptId = 0
+      )
+    })
+    covariateRef <- dplyr::bind_rows(covariateRef, eventCovariates)
+  }
+  
+  # Format covariates
+  if (aggregated) {
+    # Aggregated format
+    covariates <- dplyr::tibble(
+      cohortDefinitionId = cohortId,
+      covariateId = covariateRef$covariateId[1:5],
+      sumValue = c(
+        results$totalCost,
+        results$totalCost,  # Will be averaged
+        results$distinctVisits * 1000,  # Pre-scaled for per 1000 PY
+        results$distinctVisitDates * 1000,
+        results$nPersonsWithCost
+      ),
+      averageValue = c(
+        results$totalCost / results$totalPersonDays * 365.25,  # Annual average
+        results$costPppm,
+        results$visitsPerThousandPy,
+        results$visitDatesPerThousandPy,
+        NA_real_
+      )
+    ) |>
+      dplyr::filter(!is.na(.data$sumValue) | !is.na(.data$averageValue))
+  } else {
+    # Person-level format would require additional SQL queries
+    # For now, return aggregated with a warning
+    rlang::warn("Person-level FeatureExtraction format not yet implemented. Returning aggregated format.")
+    covariates <- dplyr::tibble(
+      cohortDefinitionId = cohortId,
+      covariateId = covariateRef$covariateId[1:5],
+      covariateValue = c(
+        results$totalCost,
+        results$costPppm,
+        results$visitsPerThousandPy,
+        results$visitDatesPerThousandPy,
+        results$nPersonsWithCost
+      )
+    )
+  }
+  
+  # Create metadata
+  metaData <- list(
+    databaseId = NA_character_,
+    populationSize = diagnostics |> 
+      dplyr::filter(.data$stepName == "00_initial_cohort") |> 
+      dplyr::pull(.data$nPersons),
+    minCovariateValue = min(covariates$sumValue, covariates$averageValue, na.rm = TRUE),
+    maxCovariateValue = max(covariates$sumValue, covariates$averageValue, na.rm = TRUE)
+  )
+  
+  # Return FeatureExtraction-compatible structure
+  result <- list(
+    covariates = covariates,
+    covariateRef = covariateRef,
+    analysisRef = analysisRef,
+    metaData = metaData,
+    diagnostics = diagnostics  # Include original diagnostics
+  )
+  
+  class(result) <- c("CovariateData", "FeatureExtraction", class(result))
+  
+  return(result)
+}
