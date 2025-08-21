@@ -1,0 +1,423 @@
+-- =====================================================
+-- Cost Utilization Analysis SQL for OMOP CDM v5.5 
+-- =====================================================
+
+/* ======================================================
+   Step 0: Initialize diagnostics table
+   ====================================================== */
+DROP TABLE IF EXISTS @diag_table;
+
+CREATE TABLE @diag_table (
+  step_name VARCHAR(255),
+  n_persons BIGINT,
+  n_events  BIGINT
+);
+
+INSERT INTO @diag_table (step_name, n_persons, n_events)
+SELECT
+  '00_initial_cohort' AS step_name,
+  COUNT(DISTINCT subject_id) AS n_persons,
+  NULL AS n_events
+FROM @cohort_database_schema.@cohort_table
+WHERE cohort_definition_id = @cohort_id;
+
+/* ======================================================
+   Step 1: Create cohort and analysis window (anchor + OP overlap)
+   ====================================================== */
+DROP TABLE IF EXISTS #cohort_person;
+
+SELECT
+  c.subject_id       AS person_id,
+  c.cohort_start_date,
+  c.cohort_end_date,
+  CASE WHEN @anchor_on_end = 1 THEN c.cohort_end_date ELSE c.cohort_start_date END AS anchor_date
+INTO #cohort_person
+FROM @cohort_database_schema.@cohort_table c
+WHERE c.cohort_definition_id = @cohort_id;
+
+DROP TABLE IF EXISTS #analysis_window;
+
+SELECT
+  cp.person_id,
+  CASE
+    WHEN op.observation_period_start_date > DATEADD(day, @time_a, cp.anchor_date)
+      THEN op.observation_period_start_date
+    ELSE DATEADD(day, @time_a, cp.anchor_date)
+  END AS start_date,
+  CASE
+    WHEN op.observation_period_end_date < DATEADD(day, @time_b, cp.anchor_date)
+      THEN op.observation_period_end_date
+    ELSE DATEADD(day, @time_b, cp.anchor_date)
+  END AS end_date
+INTO #analysis_window
+FROM #cohort_person cp
+JOIN @cdm_database_schema.observation_period op
+  ON op.person_id = cp.person_id
+WHERE op.observation_period_start_date <= DATEADD(day, @time_b, cp.anchor_date)
+  AND op.observation_period_end_date   >= DATEADD(day, @time_a, cp.anchor_date);
+
+-- Clean invalid ranges
+DROP TABLE IF EXISTS #analysis_window_clean;
+
+SELECT *
+INTO #analysis_window_clean
+FROM #analysis_window
+WHERE end_date >= start_date;
+
+-- Person-time (inclusive day count)
+DROP TABLE IF EXISTS #person_time;
+
+SELECT
+  person_id,
+  SUM(DATEDIFF(day, start_date, end_date) + 1) AS person_days
+INTO #person_time
+FROM #analysis_window_clean
+GROUP BY person_id;
+
+-- Diagnostics
+INSERT INTO @diag_table (step_name, n_persons, n_events)
+SELECT '01_person_subset', COUNT(DISTINCT person_id), NULL FROM #cohort_person;
+
+INSERT INTO @diag_table (step_name, n_persons, n_events)
+SELECT '02_valid_window', COUNT(DISTINCT person_id), NULL FROM #analysis_window_clean;
+
+/* ======================================================
+   Step 2: Identify visits overlapping analysis window
+   ====================================================== */
+DROP TABLE IF EXISTS #visits_in_window;
+
+SELECT
+  vo.person_id,
+  vo.visit_occurrence_id,
+  vo.visit_start_date,
+  vo.visit_end_date,
+  vo.visit_concept_id
+INTO #visits_in_window
+FROM @cdm_database_schema.visit_occurrence vo
+JOIN #analysis_window_clean aw
+  ON aw.person_id = vo.person_id
+WHERE vo.visit_end_date   >= aw.start_date   -- overlap rule
+  AND vo.visit_start_date <= aw.end_date
+{@has_visit_restriction} ? {
+  AND vo.visit_concept_id IN (SELECT visit_concept_id FROM @restrict_visit_table)
+};
+
+/* ======================================================
+   Step 3: Apply event filters (optional)
+   ====================================================== */
+{@has_event_filters} ? {
+
+  DROP TABLE IF EXISTS #events_by_filter;
+
+  -- Collect events per domain (match on concept ids configured in @event_concepts_table)
+  SELECT
+    ec.filter_id,
+    ec.filter_name,
+    de.person_id,
+    de.visit_occurrence_id,
+    de.visit_detail_id
+  INTO #events_by_filter
+  FROM @cdm_database_schema.drug_exposure de
+  JOIN @event_concepts_table ec
+    ON ec.concept_id = de.drug_concept_id
+   AND ec.domain_scope IN ('All','Drug')
+
+  UNION ALL
+
+  SELECT
+    ec.filter_id,
+    ec.filter_name,
+    po.person_id,
+    po.visit_occurrence_id,
+    po.visit_detail_id
+  FROM @cdm_database_schema.procedure_occurrence po
+  JOIN @event_concepts_table ec
+    ON ec.concept_id = po.procedure_concept_id
+   AND ec.domain_scope IN ('All','Procedure')
+
+  UNION ALL
+
+  SELECT
+    ec.filter_id,
+    ec.filter_name,
+    co.person_id,
+    co.visit_occurrence_id,
+    NULL AS visit_detail_id
+  FROM @cdm_database_schema.condition_occurrence co
+  JOIN @event_concepts_table ec
+    ON ec.concept_id = co.condition_concept_id
+   AND ec.domain_scope IN ('All','Condition')
+
+  UNION ALL
+
+  SELECT
+    ec.filter_id,
+    ec.filter_name,
+    ms.person_id,
+    ms.visit_occurrence_id,
+    ms.visit_detail_id
+  FROM @cdm_database_schema.measurement ms
+  JOIN @event_concepts_table ec
+    ON ec.concept_id = ms.measurement_concept_id
+   AND ec.domain_scope IN ('All','Measurement')
+
+  UNION ALL
+
+  SELECT
+    ec.filter_id,
+    ec.filter_name,
+    ob.person_id,
+    ob.visit_occurrence_id,
+    ob.visit_detail_id
+  FROM @cdm_database_schema.observation ob
+  JOIN @event_concepts_table ec
+    ON ec.concept_id = ob.observation_concept_id
+   AND ec.domain_scope IN ('All','Observation')
+  ;
+
+  -- Visits that meet at least @n_filters distinct filters
+  DROP TABLE IF EXISTS #event_visits;
+
+  SELECT
+    person_id,
+    visit_occurrence_id
+  INTO #event_visits
+  FROM #events_by_filter
+  WHERE visit_occurrence_id IS NOT NULL
+  GROUP BY person_id, visit_occurrence_id
+  HAVING COUNT(DISTINCT filter_id) >= @n_filters;
+
+  -- Restrict to qualifying visits
+  DROP TABLE IF EXISTS #qualifying_visits;
+
+  SELECT v.*
+  INTO #qualifying_visits
+  FROM #visits_in_window v
+  JOIN #event_visits ev
+    ON ev.person_id = v.person_id
+   AND ev.visit_occurrence_id = v.visit_occurrence_id;
+
+  {@micro_costing} ? {
+    -- For micro-costing, capture primary filter visit_detail rows
+    DROP TABLE IF EXISTS #primary_filter_details;
+
+    SELECT DISTINCT
+      person_id,
+      visit_occurrence_id,
+      visit_detail_id
+    INTO #primary_filter_details
+    FROM #events_by_filter
+    WHERE filter_id = @primary_filter_id
+      AND visit_detail_id IS NOT NULL;
+  }
+
+} : {
+
+  DROP TABLE IF EXISTS #qualifying_visits;
+
+  SELECT *
+  INTO #qualifying_visits
+  FROM #visits_in_window;
+};
+
+-- Diagnostics
+INSERT INTO @diag_table (step_name, n_persons, n_events)
+SELECT
+  '03_with_qualifying_visits',
+  COUNT(DISTINCT person_id),
+  COUNT(DISTINCT visit_occurrence_id)
+FROM #qualifying_visits;
+
+/* ======================================================
+   Step 4: Extract & link costs (CDM v5.5 compliant)
+   ====================================================== */
+-- Costs: optional filters; compute cost_date from the 4 date columns
+DROP TABLE IF EXISTS #costs_raw;
+
+SELECT
+  c.person_id,
+  c.visit_occurrence_id,
+  c.visit_detail_id,
+  c.cost,
+  COALESCE(c.incurred_date, c.paid_date, c.billed_date, c.effective_date) AS cost_date,
+  c.currency_concept_id,
+  c.cost_concept_id,
+  c.cost_type_concept_id
+INTO #costs_raw
+FROM @cdm_database_schema.cost c
+WHERE (@cost_concept_id      IS NULL OR c.cost_concept_id      = @cost_concept_id)
+  AND (@currency_concept_id  IS NULL OR c.currency_concept_id  = @currency_concept_id)
+  AND (@cost_type_concept_id IS NULL OR c.cost_type_concept_id = @cost_type_concept_id)
+  AND c.cost IS NOT NULL;
+
+-- Standard visit-level costing: join on visit_occurrence_id
+{@micro_costing} ? { } : {
+  DROP TABLE IF EXISTS #visit_level_cost;
+
+  SELECT
+    qv.person_id,
+    qv.visit_occurrence_id,
+    qv.visit_start_date,
+    SUM(cr.cost) AS total_cost
+  INTO #visit_level_cost
+  FROM #qualifying_visits qv
+  JOIN #costs_raw cr
+    ON cr.person_id = qv.person_id
+   AND cr.visit_occurrence_id = qv.visit_occurrence_id
+  GROUP BY qv.person_id, qv.visit_occurrence_id, qv.visit_start_date;
+};
+
+-- Micro-costing: join on visit_detail_id
+{@micro_costing} ? {
+  DROP TABLE IF EXISTS #line_level_cost;
+
+  SELECT
+    qd.person_id,
+    qd.visit_occurrence_id,
+    qd.visit_detail_id,
+    vd.visit_detail_start_date,
+    SUM(cr.cost) AS cost
+  INTO #line_level_cost
+  FROM #primary_filter_details qd
+  JOIN @cdm_database_schema.visit_detail vd
+    ON vd.visit_detail_id = qd.visit_detail_id
+  JOIN #costs_raw cr
+    ON cr.person_id = qd.person_id
+   AND cr.visit_detail_id = qd.visit_detail_id
+  GROUP BY qd.person_id, qd.visit_occurrence_id, qd.visit_detail_id, vd.visit_detail_start_date;
+} : { };
+
+-- Diagnostics
+{@micro_costing} ? {
+  INSERT INTO @diag_table (step_name, n_persons, n_events)
+  SELECT '04_with_cost', COUNT(DISTINCT person_id), COUNT(DISTINCT visit_detail_id) FROM #line_level_cost;
+} : {
+  INSERT INTO @diag_table (step_name, n_persons, n_events)
+  SELECT '04_with_cost', COUNT(DISTINCT person_id), COUNT(DISTINCT visit_occurrence_id) FROM #visit_level_cost;
+};
+
+/* ======================================================
+   Step 5: Denominator totals (person-time sums)
+   ====================================================== */
+DROP TABLE IF EXISTS #denominator;
+
+SELECT
+  SUM(person_days)                          AS total_person_days,
+  SUM(person_days) / 30.4375               AS total_person_months,
+  SUM(person_days) / 91.3125               AS total_person_quarters,
+  SUM(person_days) / 365.25                AS total_person_years
+INTO #denominator
+FROM #person_time pt
+WHERE EXISTS (
+  SELECT 1 FROM #analysis_window_clean awc WHERE awc.person_id = pt.person_id
+);
+
+/* ======================================================
+   Step 6: Numerators (pre-aggregated)
+   ====================================================== */
+DROP TABLE IF EXISTS #numerators;
+
+{@micro_costing} ? {
+
+  SELECT
+    'line_level' AS metric_type,
+    COALESCE(SUM(cost), 0) AS total_cost,
+    COUNT(DISTINCT person_id) AS n_persons_with_cost,
+    CAST(-1 AS BIGINT) AS distinct_visits,
+    CAST(-1 AS BIGINT) AS distinct_visit_dates,
+    COUNT(DISTINCT visit_detail_id) AS distinct_visit_details
+  INTO #numerators
+  FROM #line_level_cost;
+
+} : {
+
+  SELECT
+    'visit_level' AS metric_type,
+    COALESCE(SUM(total_cost), 0) AS total_cost,
+    COUNT(DISTINCT person_id) AS n_persons_with_cost,
+    COUNT(DISTINCT visit_occurrence_id) AS distinct_visits,
+    COUNT(DISTINCT visit_start_date)    AS distinct_visit_dates,
+    CAST(-1 AS BIGINT) AS distinct_visit_details
+  INTO #numerators
+  FROM #visit_level_cost;
+};
+
+/* ======================================================
+   Step 7: Final aggregation and results (portable CREATE + INSERT)
+   ====================================================== */
+DROP TABLE IF EXISTS @results_table;
+
+CREATE TABLE @results_table (
+  total_person_days          FLOAT,
+  total_person_months        FLOAT,
+  total_person_quarters      FLOAT,
+  total_person_years         FLOAT,
+  metric_type                VARCHAR(30),
+  total_cost                 FLOAT,
+  n_persons_with_cost        BIGINT,
+  distinct_visits            BIGINT,
+  distinct_visit_dates       BIGINT,
+  distinct_visit_details     BIGINT,
+  cost_pppm                  FLOAT,
+  visits_per_1000_py         FLOAT,
+  visit_dates_per_1000_py    FLOAT,
+  visit_details_per_1000_py  FLOAT
+);
+
+INSERT INTO @results_table
+SELECT
+  d.total_person_days,
+  d.total_person_months,
+  d.total_person_quarters,
+  d.total_person_years,
+  n.metric_type,
+  n.total_cost,
+  n.n_persons_with_cost,
+  n.distinct_visits,
+  n.distinct_visit_dates,
+  n.distinct_visit_details,
+  CASE WHEN d.total_person_months > 0
+       THEN CAST(n.total_cost AS FLOAT) / d.total_person_months ELSE 0 END AS cost_pppm,
+  CASE WHEN d.total_person_years > 0 AND n.distinct_visits       >= 0
+       THEN (CAST(n.distinct_visits       AS FLOAT) * 1000.0) / d.total_person_years ELSE 0 END AS visits_per_1000_py,
+  CASE WHEN d.total_person_years > 0 AND n.distinct_visit_dates  >= 0
+       THEN (CAST(n.distinct_visit_dates  AS FLOAT) * 1000.0) / d.total_person_years ELSE 0 END AS visit_dates_per_1000_py,
+  CASE WHEN d.total_person_years > 0 AND n.distinct_visit_details >= 0
+       THEN (CAST(n.distinct_visit_details AS FLOAT) * 1000.0) / d.total_person_years ELSE 0 END AS visit_details_per_1000_py
+FROM #denominator d
+CROSS JOIN #numerators n;
+
+/* ======================================================
+   Optional: helper indexes for performance
+   ====================================================== */
+-- CREATE INDEX IX_aw_person   ON #analysis_window_clean(person_id, start_date, end_date);
+-- CREATE INDEX IX_visits      ON #visits_in_window(person_id, visit_occurrence_id);
+-- CREATE INDEX IX_costs_visit ON #costs_raw(person_id, visit_occurrence_id);
+-- CREATE INDEX IX_costs_det   ON #costs_raw(person_id, visit_detail_id);
+
+/* ======================================================
+   Step 8: Cleanup temporary tables
+   ====================================================== */
+DROP TABLE IF EXISTS #cohort_person;
+DROP TABLE IF EXISTS #analysis_window;
+DROP TABLE IF EXISTS #analysis_window_clean;
+DROP TABLE IF EXISTS #person_time;
+DROP TABLE IF EXISTS #visits_in_window;
+DROP TABLE IF EXISTS #qualifying_visits;
+DROP TABLE IF EXISTS #costs_raw;
+DROP TABLE IF EXISTS #denominator;
+DROP TABLE IF EXISTS #numerators;
+
+{@has_event_filters} ? {
+  DROP TABLE IF EXISTS #events_by_filter;
+  DROP TABLE IF EXISTS #event_visits;
+  {@micro_costing} ? {
+    DROP TABLE IF EXISTS #primary_filter_details;
+  }
+}
+
+{@micro_costing} ? {
+  DROP TABLE IF EXISTS #line_level_cost;
+} : {
+  DROP TABLE IF EXISTS #visit_level_cost;
+}

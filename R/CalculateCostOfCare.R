@@ -96,7 +96,6 @@ calculateCostOfCare <- function(
       connection = connection,
       tableName = cpiAdjTableName,
       data = cpiData[, c("year", "adj_factor")],
-      tempTable = TRUE,
       tempEmulationSchema = tempEmulationSchema
     )
     logMessage(glue::glue("Uploaded CPI adjustment factors to #{cpiAdjTableName}"), verbose, "DEBUG")

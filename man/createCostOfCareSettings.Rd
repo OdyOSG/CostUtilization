@@ -14,8 +14,7 @@ createCostOfCareSettings(
   primaryEventFilterName = NULL,
   costConceptId = 31978L,
   currencyConceptId = 44818668L,
-  cpiAdjustment = FALSE,
-  cpiDataPath = NULL
+  additionalCostConceptIds = NULL
 )
 }
 \arguments{
@@ -31,15 +30,13 @@ createCostOfCareSettings(
 
 \item{microCosting}{Logical; if TRUE, performs line-level costing at the visit_detail level.}
 
-\item{primaryEventFilterName}{For micro-costing, the name of the primary event filter that identifies the line-level events to cost.}
+\item{primaryEventFilterName}{For micro-costing, the name of the primary event filter.}
 
-\item{costConceptId}{Concept ID for the cost type (e.g., total charge). Default: 31978.}
+\item{costConceptId}{Concept ID for the cost type. Default: 31978 (total charge).}
 
 \item{currencyConceptId}{Concept ID for the currency. Default: 44818668 (USD).}
 
-\item{cpiAdjustment}{Logical; if TRUE, adjusts costs for inflation using CPI data.}
-
-\item{cpiDataPath}{Optional path to a custom CSV file with CPI data. The file must contain 'year' and 'cpi' columns.}
+\item{additionalCostConceptIds}{Optional vector of additional cost concept IDs to analyze.}
 }
 \value{
 A \code{CostOfCareSettings} object.

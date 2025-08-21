@@ -25,10 +25,9 @@
 #'
 #' @return A `CostOfCareSettings` object.
 #' @export
-#' @importFrom rlang abort warn inform
-#' @importFrom purrr map_chr map_lgl walk
+#' 
 createCostOfCareSettings <- function(
-    anchorCol,
+    anchorCol = c("cohort_start_date"),
     startOffsetDays = 0L,
     endOffsetDays = 365L,
     restrictVisitConceptIds = NULL,

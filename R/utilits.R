@@ -87,51 +87,65 @@ logMessage <- function(message, verbose = TRUE, level = "INFO") {
 #' @noRd
 executeSqlStatements <- function(connection, sqlStatements, verbose = TRUE) {
   nStatements <- length(sqlStatements)
+  if (nStatements == 0L) return(invisible(NULL))
   
-  if (verbose && nStatements > 1) {
-    cli::cli_progress_bar(
+  # Create a progress bar and keep its id so we can always address it explicitly
+  pbId <- NULL
+  if (verbose && nStatements > 1L) {
+    pbId <- cli::cli_progress_bar(
       "Executing SQL statements",
       total = nStatements,
       clear = FALSE
     )
   }
   
-  purrr::walk(seq_along(sqlStatements), function(i) {
-    sql <- sqlStatements[[i]]
-    
-    # Skip empty statements
-    if (is.null(sql) || nchar(trimws(sql)) == 0) {
-      return(NULL)
+  on.exit({
+    if (!is.null(pbId)) {
+      # be defensive — don't error if the bar is already closed
+      try(cli::cli_progress_done(id = pbId), silent = TRUE)
     }
-    
-    tryCatch({
-      DatabaseConnector::executeSql(
-        connection = connection,
-        sql = sql,
-        progressBar = FALSE,
-        reportOverallTime = FALSE
-      )
-      
-      if (verbose && nStatements > 1) {
-        cli::cli_progress_update()
-      }
-    }, error = function(e) {
-      if (verbose && nStatements > 1) {
-        cli::cli_progress_done()
-      }
-      
-      cli::cli_abort(c(
-        "Error executing SQL statement {i} of {nStatements}",
-        "x" = conditionMessage(e),
-        "i" = "Statement preview: {substr(sql, 1, 100)}..."
-      ))
-    })
-  })
+  }, add = TRUE)
   
-  if (verbose && nStatements > 1) {
-    cli::cli_progress_done()
+  # Helper: compact statement preview (single-line, max 120 chars)
+  previewStmt <- function(x, n = 120L) {
+    x <- gsub("[\r\n]+", " ", x, perl = TRUE)
+    if (nchar(x) > n) paste0(substr(x, 1L, n), "...") else x
   }
   
+  purrr::iwalk(sqlStatements, function(sql, i) {
+    # Skip empty statements
+    if (is.null(sql) || !nzchar(trimws(sql))) {
+      if (!is.null(pbId)) cli::cli_progress_update(id = pbId)
+      return(invisible(NULL))
+    }
+    
+    tryCatch(
+      {
+        DatabaseConnector::executeSql(
+          connection = connection,
+          sql = sql,
+          progressBar = FALSE,
+          reportOverallTime = FALSE
+        )
+        if (!is.null(pbId)) cli::cli_progress_update(id = pbId)
+      },
+      error = function(e) {
+        # ensure the bar is closed before aborting
+        if (!is.null(pbId)) try(cli::cli_progress_done(id = pbId), silent = TRUE)
+        cli::cli_abort(
+          c(
+            "Error executing SQL statement {i} of {nStatements}.",
+            "x" = "{conditionMessage(e)}",
+            "i" = "Statement preview: {previewStmt(sql)}"
+          ),
+          .envir = rlang::env(i = i, nStatements = nStatements, sql = sql, previewStmt = previewStmt)
+        )
+      }
+    )
+  })
+  
+  # finalize
+  if (!is.null(pbId)) cli::cli_progress_done(id = pbId)
   invisible(NULL)
 }
 

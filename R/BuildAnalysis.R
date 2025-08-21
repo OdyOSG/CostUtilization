@@ -1,57 +1,142 @@
-#' Execute SQL Plan for Cost Analysis
 executeSqlPlan <- function(
     connection,
     params,
     targetDialect,
-    tempEmulationSchema,
+    tempEmulationSchema = NULL,
     verbose = TRUE
 ) {
-  logMessage("Starting SQL plan execution", verbose,  "INFO")
-  sql <- system.file(
-    "sql",
-    "MainCostUtilization.sql",
-    package = "CostUtilization",
-    mustWork = TRUE) |> SqlRender::readSql()
+  logMessage("Starting SQL plan execution", verbose, "INFO")
   
   renderParams <- prepareSqlRenderParams(params, tempEmulationSchema)
   
-  logMessage(sprintf("Translating SQL to %s dialect", targetDialect), verbose,  "DEBUG")
+  # Load the SQL file from the package (OHDSI-style layout)
+  sqlPath <- system.file("sql", "sql_server", "MainCostUtilization.sql", package = "CostUtilization")
+  if (!nzchar(sqlPath)) {
+    sqlPath <- system.file("sql", "MainCostUtilization.sql", package = "CostUtilization")
+  }
+  if (!nzchar(sqlPath)) {
+    stop("Cannot find 'MainCostUtilization.sql' in the CostUtilization package.", call. = FALSE)
+  }
+  sql <- SqlRender::readSql(sqlPath)
+  
+  logMessage(sprintf("Translating SQL to %s dialect", targetDialect), verbose, "DEBUG")
+  
+  # >>> KEY FIX: pass anchor_on_end; remove ancor_col <<<
   sql <- SqlRender::render(
-    sql = sql,
-    cdm_database_schema = renderParams$cdm_database_schema,
-    cohort_database_schema = renderParams$cohort_database_schema,
-    cohort_table = renderParams$cohort_table,
-    cohort_id = renderParams$cohort_id,
-    anchor_col = renderParams$anchor_col,
-    time_a = renderParams$time_a,
-    time_b = renderParams$time_b,
-    cost_concept_id = renderParams$cost_concept_id,
-    currency_concept_id = renderParams$currency_concept_id,
-    n_filters = renderParams$n_filters,
-    has_visit_restriction = renderParams$has_visit_restriction,
-    has_event_filters = renderParams$has_event_filters,
-    micro_costing = renderParams$micro_costing,
-    primary_filter_id = renderParams$primary_filter_id,
-    results_table = renderParams$results_table,
-    diag_table = renderParams$diag_table,
-    cpi_adjustment = renderParams$cpi_adjustment,
-    cpi_adj_table = renderParams$cpi_adj_table
+    sql,
+    cdm_database_schema     = renderParams$cdm_database_schema,
+    cohort_database_schema  = renderParams$cohort_database_schema,
+    cohort_table            = renderParams$cohort_table,
+    cohort_id               = renderParams$cohort_id,
+    anchor_on_end           = renderParams$anchor_on_end,     # <-- FIXED
+    time_a                  = renderParams$time_a,
+    time_b                  = renderParams$time_b,
+    cost_concept_id         = renderParams$cost_concept_id,
+    currency_concept_id     = renderParams$currency_concept_id,
+    cost_type_concept_id    = renderParams$cost_type_concept_id,
+    n_filters               = renderParams$n_filters,
+    has_visit_restriction   = renderParams$has_visit_restriction,
+    restrict_visit_table    = renderParams$restrict_visit_table,
+    has_event_filters       = renderParams$has_event_filters,
+    event_concepts_table    = renderParams$event_concepts_table,
+    micro_costing           = renderParams$micro_costing,
+    primary_filter_id       = renderParams$primary_filter_id,
+    results_table           = renderParams$results_table,
+    diag_table              = renderParams$diag_table,
+    cpi_adjustment          = renderParams$cpi_adjustment,
+    cpi_adj_table           = renderParams$cpi_adj_table
   )
   
-  sqlStatements <- SqlRender::splitSql(sql)
-  logMessage(sprintf("Executing %d SQL statements", length(sqlStatements)), verbose,  "INFO")
+  sql <- SqlRender::translate(
+    sql                 = sql,
+    targetDialect       = targetDialect,
+    tempEmulationSchema = tempEmulationSchema
+  )
+  
+  split <- SqlRender::splitSql(sql)
+  sqlStatements <- if (is.list(split) && !is.null(split$sql)) split$sql else split
+  
+  logMessage(sprintf("Executing %d SQL statements", length(sqlStatements)), verbose, "INFO")
   
   executeSqlStatements(
-    connection = connection,
+    connection    = connection,
     sqlStatements = sqlStatements,
-    verbose = verbose
+    verbose       = verbose
   )
   
-  logMessage("SQL plan execution completed", verbose,  "INFO")
+  logMessage("SQL plan execution completed", verbose, "INFO")
   invisible(NULL)
 }
 
-#' Prepare SQL Render Parameters
+executeSqlPlan <- function(
+    connection,
+    params,
+    targetDialect,
+    tempEmulationSchema = NULL,
+    verbose = TRUE
+) {
+  logMessage("Starting SQL plan execution", verbose, "INFO")
+  
+  renderParams <- prepareSqlRenderParams(params, tempEmulationSchema)
+  
+  # Load the SQL file from the package (OHDSI-style layout)
+  sqlPath <- system.file("sql", "sql_server", "MainCostUtilization.sql", package = "CostUtilization")
+  if (!nzchar(sqlPath)) {
+    sqlPath <- system.file("sql", "MainCostUtilization.sql", package = "CostUtilization")
+  }
+  if (!nzchar(sqlPath)) {
+    stop("Cannot find 'MainCostUtilization.sql' in the CostUtilization package.", call. = FALSE)
+  }
+  sql <- SqlRender::readSql(sqlPath)
+  
+  logMessage(sprintf("Translating SQL to %s dialect", targetDialect), verbose, "DEBUG")
+  
+  # >>> KEY FIX: pass anchor_on_end; remove ancor_col <<<
+  sql <- SqlRender::render(
+    sql,
+    cdm_database_schema     = renderParams$cdm_database_schema,
+    cohort_database_schema  = renderParams$cohort_database_schema,
+    cohort_table            = renderParams$cohort_table,
+    cohort_id               = renderParams$cohort_id,
+    anchor_on_end           = renderParams$anchor_on_end,     # <-- FIXED
+    time_a                  = renderParams$time_a,
+    time_b                  = renderParams$time_b,
+    cost_concept_id         = renderParams$cost_concept_id,
+    currency_concept_id     = renderParams$currency_concept_id,
+    cost_type_concept_id    = renderParams$cost_type_concept_id,
+    n_filters               = renderParams$n_filters,
+    has_visit_restriction   = renderParams$has_visit_restriction,
+    restrict_visit_table    = renderParams$restrict_visit_table,
+    has_event_filters       = renderParams$has_event_filters,
+    event_concepts_table    = renderParams$event_concepts_table,
+    micro_costing           = renderParams$micro_costing,
+    primary_filter_id       = renderParams$primary_filter_id,
+    results_table           = renderParams$results_table,
+    diag_table              = renderParams$diag_table,
+    cpi_adjustment          = renderParams$cpi_adjustment,
+    cpi_adj_table           = renderParams$cpi_adj_table
+  )
+  
+  sql <- SqlRender::translate(
+    sql                 = sql,
+    targetDialect       = targetDialect,
+    tempEmulationSchema = tempEmulationSchema
+  )
+  
+  split <- SqlRender::splitSql(sql)
+  sqlStatements <- if (is.list(split) && !is.null(split$sql)) split$sql else split
+  
+  logMessage(sprintf("Executing %d SQL statements", length(sqlStatements)), verbose, "INFO")
+  
+  executeSqlStatements(
+    connection    = connection,
+    sqlStatements = sqlStatements,
+    verbose       = verbose
+  )
+  
+  logMessage("SQL plan execution completed", verbose, "INFO")
+  invisible(NULL)
+}
 
 prepareSqlRenderParams <- function(params, tempEmulationSchema) {
   sqlParams <- list()
@@ -72,10 +157,9 @@ prepareSqlRenderParams <- function(params, tempEmulationSchema) {
   sqlParams$cohort_database_schema <- params$cohortDatabaseSchema
   sqlParams$cohort_table <- params$cohortTable
   sqlParams$cohort_id <- params$cohortId
-  sqlParams$anchor_col <- params$anchorCol
+  sqlParams$anchor_on_end <- ifelse(params$anchorCol == "cohort_end_date", 1, 0) # <-- FIX HERE
   sqlParams$time_a <- params$startOffsetDays
   sqlParams$time_b <- params$endOffsetDays
-  sqlParams$n_filters <- params$nFilters
   
   # --- Cost-related parameters with defaults ---
   sqlParams$cost_concept_id <- if (!is.null(params$costConceptId) && params$costConceptId != "") {
@@ -87,14 +171,17 @@ prepareSqlRenderParams <- function(params, tempEmulationSchema) {
   sqlParams$currency_concept_id <- if (!is.null(params$currencyConceptId) && params$currencyConceptId != "") {
     params$currencyConceptId
   } else {
-    44818668  # Default: US Dollar
+    44818668 # Default: US Dollar
   }
   
-  sqlParams$cost_domain_id <- if (!is.null(params$costDomainId) && params$costDomainId != "") {
-    params$costDomainId
+  # --- FIX START ---
+  # Handle the optional cost_type_concept_id filter
+  sqlParams$cost_type_concept_id <- if (!is.null(params$costTypeConceptId) && params$costTypeConceptId != "") {
+    params$costTypeConceptId
   } else {
-    NULL  # No default domain restriction
+    "NULL" # Pass NULL to disable the filter in SQL
   }
+  # --- FIX END ---
   
   sqlParams$cost_event_field_concept_id <- if (!is.null(params$costEventFieldConceptId) && params$costEventFieldConceptId != "") {
     params$costEventFieldConceptId
@@ -136,7 +223,9 @@ prepareSqlRenderParams <- function(params, tempEmulationSchema) {
   sqlParams$diag_table <- qualifyTableName(params$diagTable, tempEmulationSchema)
   sqlParams$restrict_visit_table <- qualifyTableName(params$restrictVisitTable, tempEmulationSchema)
   sqlParams$event_concepts_table <- qualifyTableName(params$eventConceptsTable, tempEmulationSchema)
-  sqlParams$cpi_adj_table <- qualifyTableName(params$cpiAdjTable, tempEmulationSchema)
+  # --- CPI Adjustment parameters (make the flag dependent on the table) ---
+  sqlParams$cpi_adj_table <- params$cpiAdjTable
+  sqlParams$cpi_adjustment <- isTRUE(params$cpiAdjustment) && !is.null(sqlParams$cpi_adj_table)
   
   
   return(sqlParams)
