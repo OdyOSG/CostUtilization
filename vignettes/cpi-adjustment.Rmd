@@ -167,8 +167,10 @@ You can provide your own CPI data for specialized analyses:
 # Create custom CPI data file
 customCpi <- tibble(
   year = 2010:2023,
-  cpi = c(100, 102, 105, 108, 110, 113, 116, 119, 
-          122, 125, 128, 132, 138, 145)  # Example values
+  cpi = c(
+    100, 102, 105, 108, 110, 113, 116, 119,
+    122, 125, 128, 132, 138, 145
+  ) # Example values
 )
 
 # Save to CSV
@@ -198,8 +200,8 @@ allResults <- list()
 
 for (year in years) {
   # Create year-specific cohort
-  cohortId <- year - 2014  # Cohort IDs 1-9
-  
+  cohortId <- year - 2014 # Cohort IDs 1-9
+
   # Run analysis with CPI adjustment
   results <- calculateCostOfCare(
     connection = connection,
@@ -210,7 +212,7 @@ for (year in years) {
     cpiAdjustment = TRUE,
     cpiTargetYear = 2023
   )
-  
+
   allResults[[as.character(year)]] <- results %>%
     mutate(year = year)
 }
@@ -247,7 +249,7 @@ ggplot(trendData, aes(x = year)) +
 cpiSettings <- getCpiAdjustmentSettings(
   enableCpiAdjustment = TRUE,
   targetYear = 2023,
-  cpiType = "medical"  # or "all_items" for general CPI
+  cpiType = "medical" # or "all_items" for general CPI
 )
 
 print(cpiSettings)
@@ -259,7 +261,7 @@ print(cpiSettings)
 # Get detailed summary of CPI adjustment impact
 costData <- DatabaseConnector::querySql(
   connection,
-  "SELECT person_id, cost as total_cost, 
+  "SELECT person_id, cost as total_cost,
           cost * cpi_factor as adjusted_cost
    FROM cost_analysis_results"
 ) %>%

@@ -26,8 +26,7 @@ calculateCostOfCare <- function(
     cohortId,
     costOfCareSettings,
     tempEmulationSchema = NULL,
-    verbose = TRUE
-) {
+    verbose = TRUE) {
   errorMessages <- checkmate::makeAssertCollection()
   checkmate::assertClass(costOfCareSettings, "CostOfCareSettings")
   if (is.null(connectionDetails) && is.null(connection)) {
@@ -36,7 +35,7 @@ calculateCostOfCare <- function(
   if (!is.null(connectionDetails) && !is.null(connection)) {
     stop("Need to provide either connectionDetails or connection, not both")
   }
-  
+
   if (!is.null(connectionDetails)) {
     checkmate::assertClass(connectionDetails, "ConnectionDetails")
     connection <- DatabaseConnector::connect(connectionDetails)
@@ -49,7 +48,7 @@ calculateCostOfCare <- function(
   # --- Setup ---
   startTime <- Sys.time()
   targetDialect <- DatabaseConnector::dbms(connection)
-  
+
   # Generate unique names for temp tables to avoid session conflicts
   sessionPrefix <- paste0("cu_", stringi::stri_rand_strings(1, 5, pattern = "[a-z]"))
   resultsTableName <- paste0(sessionPrefix, "_results")
@@ -57,26 +56,29 @@ calculateCostOfCare <- function(
   restrictVisitTableName <- NULL
   eventConceptsTableName <- NULL
   cpiAdjTableName <- NULL
-  
+
   # Ensure all created tables are dropped on exit, even if an error occurs
-  on.exit({
-    logMessage("Cleaning up temporary tables...", verbose, "INFO")
-    cleanupTempTables(
-      connection = connection,
-      schema = tempEmulationSchema,
-      resultsTableName,
-      diagTableName,
-      restrictVisitTableName,
-      eventConceptsTableName,
-      cpiAdjTableName
-    )
-  }, add = TRUE)
-  
+  on.exit(
+    {
+      logMessage("Cleaning up temporary tables...", verbose, "INFO")
+      cleanupTempTables(
+        connection = connection,
+        schema = tempEmulationSchema,
+        resultsTableName,
+        diagTableName,
+        restrictVisitTableName,
+        eventConceptsTableName,
+        cpiAdjTableName
+      )
+    },
+    add = TRUE
+  )
+
   # --- CPI Adjustment Setup ---
   if (isTRUE(costOfCareSettings$cpiAdjustment)) {
     logMessage("Setting up CPI adjustment...", verbose, "INFO")
     cpiAdjTableName <- paste0(sessionPrefix, "_cpi_adj")
-    
+
     # Load CPI data
     if (is.null(costOfCareSettings$cpiDataPath)) {
       defaultCpiPath <- system.file("csv", "cpi_data.csv", package = "CostUtilization", mustWork = TRUE)
@@ -84,13 +86,13 @@ calculateCostOfCare <- function(
     } else {
       cpiData <- utils::read.csv(costOfCareSettings$cpiDataPath)
     }
-    
+
     # Validate and calculate adjustment factors
     if (!all(c("year", "cpi") %in% names(cpiData))) {
       cli::cli_abort("Custom CPI data must contain 'year' and 'cpi' columns.")
     }
     cpiData$adj_factor <- cpiData$cpi
-    
+
     # Upload to a temp table
     DatabaseConnector::insertTable(
       connection = connection,
@@ -100,8 +102,8 @@ calculateCostOfCare <- function(
     )
     logMessage(glue::glue("Uploaded CPI adjustment factors to #{cpiAdjTableName}"), verbose, "DEBUG")
   }
-  
-  
+
+
   # --- Upload Helper Tables ---
   if (isTRUE(costOfCareSettings$hasVisitRestriction)) {
     restrictVisitTableName <- paste0(sessionPrefix, "_visit_restr")
@@ -118,7 +120,7 @@ calculateCostOfCare <- function(
     )
     logMessage(glue::glue("Uploaded {nrow(visitConcepts)} visit concepts to #{restrictVisitTableName}"), verbose, "DEBUG")
   }
-  
+
   if (isTRUE(costOfCareSettings$hasEventFilters)) {
     eventConceptsTableName <- paste0(sessionPrefix, "_evt_concepts")
     eventConcepts <- purrr::imap_dfr(costOfCareSettings$eventFilters, ~ dplyr::tibble(
@@ -126,8 +128,7 @@ calculateCostOfCare <- function(
       filter_name = .x$name,
       domain_scope = .x$domain,
       concept_id = .x$conceptIds
-    )
-    )
+    ))
     DatabaseConnector::insertTable(
       connection = connection,
       tableName = eventConceptsTableName,
@@ -138,7 +139,7 @@ calculateCostOfCare <- function(
     )
     logMessage(glue::glue("Uploaded {nrow(eventConcepts)} event concepts to #{eventConceptsTableName}"), verbose, "DEBUG")
   }
-  
+
   # --- Assemble SQL Parameters ---
   params <- c(
     list(
@@ -154,7 +155,7 @@ calculateCostOfCare <- function(
     ),
     costOfCareSettings
   )
-  
+
   # --- Execute Analysis ---
   executeSqlPlan(
     connection = connection,
@@ -163,35 +164,34 @@ calculateCostOfCare <- function(
     tempEmulationSchema = tempEmulationSchema,
     verbose = verbose
   )
-  
+
   # --- Fetch and Return Results ---
   logMessage("Fetching results from database", verbose, "INFO")
   resultsTableFqn <- if (!is.null(tempEmulationSchema)) paste(tempEmulationSchema, resultsTableName, sep = ".") else resultsTableName
   diagTableFqn <- if (!is.null(tempEmulationSchema)) paste(tempEmulationSchema, diagTableName, sep = ".") else diagTableName
-  
+
   resultsSql <- glue::glue("SELECT * FROM {resultsTableFqn};")
   results <- DatabaseConnector::querySql(connection, resultsSql, snakeCaseToCamelCase = TRUE) |>
     dplyr::as_tibble()
-  
+
   diagSql <- glue::glue("SELECT * FROM {diagTableFqn} ORDER BY step_name;")
   diagnostics <- DatabaseConnector::querySql(connection, diagSql, snakeCaseToCamelCase = TRUE) |>
     dplyr::as_tibble()
-  
+
   logMessage(
     glue::glue("Analysis complete in {round(difftime(Sys.time(), startTime, units = 'secs'), 1)}s."),
     verbose = verbose,
     level = "SUCCESS"
   )
-  
+
   return(list(results = results, diagnostics = diagnostics))
 }
 
 
 formatAsFeatureExtraction <- function(results, diagnostics, costOfCareSettings, cohortId, aggregated) {
-  
   # Generate base covariate IDs
-  baseAnalysisId <- 5000  # Base ID for cost analyses
-  
+  baseAnalysisId <- 5000 # Base ID for cost analyses
+
   # Create analysis reference
   analysisRef <- dplyr::tibble(
     analysisId = baseAnalysisId,
@@ -202,15 +202,15 @@ formatAsFeatureExtraction <- function(results, diagnostics, costOfCareSettings, 
     isBinary = FALSE,
     missingMeansZero = TRUE
   )
-  
+
   # Create covariate reference
   covariateRef <- dplyr::tibble(
     covariateId = c(
-      baseAnalysisId * 1000 + 1,  # Total cost
-      baseAnalysisId * 1000 + 2,  # Cost PPPM
-      baseAnalysisId * 1000 + 3,  # Visits per 1000 PY
-      baseAnalysisId * 1000 + 4,  # Visit dates per 1000 PY
-      baseAnalysisId * 1000 + 5   # N persons with cost
+      baseAnalysisId * 1000 + 1, # Total cost
+      baseAnalysisId * 1000 + 2, # Cost PPPM
+      baseAnalysisId * 1000 + 3, # Visits per 1000 PY
+      baseAnalysisId * 1000 + 4, # Visit dates per 1000 PY
+      baseAnalysisId * 1000 + 5 # N persons with cost
     ),
     covariateName = c(
       glue::glue("Total cost [{costOfCareSettings$startOffsetDays}d to {costOfCareSettings$endOffsetDays}d]"),
@@ -222,7 +222,7 @@ formatAsFeatureExtraction <- function(results, diagnostics, costOfCareSettings, 
     analysisId = baseAnalysisId,
     conceptId = 0
   )
-  
+
   # Add event-specific covariates if applicable
   if (costOfCareSettings$hasEventFilters) {
     eventCovariates <- purrr::imap_dfr(costOfCareSettings$eventFilters, function(filter, idx) {
@@ -235,7 +235,7 @@ formatAsFeatureExtraction <- function(results, diagnostics, costOfCareSettings, 
     })
     covariateRef <- dplyr::bind_rows(covariateRef, eventCovariates)
   }
-  
+
   # Format covariates
   if (aggregated) {
     # Aggregated format
@@ -244,13 +244,13 @@ formatAsFeatureExtraction <- function(results, diagnostics, costOfCareSettings, 
       covariateId = covariateRef$covariateId[1:5],
       sumValue = c(
         results$totalCost,
-        results$totalCost,  # Will be averaged
-        results$distinctVisits * 1000,  # Pre-scaled for per 1000 PY
+        results$totalCost, # Will be averaged
+        results$distinctVisits * 1000, # Pre-scaled for per 1000 PY
         results$distinctVisitDates * 1000,
         results$nPersonsWithCost
       ),
       averageValue = c(
-        results$totalCost / results$totalPersonDays * 365.25,  # Annual average
+        results$totalCost / results$totalPersonDays * 365.25, # Annual average
         results$costPppm,
         results$visitsPerThousandPy,
         results$visitDatesPerThousandPy,
@@ -274,27 +274,27 @@ formatAsFeatureExtraction <- function(results, diagnostics, costOfCareSettings, 
       )
     )
   }
-  
+
   # Create metadata
   metaData <- list(
     databaseId = NA_character_,
-    populationSize = diagnostics |> 
-      dplyr::filter(.data$stepName == "00_initial_cohort") |> 
+    populationSize = diagnostics |>
+      dplyr::filter(.data$stepName == "00_initial_cohort") |>
       dplyr::pull(.data$nPersons),
     minCovariateValue = min(covariates$sumValue, covariates$averageValue, na.rm = TRUE),
     maxCovariateValue = max(covariates$sumValue, covariates$averageValue, na.rm = TRUE)
   )
-  
+
   # Return FeatureExtraction-compatible structure
   result <- list(
     covariates = covariates,
     covariateRef = covariateRef,
     analysisRef = analysisRef,
     metaData = metaData,
-    diagnostics = diagnostics  # Include original diagnostics
+    diagnostics = diagnostics # Include original diagnostics
   )
-  
+
   class(result) <- c("CovariateData", "FeatureExtraction", class(result))
-  
+
   return(result)
 }

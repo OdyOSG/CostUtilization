@@ -5,7 +5,7 @@
 \title{Create Cost of Care Settings}
 \usage{
 createCostOfCareSettings(
-  anchorCol,
+  anchorCol = c("cohort_start_date"),
   startOffsetDays = 0L,
   endOffsetDays = 365L,
   restrictVisitConceptIds = NULL,

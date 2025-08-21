@@ -72,7 +72,7 @@ DatabaseConnector::executeSql(connection, "
 
 # Check cohort size
 cohortCount <- DatabaseConnector::querySql(
-  connection, 
+  connection,
   "SELECT COUNT(DISTINCT subject_id) AS n FROM main.test_cohort"
 )
 cli::cli_alert_info("Created cohort with {cohortCount$n} subjects")
@@ -106,8 +106,8 @@ You can restrict the analysis to specific visit types:
 ```{r visit-restriction}
 # Analyze only inpatient and emergency visits
 inpatientEmergencyVisits <- c(
-  9201,  # Inpatient Visit
-  9203   # Emergency Room Visit
+  9201, # Inpatient Visit
+  9203 # Emergency Room Visit
 )
 
 resultsRestricted <- calculateCostOfCare(
@@ -137,17 +137,17 @@ diabetesFilters <- list(
   list(
     name = "Diabetes Diagnoses",
     domain = "Condition",
-    conceptIds = c(201820, 201826, 443238, 442793)  # Type 2 diabetes
+    conceptIds = c(201820, 201826, 443238, 442793) # Type 2 diabetes
   ),
   list(
     name = "Diabetes Medications",
     domain = "Drug",
-    conceptIds = c(1503297, 1502826, 1502855)  # Metformin, insulin, etc.
+    conceptIds = c(1503297, 1502826, 1502855) # Metformin, insulin, etc.
   ),
   list(
     name = "Diabetes Labs",
     domain = "Measurement",
-    conceptIds = c(3004501, 3003309)  # HbA1c, glucose
+    conceptIds = c(3004501, 3003309) # HbA1c, glucose
   )
 )
 
@@ -161,8 +161,8 @@ resultsFiltered <- calculateCostOfCare(
   cohortTable = "test_cohort",
   cohortId = 1,
   anchorCol = "cohort_start_date",
-  startOffsetDays = -365,  # 1 year before
-  endOffsetDays = 365,     # to 1 year after
+  startOffsetDays = -365, # 1 year before
+  endOffsetDays = 365, # to 1 year after
   eventFilters = diabetesFilters,
   verbose = TRUE
 )
@@ -180,7 +180,7 @@ For detailed cost analysis at the visit detail level:
 # (In real CDM, this would already exist)
 DatabaseConnector::executeSql(connection, "
   CREATE TABLE IF NOT EXISTS main.visit_detail AS
-  SELECT 
+  SELECT
     ROW_NUMBER() OVER () AS visit_detail_id,
     person_id,
     visit_occurrence_id,
@@ -217,15 +217,15 @@ Let's analyze costs across different time windows:
 ```{r time-windows}
 # Define time windows
 timeWindows <- list(
-  preCohort = c(-365, -1),    # 1 year before
-  during = c(0, 90),           # First 90 days
-  postCohort = c(91, 365)      # Rest of first year
+  preCohort = c(-365, -1), # 1 year before
+  during = c(0, 90), # First 90 days
+  postCohort = c(91, 365) # Rest of first year
 )
 
 # Run analysis for each window
 windowResults <- purrr::map_dfr(names(timeWindows), function(windowName) {
   window <- timeWindows[[windowName]]
-  
+
   result <- calculateCostOfCare(
     connection = connection,
     cdmDatabaseSchema = "main",
@@ -237,7 +237,7 @@ windowResults <- purrr::map_dfr(names(timeWindows), function(windowName) {
     endOffsetDays = window[2],
     verbose = FALSE
   )
-  
+
   result |>
     mutate(timeWindow = windowName)
 })

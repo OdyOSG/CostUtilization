@@ -5,6 +5,6 @@
 
 #' @import dplyr
 #' @import rlang
-#' 
+#'
 ## usethis namespace: end
 NULL

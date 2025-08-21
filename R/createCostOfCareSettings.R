@@ -25,7 +25,7 @@
 #'
 #' @return A `CostOfCareSettings` object.
 #' @export
-#' 
+#'
 createCostOfCareSettings <- function(
     anchorCol = c("cohort_start_date"),
     startOffsetDays = 0L,
@@ -36,54 +36,53 @@ createCostOfCareSettings <- function(
     primaryEventFilterName = NULL,
     costConceptId = 31978L,
     currencyConceptId = 44818668L,
-    additionalCostConceptIds = NULL
-) {
+    additionalCostConceptIds = NULL) {
   # --- Input Validation with checkmate ---
   errorMessages <- checkmate::makeAssertCollection()
-  
+
   # Validate anchor column
   checkmate::assertChoice(
-    anchorCol, 
+    anchorCol,
     choices = c("cohort_start_date", "cohort_end_date"),
     add = errorMessages
   )
-  
+
   # Validate offset days
   checkmate::assertIntegerish(
-    startOffsetDays, 
-    len = 1, 
+    startOffsetDays,
+    len = 1,
     any.missing = FALSE,
     add = errorMessages
   )
   checkmate::assertIntegerish(
-    endOffsetDays, 
-    len = 1, 
+    endOffsetDays,
+    len = 1,
     any.missing = FALSE,
     add = errorMessages
   )
-  
+
   # Validate cost concept IDs
   checkmate::assertIntegerish(
-    costConceptId, 
-    len = 1, 
+    costConceptId,
+    len = 1,
     lower = 1,
     any.missing = FALSE,
     add = errorMessages
   )
   checkmate::assertIntegerish(
-    currencyConceptId, 
-    len = 1, 
+    currencyConceptId,
+    len = 1,
     lower = 1,
     any.missing = FALSE,
     add = errorMessages
   )
-  
+
   # Validate boolean flags
   checkmate::assertFlag(microCosting, add = errorMessages)
-  
+
   # Report any basic validation errors
   checkmate::reportAssertions(errorMessages)
-  
+
   # Additional validation logic
   if (endOffsetDays <= startOffsetDays) {
     cli::cli_abort(c(
@@ -92,13 +91,13 @@ createCostOfCareSettings <- function(
       "i" = "The analysis window must have a positive duration"
     ))
   }
-  
+
   # Validate visit restriction
   if (!is.null(restrictVisitConceptIds)) {
     checkmate::assertIntegerish(
-      restrictVisitConceptIds, 
-      lower = 1, 
-      min.len = 1, 
+      restrictVisitConceptIds,
+      lower = 1,
+      min.len = 1,
       unique = TRUE,
       any.missing = FALSE
     )
@@ -106,7 +105,7 @@ createCostOfCareSettings <- function(
       "i" = "Analysis will be restricted to {length(restrictVisitConceptIds)} visit concept{?s}"
     ))
   }
-  
+
   # Validate event filters
   if (!is.null(eventFilters)) {
     validateEventFilters(eventFilters)
@@ -117,7 +116,7 @@ createCostOfCareSettings <- function(
   } else {
     nFilters <- 0
   }
-  
+
   # Validate micro-costing settings
   if (microCosting) {
     if (is.null(primaryEventFilterName)) {
@@ -127,9 +126,9 @@ createCostOfCareSettings <- function(
         "i" = "Specify which event filter identifies the line-level events to cost"
       ))
     }
-    
+
     checkmate::assertString(primaryEventFilterName, min.chars = 1)
-    
+
     if (!is.null(eventFilters)) {
       filterNames <- purrr::map_chr(eventFilters, "name")
       if (!primaryEventFilterName %in% filterNames) {
@@ -147,7 +146,7 @@ createCostOfCareSettings <- function(
       ))
     }
   }
-  
+
   # Validate additional cost concepts
   if (!is.null(additionalCostConceptIds)) {
     checkmate::assertIntegerish(
@@ -157,7 +156,7 @@ createCostOfCareSettings <- function(
       any.missing = FALSE
     )
   }
-  
+
   # --- Create Settings Object ---
   settings <- structure(
     list(
@@ -177,15 +176,15 @@ createCostOfCareSettings <- function(
     ),
     class = "CostOfCareSettings"
   )
-  
+
   return(settings)
 }
 
 #' Validate Event Filters
-#' 
+#'
 #' @description
 #' Internal function to validate the structure of event filters.
-#' 
+#'
 #' @param eventFilters List of event filter specifications
 #' @noRd
 validateEventFilters <- function(eventFilters) {
@@ -196,11 +195,11 @@ validateEventFilters <- function(eventFilters) {
       "i" = "Received {.cls {class(eventFilters)}}"
     ))
   }
-  
+
   # Check each filter
   purrr::walk(seq_along(eventFilters), function(i) {
     filter <- eventFilters[[i]]
-    
+
     if (!is.list(filter)) {
       cli::cli_abort(c(
         "Invalid event filter structure",
@@ -208,11 +207,11 @@ validateEventFilters <- function(eventFilters) {
         "i" = "Each filter must be a list with 'name', 'domain', and 'conceptIds'"
       ))
     }
-    
+
     # Check required fields
     requiredFields <- c("name", "domain", "conceptIds")
     missingFields <- setdiff(requiredFields, names(filter))
-    
+
     if (length(missingFields) > 0) {
       cli::cli_abort(c(
         "Missing required fields in event filter {i}",
@@ -220,7 +219,7 @@ validateEventFilters <- function(eventFilters) {
         "i" = "Each filter must have: {.field {requiredFields}}"
       ))
     }
-    
+
     # Validate name
     if (!is.character(filter$name) || length(filter$name) != 1 || nchar(filter$name) == 0) {
       cli::cli_abort(c(
@@ -229,13 +228,13 @@ validateEventFilters <- function(eventFilters) {
         "i" = "Received: {.val {filter$name}}"
       ))
     }
-    
+
     # Validate domain
     validDomains <- c(
-      "Drug", "Condition", "Procedure", "Observation", 
+      "Drug", "Condition", "Procedure", "Observation",
       "Measurement", "Device", "Visit", "All"
     )
-    
+
     if (!filter$domain %in% validDomains) {
       cli::cli_abort(c(
         "Invalid domain in event filter {i}",
@@ -243,7 +242,7 @@ validateEventFilters <- function(eventFilters) {
         "i" = "Valid domains: {.val {validDomains}}"
       ))
     }
-    
+
     # Validate concept IDs
     checkmate::assertIntegerish(
       filter$conceptIds,
@@ -253,11 +252,11 @@ validateEventFilters <- function(eventFilters) {
       .var.name = glue::glue("conceptIds in filter '{filter$name}'")
     )
   })
-  
+
   # Check for duplicate names
   filterNames <- purrr::map_chr(eventFilters, "name")
   duplicateNames <- filterNames[duplicated(filterNames)]
-  
+
   if (length(duplicateNames) > 0) {
     cli::cli_abort(c(
       "Duplicate filter names detected",
@@ -265,20 +264,20 @@ validateEventFilters <- function(eventFilters) {
       "i" = "Each event filter must have a unique name"
     ))
   }
-  
+
   invisible(TRUE)
 }
 
 #' Print Cost of Care Settings
-#' 
+#'
 #' @param x A CostOfCareSettings object
 #' @param ... Additional arguments (not used)
-#' 
+#'
 #' @return Invisibly returns the input object
 #' @export
 print.CostOfCareSettings <- function(x, ...) {
   cli::cli_h2("Cost of Care Settings")
-  
+
   cli::cli_h3("Time Window")
   cli::cli_ul(c(
     "Anchor: {.field {x$anchorCol}}",
@@ -286,22 +285,22 @@ print.CostOfCareSettings <- function(x, ...) {
     "End: {x$endOffsetDays} days",
     "Duration: {x$endOffsetDays - x$startOffsetDays} days"
   ))
-  
+
   cli::cli_h3("Cost Configuration")
   cli::cli_ul(c(
     "Cost concept ID: {x$costConceptId}",
     "Currency concept ID: {x$currencyConceptId}"
   ))
-  
+
   if (!is.null(x$additionalCostConceptIds)) {
     cli::cli_text("Additional cost concepts: {.val {x$additionalCostConceptIds}}")
   }
-  
+
   if (x$hasVisitRestriction) {
     cli::cli_h3("Visit Restrictions")
     cli::cli_text("Restricted to {length(x$restrictVisitConceptIds)} visit concept{?s}")
   }
-  
+
   if (x$hasEventFilters) {
     cli::cli_h3("Event Filters")
     purrr::walk(x$eventFilters, function(filter) {
@@ -310,11 +309,11 @@ print.CostOfCareSettings <- function(x, ...) {
       )
     })
   }
-  
+
   if (x$microCosting) {
     cli::cli_h3("Micro-Costing")
     cli::cli_text("Primary filter: {.val {x$primaryEventFilterName}}")
   }
-  
+
   invisible(x)
 }

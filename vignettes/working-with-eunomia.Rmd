@@ -79,7 +79,7 @@ injectCostData(
   connection = connection,
   cdmDatabaseSchema = "main",
   costDomains = c("Procedure", "Measurement", "Visit", "Device", "Drug", "Observation", "Condition"),
-  seed = 123  # For reproducibility
+  seed = 123 # For reproducibility
 )
 
 # Verify cost table creation
@@ -128,7 +128,7 @@ print(costStructure |> select(name, type))
 ```{r explore-payers}
 # Examine payer plan distribution
 payerPlans <- DatabaseConnector::querySql(connection, "
-  SELECT 
+  SELECT
     payer_source_value,
     plan_source_value,
     COUNT(*) AS n_periods,
@@ -144,7 +144,7 @@ print(payerPlans)
 
 # Check plan duration statistics
 planDurations <- DatabaseConnector::querySql(connection, "
-  SELECT 
+  SELECT
     AVG(JULIANDAY(payer_plan_period_end_date) - JULIANDAY(payer_plan_period_start_date)) AS avg_duration_days,
     MIN(JULIANDAY(payer_plan_period_end_date) - JULIANDAY(payer_plan_period_start_date)) AS min_duration_days,
     MAX(JULIANDAY(payer_plan_period_end_date) - JULIANDAY(payer_plan_period_start_date)) AS max_duration_days
@@ -161,7 +161,7 @@ print(planDurations)
 ```{r explore-costs}
 # Analyze cost distribution by domain
 costByDomain <- DatabaseConnector::querySql(connection, "
-  SELECT 
+  SELECT
     cost_domain_id,
     COUNT(*) AS n_records,
     COUNT(DISTINCT cost_event_id) AS n_events,
@@ -180,7 +180,7 @@ print(costByDomain)
 
 # Analyze cost types
 costTypes <- DatabaseConnector::querySql(connection, "
-  SELECT 
+  SELECT
     c.cost_concept_id,
     con.concept_name,
     COUNT(*) AS n_records,
@@ -228,8 +228,8 @@ giBleedCosts <- calculateCostOfCare(
   cohortTable = "gi_bleed_cohort",
   cohortId = 1,
   anchorCol = "cohort_start_date",
-  startOffsetDays = -30,   # 30 days before
-  endOffsetDays = 90,      # 90 days after
+  startOffsetDays = -30, # 30 days before
+  endOffsetDays = 90, # 90 days after
   verbose = TRUE
 )
 
@@ -244,7 +244,7 @@ print(giBleedCosts)
 # Celecoxib users
 DatabaseConnector::executeSql(connection, "
   CREATE TABLE main.drug_cohorts AS
-  SELECT 
+  SELECT
     1 AS cohort_definition_id,
     person_id AS subject_id,
     MIN(drug_exposure_start_date) AS cohort_start_date,
@@ -257,7 +257,7 @@ DatabaseConnector::executeSql(connection, "
 # Diclofenac users
 DatabaseConnector::executeSql(connection, "
   INSERT INTO main.drug_cohorts
-  SELECT 
+  SELECT
     2 AS cohort_definition_id,
     person_id AS subject_id,
     MIN(drug_exposure_start_date) AS cohort_start_date,
@@ -269,7 +269,6 @@ DatabaseConnector::executeSql(connection, "
 
 # Compare costs between drug cohorts
 drugCostComparison <- map_dfr(1:2, function(cohortId) {
-  
   result <- calculateCostOfCare(
     connection = connection,
     cdmDatabaseSchema = "main",
@@ -281,7 +280,7 @@ drugCostComparison <- map_dfr(1:2, function(cohortId) {
     endOffsetDays = 180,
     verbose = FALSE
   )
-  
+
   result |>
     mutate(
       cohortId = cohortId,
@@ -301,17 +300,17 @@ giEventFilters <- list(
   list(
     name = "GI Procedures",
     domain = "Procedure",
-    conceptIds = c(4301351, 4142875, 4143316)  # Endoscopy procedures
+    conceptIds = c(4301351, 4142875, 4143316) # Endoscopy procedures
   ),
   list(
-    name = "GI Medications", 
+    name = "GI Medications",
     domain = "Drug",
-    conceptIds = c(923645, 19059410, 40165636)  # PPIs, H2 blockers
+    conceptIds = c(923645, 19059410, 40165636) # PPIs, H2 blockers
   ),
   list(
     name = "GI Labs",
     domain = "Measurement",
-    conceptIds = c(3016723, 3013721)  # Hemoglobin, hematocrit
+    conceptIds = c(3016723, 3013721) # Hemoglobin, hematocrit
   )
 )
 
@@ -344,29 +343,29 @@ print(giSpecificCosts$diagnostics)
 ```{r validate-data}
 # Verify cost data completeness
 costCompleteness <- DatabaseConnector::querySql(connection, "
-  SELECT 
+  SELECT
     'Total Records' AS metric,
     COUNT(*) AS value
   FROM main.cost
   UNION ALL
-  SELECT 
+  SELECT
     'Records with NULL cost',
     COUNT(*)
   FROM main.cost
   WHERE cost IS NULL
   UNION ALL
-  SELECT 
+  SELECT
     'Records with zero cost',
     COUNT(*)
   FROM main.cost
   WHERE cost = 0
   UNION ALL
-  SELECT 
+  SELECT
     'Unique persons with costs',
     COUNT(DISTINCT person_id)
   FROM main.cost
   UNION ALL
-  SELECT 
+  SELECT
     'Unique cost events',
     COUNT(DISTINCT cost_event_id || '-' || cost_domain_id)
   FROM main.cost
@@ -378,7 +377,7 @@ print(costCompleteness)
 
 # Check temporal coverage
 temporalCoverage <- DatabaseConnector::querySql(connection, "
-  SELECT 
+  SELECT
     MIN(incurred_date) AS earliest_cost,
     MAX(incurred_date) AS latest_cost,
     COUNT(DISTINCT DATE(incurred_date, 'start of month')) AS n_months
@@ -396,14 +395,14 @@ print(temporalCoverage)
 ```{r verify-patterns}
 # Check cost patterns by visit type
 visitCostPatterns <- DatabaseConnector::querySql(connection, "
-  SELECT 
+  SELECT
     v.visit_concept_id,
     vc.concept_name AS visit_type,
     COUNT(DISTINCT v.visit_occurrence_id) AS n_visits,
     AVG(c.cost) AS avg_cost,
     STDDEV(c.cost) AS std_cost
   FROM main.visit_occurrence v
-  JOIN main.cost c ON v.visit_occurrence_id = c.cost_event_id 
+  JOIN main.cost c ON v.visit_occurrence_id = c.cost_event_id
     AND c.cost_domain_id = 'Visit'
   LEFT JOIN main.concept vc ON v.visit_concept_id = vc.concept_id
   WHERE c.cost_concept_id = 31978  -- Total charge
@@ -418,20 +417,20 @@ print(visitCostPatterns)
 
 # Verify payer coverage patterns
 payerCoverage <- DatabaseConnector::querySql(connection, "
-  SELECT 
+  SELECT
     plan_source_value,
     AVG(paid_ratio) AS avg_coverage_ratio,
     MIN(paid_ratio) AS min_coverage_ratio,
     MAX(paid_ratio) AS max_coverage_ratio
   FROM (
-    SELECT 
+    SELECT
       ppp.plan_source_value,
       c.cost_event_id,
       MAX(CASE WHEN c.cost_concept_id = 31980 THEN c.cost ELSE 0 END) AS total_cost,
       MAX(CASE WHEN c.cost_concept_id = 31981 THEN c.cost ELSE 0 END) AS paid_by_payer,
-      CASE 
+      CASE
         WHEN MAX(CASE WHEN c.cost_concept_id = 31980 THEN c.cost ELSE 0 END) > 0
-        THEN MAX(CASE WHEN c.cost_concept_id = 31981 THEN c.cost ELSE 0 END) / 
+        THEN MAX(CASE WHEN c.cost_concept_id = 31981 THEN c.cost ELSE 0 END) /
              MAX(CASE WHEN c.cost_concept_id = 31980 THEN c.cost ELSE 0 END)
         ELSE 0
       END AS paid_ratio
@@ -489,7 +488,7 @@ Use Eunomia to test edge cases:
 # Test with empty cohort
 DatabaseConnector::executeSql(connection, "
   CREATE TABLE main.empty_cohort AS
-  SELECT 
+  SELECT
     1 AS cohort_definition_id,
     person_id AS subject_id,
     '2025-01-01' AS cohort_start_date,
@@ -499,19 +498,22 @@ DatabaseConnector::executeSql(connection, "
 ")
 
 # This should handle gracefully
-emptyCohortResult <- tryCatch({
-  calculateCostOfCare(
-    connection = connection,
-    cdmDatabaseSchema = "main",
-    cohortDatabaseSchema = "main",
-    cohortTable = "empty_cohort",
-    cohortId = 1,
-    verbose = FALSE
-  )
-}, error = function(e) {
-  cli::cli_alert_warning("Empty cohort handled: {e$message}")
-  NULL
-})
+emptyCohortResult <- tryCatch(
+  {
+    calculateCostOfCare(
+      connection = connection,
+      cdmDatabaseSchema = "main",
+      cohortDatabaseSchema = "main",
+      cohortTable = "empty_cohort",
+      cohortId = 1,
+      verbose = FALSE
+    )
+  },
+  error = function(e) {
+    cli::cli_alert_warning("Empty cohort handled: {e$message}")
+    NULL
+  }
+)
 ```
 
 ## Clean Up

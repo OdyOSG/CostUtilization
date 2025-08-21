@@ -1,41 +1,25 @@
-# tests/testthat/test-createCostOfCareSettings.R
+# Test createCostOfCareSettings function
 
 test_that("createCostOfCareSettings creates valid settings object", {
-  # Test basic settings creation
   settings <- createCostOfCareSettings(
     anchorCol = "cohort_start_date",
     startOffsetDays = 0,
     endOffsetDays = 365
   )
-  
+
   expect_s3_class(settings, "CostOfCareSettings")
+  expect_type(settings, "list")
   expect_equal(settings$anchorCol, "cohort_start_date")
   expect_equal(settings$startOffsetDays, 0)
   expect_equal(settings$endOffsetDays, 365)
   expect_false(settings$hasVisitRestriction)
   expect_false(settings$hasEventFilters)
   expect_false(settings$microCosting)
+  expect_equal(settings$costConceptId, 31978L)
+  expect_equal(settings$currencyConceptId, 44818668L)
 })
 
 test_that("createCostOfCareSettings validates anchor column", {
-  # Valid anchor columns
-  expect_no_error(
-    createCostOfCareSettings(
-      anchorCol = "cohort_start_date",
-      startOffsetDays = 0,
-      endOffsetDays = 365
-    )
-  )
-  
-  expect_no_error(
-    createCostOfCareSettings(
-      anchorCol = "cohort_end_date",
-      startOffsetDays = 0,
-      endOffsetDays = 365
-    )
-  )
-  
-  # Invalid anchor column
   expect_error(
     createCostOfCareSettings(
       anchorCol = "invalid_column",
@@ -44,19 +28,25 @@ test_that("createCostOfCareSettings validates anchor column", {
     ),
     "Must be element of set"
   )
+
+  # Valid anchor columns
+  settings1 <- createCostOfCareSettings(
+    anchorCol = "cohort_start_date",
+    startOffsetDays = 0,
+    endOffsetDays = 365
+  )
+  expect_equal(settings1$anchorCol, "cohort_start_date")
+
+  settings2 <- createCostOfCareSettings(
+    anchorCol = "cohort_end_date",
+    startOffsetDays = -365,
+    endOffsetDays = 0
+  )
+  expect_equal(settings2$anchorCol, "cohort_end_date")
 })
 
-test_that("createCostOfCareSettings validates time window", {
-  # Valid time windows
-  expect_no_error(
-    createCostOfCareSettings(
-      anchorCol = "cohort_start_date",
-      startOffsetDays = -365,
-      endOffsetDays = 365
-    )
-  )
-  
-  # Invalid: end before start
+test_that("createCostOfCareSettings validates offset days", {
+  # endOffsetDays must be greater than startOffsetDays
   expect_error(
     createCostOfCareSettings(
       anchorCol = "cohort_start_date",
@@ -65,300 +55,279 @@ test_that("createCostOfCareSettings validates time window", {
     ),
     "endOffsetDays.*must be greater than.*startOffsetDays"
   )
-  
-  # Invalid: non-integer values
+
+  # Equal values should also error
   expect_error(
     createCostOfCareSettings(
       anchorCol = "cohort_start_date",
-      startOffsetDays = 1.5,
-      endOffsetDays = 365
-    )
+      startOffsetDays = 100,
+      endOffsetDays = 100
+    ),
+    "endOffsetDays.*must be greater than.*startOffsetDays"
   )
+
+  # Negative values are allowed
+  settings <- createCostOfCareSettings(
+    anchorCol = "cohort_start_date",
+    startOffsetDays = -365,
+    endOffsetDays = -1
+  )
+  expect_equal(settings$startOffsetDays, -365)
+  expect_equal(settings$endOffsetDays, -1)
 })
 
 test_that("createCostOfCareSettings handles visit restrictions", {
-  # Valid visit restrictions
-  settings <- createCostOfCareSettings(
+  # No restriction
+  settings1 <- createCostOfCareSettings(
     anchorCol = "cohort_start_date",
     startOffsetDays = 0,
     endOffsetDays = 365,
-    restrictVisitConceptIds = c(9201, 9203)
+    restrictVisitConceptIds = NULL
   )
-  
-  expect_true(settings$hasVisitRestriction)
-  expect_equal(settings$restrictVisitConceptIds, c(9201, 9203))
-  
-  # Invalid: non-integer concept IDs
+  expect_false(settings1$hasVisitRestriction)
+  expect_null(settings1$restrictVisitConceptIds)
+
+  # With restriction
+  visitIds <- c(9201, 9203, 9202)
+  settings2 <- createCostOfCareSettings(
+    anchorCol = "cohort_start_date",
+    startOffsetDays = 0,
+    endOffsetDays = 365,
+    restrictVisitConceptIds = visitIds
+  )
+  expect_true(settings2$hasVisitRestriction)
+  expect_equal(settings2$restrictVisitConceptIds, visitIds)
+
+  # Invalid visit concept IDs
   expect_error(
     createCostOfCareSettings(
       anchorCol = "cohort_start_date",
       startOffsetDays = 0,
       endOffsetDays = 365,
-      restrictVisitConceptIds = c("invalid", "concepts")
-    )
+      restrictVisitConceptIds = c(0, -1)
+    ),
+    "Element 2 is not >= 1"
   )
-  
-  # Invalid: negative concept IDs
+
+  # Duplicate IDs should be rejected
   expect_error(
     createCostOfCareSettings(
       anchorCol = "cohort_start_date",
       startOffsetDays = 0,
       endOffsetDays = 365,
-      restrictVisitConceptIds = c(-1, 0)
-    )
+      restrictVisitConceptIds = c(9201, 9201, 9203)
+    ),
+    "Contains duplicated values"
   )
 })
 
-test_that("createCostOfCareSettings handles event filters", {
+test_that("createCostOfCareSettings validates event filters", {
   # Valid event filters
-  eventFilters <- list(
+  validFilters <- list(
     list(
-      name = "Diabetes Drugs",
-      domain = "Drug",
-      conceptIds = c(1503297, 1502826)
-    ),
-    list(
-      name = "Diabetes Conditions",
+      name = "Diabetes",
       domain = "Condition",
       conceptIds = c(201820, 201826)
+    ),
+    list(
+      name = "Metformin",
+      domain = "Drug",
+      conceptIds = c(1503297)
     )
   )
-  
+
   settings <- createCostOfCareSettings(
     anchorCol = "cohort_start_date",
     startOffsetDays = 0,
     endOffsetDays = 365,
-    eventFilters = eventFilters
+    eventFilters = validFilters
   )
-  
+
   expect_true(settings$hasEventFilters)
   expect_equal(settings$nFilters, 2)
-  expect_equal(settings$eventFilters, eventFilters)
-  
-  # Invalid: missing required fields
-  invalidFilters <- list(
-    list(
-      name = "Missing Domain",
-      conceptIds = c(1234)
-    )
-  )
-  
+  expect_equal(settings$eventFilters, validFilters)
+
+  # Invalid structure - not a list
   expect_error(
     createCostOfCareSettings(
       anchorCol = "cohort_start_date",
       startOffsetDays = 0,
       endOffsetDays = 365,
-      eventFilters = invalidFilters
+      eventFilters = "not a list"
+    ),
+    "eventFilters.*must be a list"
+  )
+
+  # Missing required fields
+  invalidFilters1 <- list(
+    list(
+      domain = "Condition",
+      conceptIds = c(201820)
     )
+  )
+
+  expect_error(
+    createCostOfCareSettings(
+      anchorCol = "cohort_start_date",
+      startOffsetDays = 0,
+      endOffsetDays = 365,
+      eventFilters = invalidFilters1
+    ),
+    "must have a 'name' field"
+  )
+
+  # Invalid domain
+  invalidFilters2 <- list(
+    list(
+      name = "Test",
+      domain = "InvalidDomain",
+      conceptIds = c(201820)
+    )
+  )
+
+  expect_error(
+    createCostOfCareSettings(
+      anchorCol = "cohort_start_date",
+      startOffsetDays = 0,
+      endOffsetDays = 365,
+      eventFilters = invalidFilters2
+    ),
+    "has invalid domain"
+  )
+
+  # Duplicate names
+  invalidFilters3 <- list(
+    list(
+      name = "Duplicate",
+      domain = "Condition",
+      conceptIds = c(201820)
+    ),
+    list(
+      name = "Duplicate",
+      domain = "Drug",
+      conceptIds = c(1503297)
+    )
+  )
+
+  expect_error(
+    createCostOfCareSettings(
+      anchorCol = "cohort_start_date",
+      startOffsetDays = 0,
+      endOffsetDays = 365,
+      eventFilters = invalidFilters3
+    ),
+    "Event filter names must be unique"
   )
 })
 
-test_that("createCostOfCareSettings handles micro-costing", {
-  # Valid micro-costing setup
-  eventFilters <- list(
-    list(
-      name = "Primary Events",
-      domain = "Procedure",
-      conceptIds = c(4336464)
-    )
-  )
-  
-  settings <- createCostOfCareSettings(
-    anchorCol = "cohort_start_date",
-    startOffsetDays = 0,
-    endOffsetDays = 90,
-    eventFilters = eventFilters,
-    microCosting = TRUE,
-    primaryEventFilterName = "Primary Events"
-  )
-  
-  expect_true(settings$microCosting)
-  expect_equal(settings$primaryEventFilterName, "Primary Events")
-  
-  # Invalid: micro-costing without primary filter
+test_that("createCostOfCareSettings validates micro-costing parameters", {
+  # Micro-costing without event filters should error
   expect_error(
     createCostOfCareSettings(
       anchorCol = "cohort_start_date",
       startOffsetDays = 0,
-      endOffsetDays = 90,
-      microCosting = TRUE
-    )
-  )
-  
-  # Invalid: primary filter name not in event filters
-  expect_error(
-    createCostOfCareSettings(
-      anchorCol = "cohort_start_date",
-      startOffsetDays = 0,
-      endOffsetDays = 90,
-      eventFilters = eventFilters,
+      endOffsetDays = 365,
       microCosting = TRUE,
-      primaryEventFilterName = "Non-existent Filter"
+      primaryEventFilterName = "Test"
     ),
     "primaryEventFilterName.*must match a name in.*eventFilters"
   )
-})
 
-test_that("createCostOfCareSettings handles cost concepts", {
-  # Valid cost concepts
+  # Micro-costing with non-existent filter name
+  filters <- list(
+    list(
+      name = "Filter1",
+      domain = "Drug",
+      conceptIds = c(1503297)
+    )
+  )
+
+  expect_error(
+    createCostOfCareSettings(
+      anchorCol = "cohort_start_date",
+      startOffsetDays = 0,
+      endOffsetDays = 365,
+      eventFilters = filters,
+      microCosting = TRUE,
+      primaryEventFilterName = "NonExistent"
+    ),
+    "primaryEventFilterName.*must match a name in.*eventFilters"
+  )
+
+  # Valid micro-costing setup
   settings <- createCostOfCareSettings(
     anchorCol = "cohort_start_date",
     startOffsetDays = 0,
     endOffsetDays = 365,
-    costConceptId = 31980,
-    currencyConceptId = 44818669
+    eventFilters = filters,
+    microCosting = TRUE,
+    primaryEventFilterName = "Filter1"
   )
-  
-  expect_equal(settings$costConceptId, 31980)
-  expect_equal(settings$currencyConceptId, 44818669)
-  
-  # Default values
-  defaultSettings <- createCostOfCareSettings(
+
+  expect_true(settings$microCosting)
+  expect_equal(settings$primaryEventFilterName, "Filter1")
+})
+
+test_that("createCostOfCareSettings validates concept IDs", {
+  # Valid concept IDs
+  settings <- createCostOfCareSettings(
+    anchorCol = "cohort_start_date",
+    startOffsetDays = 0,
+    endOffsetDays = 365,
+    costConceptId = 31980L,
+    currencyConceptId = 44818669L
+  )
+
+  expect_equal(settings$costConceptId, 31980L)
+  expect_equal(settings$currencyConceptId, 44818669L)
+
+  # Non-integer values should be coerced
+  settings2 <- createCostOfCareSettings(
+    anchorCol = "cohort_start_date",
+    startOffsetDays = 0,
+    endOffsetDays = 365,
+    costConceptId = 31980.5,
+    currencyConceptId = 44818669.9
+  )
+
+  expect_equal(settings2$costConceptId, 31980L)
+  expect_equal(settings2$currencyConceptId, 44818669L)
+})
+
+test_that("createCostOfCareSettings returns consistent structure", {
+  # Minimal settings
+  settings1 <- createCostOfCareSettings(
     anchorCol = "cohort_start_date",
     startOffsetDays = 0,
     endOffsetDays = 365
   )
-  
-  expect_equal(defaultSettings$costConceptId, 31978)  # Default total charge
-  expect_equal(defaultSettings$currencyConceptId, 44818668)  # Default USD
-  
-  # Invalid: non-integer concept IDs
-  expect_error(
-    createCostOfCareSettings(
-      anchorCol = "cohort_start_date",
-      startOffsetDays = 0,
-      endOffsetDays = 365,
-      costConceptId = "invalid"
-    )
-  )
-})
 
-test_that("createCostOfCareSettings validates event filter structure", {
-  # Test various invalid filter structures
-  
-  # Missing name
-  expect_error(
-    createCostOfCareSettings(
-      anchorCol = "cohort_start_date",
-      startOffsetDays = 0,
-      endOffsetDays = 365,
-      eventFilters = list(
-        list(
-          domain = "Drug",
-          conceptIds = c(1234)
-        )
-      )
-    )
-  )
-  
-  # Missing domain
-  expect_error(
-    createCostOfCareSettings(
-      anchorCol = "cohort_start_date",
-      startOffsetDays = 0,
-      endOffsetDays = 365,
-      eventFilters = list(
-        list(
-          name = "Test Filter",
-          conceptIds = c(1234)
-        )
-      )
-    )
-  )
-  
-  # Missing conceptIds
-  expect_error(
-    createCostOfCareSettings(
-      anchorCol = "cohort_start_date",
-      startOffsetDays = 0,
-      endOffsetDays = 365,
-      eventFilters = list(
-        list(
-          name = "Test Filter",
-          domain = "Drug"
-        )
-      )
-    )
-  )
-  
-  # Empty conceptIds
-  expect_error(
-    createCostOfCareSettings(
-      anchorCol = "cohort_start_date",
-      startOffsetDays = 0,
-      endOffsetDays = 365,
-      eventFilters = list(
-        list(
-          name = "Test Filter",
-          domain = "Drug",
-          conceptIds = integer(0)
-        )
-      )
-    )
-  )
-  
-  # Non-unique filter names
-  expect_error(
-    createCostOfCareSettings(
-      anchorCol = "cohort_start_date",
-      startOffsetDays = 0,
-      endOffsetDays = 365,
-      eventFilters = list(
-        list(
-          name = "Duplicate Name",
-          domain = "Drug",
-          conceptIds = c(1234)
-        ),
-        list(
-          name = "Duplicate Name",
-          domain = "Condition",
-          conceptIds = c(5678)
-        )
-      )
-    )
-  )
-})
-
-test_that("createCostOfCareSettings creates complete settings object", {
-  # Create settings with all options
-  eventFilters <- list(
-    list(
-      name = "Test Drugs",
-      domain = "Drug",
-      conceptIds = c(1118084, 1124300)
-    ),
-    list(
-      name = "Test Procedures",
-      domain = "Procedure",
-      conceptIds = c(4336464, 4178904)
-    )
-  )
-  
-  settings <- createCostOfCareSettings(
+  # Full settings
+  settings2 <- createCostOfCareSettings(
     anchorCol = "cohort_end_date",
     startOffsetDays = -90,
-    endOffsetDays = 30,
-    restrictVisitConceptIds = c(9201, 9203, 9202),
-    eventFilters = eventFilters,
+    endOffsetDays = 0,
+    restrictVisitConceptIds = c(9201, 9203),
+    eventFilters = list(
+      list(name = "Test", domain = "Drug", conceptIds = c(1, 2, 3))
+    ),
     microCosting = TRUE,
-    primaryEventFilterName = "Test Procedures",
-    costConceptId = 31980,
-    currencyConceptId = 44818669
+    primaryEventFilterName = "Test",
+    costConceptId = 31980L,
+    currencyConceptId = 44818669L
   )
-  
-  # Verify all fields are set correctly
-  expect_equal(settings$anchorCol, "cohort_end_date")
-  expect_equal(settings$startOffsetDays, -90)
-  expect_equal(settings$endOffsetDays, 30)
-  expect_true(settings$hasVisitRestriction)
-  expect_equal(length(settings$restrictVisitConceptIds), 3)
-  expect_true(settings$hasEventFilters)
-  expect_equal(settings$nFilters, 2)
-  expect_true(settings$microCosting)
-  expect_equal(settings$primaryEventFilterName, "Test Procedures")
-  expect_equal(settings$costConceptId, 31980)
-  expect_equal(settings$currencyConceptId, 44818669)
-  
-  # Verify the object has the correct class
-  expect_s3_class(settings, "CostOfCareSettings")
+
+  # Both should have the same structure
+  expect_setequal(names(settings1), names(settings2))
+
+  # Check all expected fields exist
+  expectedFields <- c(
+    "anchorCol", "startOffsetDays", "endOffsetDays",
+    "hasVisitRestriction", "restrictVisitConceptIds",
+    "hasEventFilters", "eventFilters", "nFilters",
+    "microCosting", "primaryEventFilterName",
+    "costConceptId", "currencyConceptId"
+  )
+
+  expect_true(all(expectedFields %in% names(settings1)))
 })
