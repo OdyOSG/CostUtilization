@@ -56,6 +56,17 @@ executeSqlPlan <- function(
 prepareSqlRenderParams <- function(params, tempEmulationSchema) {
   sqlParams <- list()
   
+  # --- Validate required parameters ---
+  requiredParams <- c("cdmDatabaseSchema", "cohortDatabaseSchema", "cohortTable", "cohortId")
+  for (param in requiredParams) {
+    if (is.null(params[[param]]) || params[[param]] == "") {
+      cli::cli_abort(c(
+        "Required parameter '{param}' is missing or empty.",
+        "i" = "Please provide a valid value for '{param}'."
+      ))
+    }
+  }
+  
   # --- Direct mapping from R camelCase to SQL snake_case ---
   sqlParams$cdm_database_schema <- params$cdmDatabaseSchema
   sqlParams$cohort_database_schema <- params$cohortDatabaseSchema
@@ -64,15 +75,38 @@ prepareSqlRenderParams <- function(params, tempEmulationSchema) {
   sqlParams$anchor_col <- params$anchorCol
   sqlParams$time_a <- params$startOffsetDays
   sqlParams$time_b <- params$endOffsetDays
-  sqlParams$cost_concept_id <- params$costConceptId
-  sqlParams$currency_concept_id <- params$currencyConceptId
   sqlParams$n_filters <- params$nFilters
   
+  # --- Cost-related parameters with defaults ---
+  sqlParams$cost_concept_id <- if (!is.null(params$costConceptId) && params$costConceptId != "") {
+    params$costConceptId
+  } else {
+    31978  # Default: Total paid
+  }
+  
+  sqlParams$currency_concept_id <- if (!is.null(params$currencyConceptId) && params$currencyConceptId != "") {
+    params$currencyConceptId
+  } else {
+    44818668  # Default: US Dollar
+  }
+  
+  sqlParams$cost_domain_id <- if (!is.null(params$costDomainId) && params$costDomainId != "") {
+    params$costDomainId
+  } else {
+    NULL  # No default domain restriction
+  }
+  
+  sqlParams$cost_event_field_concept_id <- if (!is.null(params$costEventFieldConceptId) && params$costEventFieldConceptId != "") {
+    params$costEventFieldConceptId
+  } else {
+    1147332  # Default: cost_event_id
+  }
+  
   # --- Boolean flags for conditional SQL ---
-  sqlParams$has_visit_restriction <- params$hasVisitRestriction
-  sqlParams$has_event_filters <- params$hasEventFilters
-  sqlParams$micro_costing <- params$microCosting
-  sqlParams$cpi_adjustment <- params$cpiAdjustment
+  sqlParams$has_visit_restriction <- isTRUE(params$hasVisitRestriction)
+  sqlParams$has_event_filters <- isTRUE(params$hasEventFilters)
+  sqlParams$micro_costing <- isTRUE(params$microCosting)
+  sqlParams$cpi_adjustment <- isTRUE(params$cpiAdjustment)
   
   # --- Derived parameters ---
   if (isTRUE(params$microCosting) && !is.null(params$primaryEventFilterName)) {
