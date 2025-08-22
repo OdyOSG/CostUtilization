@@ -245,8 +245,7 @@ CREATE TABLE #costs_raw (
   adjusted_cost       DECIMAL(19,4) NULL,
   cost_date           DATE   NULL,
   currency_concept_id INT    NULL,
-  cost_concept_id     INT    NULL,
-  cost_type_concept_id INT   NULL
+  cost_concept_id     INT    NULL
 );
 
 INSERT INTO #costs_raw
@@ -258,8 +257,7 @@ SELECT
   {@cpi_adjustment} ? { c.cost * COALESCE(cpi.adj_factor, 1.0) } : { c.cost } AS adjusted_cost,
   COALESCE(c.incurred_date, c.paid_date, c.billed_date, c.effective_date) AS cost_date,
   c.currency_concept_id,
-  c.cost_concept_id,
-  c.cost_type_concept_id
+  c.cost_concept_id
 FROM @cdm_database_schema.cost c
 {@cpi_adjustment} ? {
   LEFT JOIN @cpi_adj_table cpi
@@ -267,7 +265,6 @@ FROM @cdm_database_schema.cost c
 }
 WHERE (@cost_concept_id       IS NULL OR c.cost_concept_id      = @cost_concept_id)
   AND (@currency_concept_id   IS NULL OR c.currency_concept_id  = @currency_concept_id)
-  AND (@cost_type_concept_id  IS NULL OR c.cost_type_concept_id = @cost_type_concept_id)
   AND c.cost IS NOT NULL;
 
 -- 3.2) Aggregate to visit or visit-detail level
@@ -382,8 +379,7 @@ CREATE TABLE @results_table (
   distinct_events          BIGINT,
   cost_pppm                DECIMAL(19,4),
   adjusted_cost_pppm       DECIMAL(19,4),
-  events_per_1000_py       DECIMAL(19,4),
-  calculation_date         DATETIME
+  events_per_1000_py       DECIMAL(19,4)
 );
 
 INSERT INTO @results_table
@@ -428,11 +424,4 @@ DROP TABLE IF EXISTS #numerators;
 INSERT INTO @diag_table (step_name, n_persons, n_events)
 VALUES ('99_completed', NULL, NULL);
 
-/* ============================================================================
-   OPTIONAL INDEX HINTS (uncomment as needed)
-   ============================================================================
--- CREATE INDEX IX_aw_person ON #analysis_window_clean(person_id, start_date, end_date);
--- CREATE INDEX IX_visits    ON #visits_in_window(person_id, visit_occurrence_id);
--- CREATE INDEX IX_costs_v   ON #costs_raw(person_id, visit_occurrence_id);
--- CREATE INDEX IX_costs_d   ON #costs_raw(person_id, visit_detail_id);
-*/
+

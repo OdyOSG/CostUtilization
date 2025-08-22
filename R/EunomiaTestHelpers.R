@@ -572,8 +572,6 @@ FROM final_rows;'))
 #' @param connectionDetails DatabaseConnector connectionDetails. Defaults to Eunomia details.
 #' @param cdmDatabaseSchema OMOP CDM schema/database. Default: "main".
 #' @param sourceCostTable Name of the (wide) COST table to transform. Default: "cost".
-#' @param createIndexes Logical; create helpful indexes on the new COST table. Default: TRUE.
-#'
 #' @return Returns the open DatabaseConnector `connection` (invisibly).
 #'
 #' @examples
@@ -584,8 +582,7 @@ FROM final_rows;'))
 transformCostToCdmV5dot5 <- function(
     connectionDetails = Eunomia::getEunomiaConnectionDetails(),
     cdmDatabaseSchema = "main",
-    sourceCostTable = "cost",
-    createIndexes = TRUE) {
+    sourceCostTable = "cost") {
   connection <- DatabaseConnector::connect(connectionDetails)
   connection <- injectCostData(connection)
   connection <- injectVisitDetailsData(connection)
@@ -856,42 +853,6 @@ transformCostToCdmV5dot5 <- function(
 
   # Clean up temporary table
   DatabaseConnector::executeSql(connection, "DROP TABLE IF EXISTS event_to_visit_map;")
-
-  # --- Create indexes ---
-  if (createIndexes) {
-    cli::cli_alert_info("- Step 4: Creating indexes on the new cost table.")
-
-    indexStatements <- c(
-      # Single-column indexes
-      "CREATE INDEX idx_cost_person_id ON {cdmDatabaseSchema}.{sourceCostTable} (person_id);",
-      "CREATE INDEX idx_cost_visit_occurrence_id ON {cdmDatabaseSchema}.{sourceCostTable} (visit_occurrence_id);",
-      "CREATE INDEX idx_cost_visit_detail_id ON {cdmDatabaseSchema}.{sourceCostTable} (visit_detail_id);",
-      "CREATE INDEX idx_cost_payer_plan_period_id ON {cdmDatabaseSchema}.{sourceCostTable} (payer_plan_period_id);",
-      "CREATE INDEX idx_cost_effective_date ON {cdmDatabaseSchema}.{sourceCostTable} (effective_date);",
-      "CREATE INDEX idx_cost_incurred_date ON {cdmDatabaseSchema}.{sourceCostTable} (incurred_date);",
-      "CREATE INDEX idx_cost_billed_date ON {cdmDatabaseSchema}.{sourceCostTable} (billed_date);",
-      "CREATE INDEX idx_cost_paid_date ON {cdmDatabaseSchema}.{sourceCostTable} (paid_date);",
-      "CREATE INDEX idx_cost_cost_concept_id ON {cdmDatabaseSchema}.{sourceCostTable} (cost_concept_id);",
-      "CREATE INDEX idx_cost_cost_type_concept_id ON {cdmDatabaseSchema}.{sourceCostTable} (cost_type_concept_id);",
-      "CREATE INDEX idx_cost_event_field_concept_id ON {cdmDatabaseSchema}.{sourceCostTable} (cost_event_field_concept_id);",
-      "CREATE INDEX idx_cost_currency_concept_id ON {cdmDatabaseSchema}.{sourceCostTable} (currency_concept_id);",
-
-      # Helpful composite indexes
-      "CREATE INDEX idx_cost_person_date ON {cdmDatabaseSchema}.{sourceCostTable} (person_id, effective_date);",
-      "CREATE INDEX idx_cost_visit_concept ON {cdmDatabaseSchema}.{sourceCostTable} (visit_occurrence_id, cost_concept_id);"
-    )
-
-    for (idx in indexStatements) {
-      tryCatch(
-        {
-          DatabaseConnector::executeSql(connection, glue::glue(idx))
-        },
-        error = function(e) {
-          warning(glue::glue("Failed to create index:\n{idx}\nReason: {conditionMessage(e)}"))
-        }
-      )
-    }
-  }
 
   cli::cli_alert_info(glue::glue("Successfully transformed '{sourceCostTable}' table to CDM v5.5 long format and created indexes (where possible)."))
 

@@ -2,13 +2,54 @@
 % Please edit documentation in R/EunomiaTestHelpers.R
 \name{injectCostData}
 \alias{injectCostData}
-\title{Inject Synthetic Payer Plan and Wide-Format Cost Data into an OMOP CDM (Eunomia) Instance}
+\title{Inject Synthetic Payer Plan and Wide-Format Cost Data (Eunomia / OMOP CDM)}
 \usage{
 injectCostData(connection, seed = 123, cdmDatabaseSchema = "main")
 }
+\arguments{
+\item{connection}{A live DatabaseConnector connection.}
+
+\item{seed}{Integer seed for reproducible randomization. Default: 123.}
+
+\item{cdmDatabaseSchema}{Schema (or database) name containing OMOP CDM tables. Default: "main".}
+}
 \value{
-Invisibly returns \code{TRUE} upon successful database insertion. Called for its side effect.
+Returns the \code{connection}. Called primarily for its side effects (table inserts).
 }
 \description{
-Inject Synthetic Payer Plan and Wide-Format Cost Data into an OMOP CDM (Eunomia) Instance
+Generates synthetic payer plans (\code{payer_plan_period}) and a \strong{wide-format} \code{cost}
+table intended to simulate legacy v5.3/v5.4 inputs. This is useful for local testing
+of downstream ETL that converts wide cost records to normalized long format (v5.5).
+}
+\details{
+Workflow:
+\enumerate{
+\item Pulls \code{person_id} with observation-period bounds and derives \code{start_year}/\code{end_year}.
+\item Simulates \strong{plan changes on January 1} with a bias toward continuous enrollment.
+\item Joins synthetic payer-plan segments to clinical \strong{event dates} (Procedure, Measurement,
+Visit, Device, Drug, Observation, Condition) to assign \code{payer_plan_period_id}.
+\item Creates a \strong{wide-format} \code{cost} table with numeric components (e.g., \code{total_charge},
+\code{paid_by_payer}, etc.) to emulate pre-5.5 sources (no normalized \code{cost_concept_id} rows).
+}
+
+Assumptions:
+\itemize{
+\item Currency concept is set to \strong{USD (44818668)} for all rows.
+\item \code{cost_type_concept_id} uses \strong{5032 (Administrative record)} for all rows.
+\item Synthetic pricing is random but seeded; set \code{seed} for reproducibility.
+\item This function \strong{overwrites} \code{payer_plan_period} and \code{cost} in the schema via
+\code{DatabaseConnector::insertTable(..., dropTableIfExists = TRUE)}.
+}
+
+Compatibility:
+\itemize{
+\item Designed for \strong{Eunomia} (SQLite), but relies only on \code{insertTable()} and simple SQL selects.
+\item No temp-table or vendor-specific SQL is used here.
+}
+}
+\examples{
+\dontrun{
+conn <- DatabaseConnector::connect(Eunomia::getEunomiaConnectionDetails())
+injectCostData(conn)
+}
 }

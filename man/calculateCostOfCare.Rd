@@ -17,31 +17,30 @@ calculateCostOfCare(
 )
 }
 \arguments{
-\item{connection}{A \code{DatabaseConnector} connection object.}
+\item{connection}{A live \code{DatabaseConnector} connection object.}
 
-\item{cdmDatabaseSchema}{Schema name for CDM tables.}
+\item{connectionDetails}{Optional \code{ConnectionDetails} to create a connection
+if \code{connection} is not supplied (provide exactly one of the two).}
 
-\item{cohortDatabaseSchema}{Schema name for the cohort table.}
+\item{cdmDatabaseSchema}{Schema (or database) that contains CDM tables.}
+
+\item{cohortDatabaseSchema}{Schema (or database) that contains the cohort table.}
 
 \item{cohortTable}{Name of the cohort table.}
 
-\item{cohortId}{The cohort definition ID to analyze.}
+\item{cohortId}{Numeric cohort definition id to analyze.}
 
-\item{costOfCareSettings}{A settings object created by \code{createCostOfCareSettings()}.}
+\item{costOfCareSettings}{A settings object from \code{createCostOfCareSettings()}.}
 
-\item{tempEmulationSchema}{Schema for temporary tables (if needed).}
+\item{tempEmulationSchema}{Optional schema for temp table emulation (Oracle/Redshift/…).}
 
-\item{verbose}{Print progress messages.}
-
-\item{resultsDatabaseSchema}{Schema where result tables will be created.}
-
-\item{resultsTableName}{Name of the main results table.}
-
-\item{diagnosticsTableName}{Name of the diagnostics table.}
+\item{verbose}{Logical; print progress messages.}
 }
 \value{
-A list containing two tibbles: \code{results} and \code{diagnostics}.
+A list with two tibbles: \code{results} and \code{diagnostics}.
 }
 \description{
-Performs cost-of-care analysis for a specified cohort.
+Runs the cost-of-care analysis for a specified cohort using a validated
+\code{CostOfCareSettings} object. Creates temp helper tables as needed
+(visit restrictions, event filters, CPI) and executes the SQL plan.
 }

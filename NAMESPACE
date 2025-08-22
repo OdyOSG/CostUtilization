@@ -3,6 +3,5 @@
 S3method(print,CostOfCareSettings)
 export(calculateCostOfCare)
 export(createCostOfCareSettings)
-export(transformCostToCdmV5dot5)
 import(dplyr)
 import(rlang)

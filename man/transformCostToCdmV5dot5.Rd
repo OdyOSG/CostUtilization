@@ -2,43 +2,53 @@
 % Please edit documentation in R/EunomiaTestHelpers.R
 \name{transformCostToCdmV5dot5}
 \alias{transformCostToCdmV5dot5}
-\title{Transform Wide-Format Cost Table to OMOP CDM v5.5 Long Format}
+\title{Transform Wide-Format COST to CDM v5.5 Long (Normalized) Structure}
 \usage{
 transformCostToCdmV5dot5(
-  connectionDetails,
+  connectionDetails = Eunomia::getEunomiaConnectionDetails(),
   cdmDatabaseSchema = "main",
-  sourceCostTable = "cost",
-  createIndexes = TRUE
+  sourceCostTable = "cost"
 )
 }
 \arguments{
-\item{connectionDetails}{An object of class \code{connectionDetails} as created by the DatabaseConnector package.}
+\item{connectionDetails}{DatabaseConnector connectionDetails. Defaults to Eunomia details.}
 
-\item{cdmDatabaseSchema}{Name of the database schema containing the OMOP CDM instance. Defaults to \code{"main"}.}
+\item{cdmDatabaseSchema}{OMOP CDM schema/database. Default: "main".}
 
-\item{sourceCostTable}{Name of the wide-format cost table to transform. Defaults to \code{"cost"}.}
+\item{sourceCostTable}{Name of the (wide) COST table to transform. Default: "cost".}
 }
 \value{
-Invisibly returns the database connection after successful execution.
+Returns the open DatabaseConnector \code{connection} (invisibly).
 }
 \description{
-Transforms a wide-format \code{cost} table (common in OMOP CDM v5.3 and earlier) into the standard long format required in CDM v5.4+.
-This includes backing up the original table and inserting a new, long-format version.
+Backs up the wide-format \code{cost} table to \verb{\{schema\}.cost_v5_3_backup}, creates a new
+v5.5-compliant \code{cost} table, and populates it by pivoting cost components into
+normalized rows with \code{cost_concept_id}. Events are mapped to visits via a unified
+event→visit/person/date table.
 }
 \details{
-This function performs the following:
-\enumerate{
-\item Loads the wide-format \code{cost} table (e.g., from \code{injectCostData()}), as well as associated \code{payer_plan_period} information.
-\item Maps cost event records to their corresponding domain-specific visit and date information.
-\item Transforms wide columns (e.g., \code{total_cost}, \code{paid_by_payer}, etc.) into long-form rows using standard \code{cost_concept_id} mappings.
-\item Appends newly required CDM v5.4 fields (e.g., \code{incurred_date}, \code{cost_type_concept_id}, etc.).
-\item Backs up the original \code{cost} table as \code{cost_v5_3_backup} and overwrites it with the new long-format version.
+\itemize{
+\item \strong{Backup}: \verb{ALTER TABLE \{schema\}.\{sourceCostTable\} RENAME TO cost_v5_3_backup}.
+\item \strong{Visit mapping}: Builds a temporary \code{event_to_visit_map} from multiple domains,
+including VISIT and VISIT_DETAIL. (Currently \code{visit_detail_id} is set to NULL in output.)
+\item \strong{Normalization}: Emits one row per cost component (\code{total_cost}, \code{paid_by_payer}, ...),
+with appropriate \code{cost_concept_id} and \code{cost_source_value}.
+\item \strong{Dates}: \code{effective_date} defaults to event_date; \code{incurred_date} is event_date; \code{billed_date}/\code{paid_date} left NULL.
+\item \strong{Concept defaults}: \code{cost_event_field_concept_id = 1147332} (constant), \code{currency_concept_id = 44818668 (USD)},
+fallback \code{cost_type_concept_id = 31968} if absent.
 }
 
-Only non-zero and valid cost entries are included in the final result.
+Important:
+\itemize{
+\item The \strong{long table currently populates only \code{visit_occurrence_id}}; \code{visit_detail_id} is NULL.
+If you intend to emit line-level costs, add logic to set \code{visit_detail_id} when
+the cost event is a VISIT_DETAIL row (see "Suggested fixes").
+\item Index creation uses vendor-neutral \verb{CREATE INDEX} syntax; adjust if your target
+supports \code{CONCURRENTLY}/\code{ONLINE}.
+}
 }
 \examples{
 \dontrun{
-con <- transformCostToCdmV5dot5(Eunomia::getEunomiaConnectionDetails())
+transformCostToCdmV5dot5()
 }
 }

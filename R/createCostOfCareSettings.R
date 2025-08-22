@@ -1,33 +1,60 @@
 #' Create Cost of Care Settings
 #'
 #' @description
-#' Creates a validated settings object for the `calculateCostOfCare` analysis. This
-#' is the recommended way to specify analysis parameters.
+#' Create a validated settings object for the `calculateCostOfCare` analysis.
+#' This is the recommended way to specify analysis parameters.
 #'
-#' @param anchorCol Column to use as anchor for time window ("cohort_start_date" or "cohort_end_date").
-#' @param startOffsetDays Integer, days to add to anchor date for window start (can be negative).
-#' @param endOffsetDays Integer, days to add to anchor date for window end.
-#' @param restrictVisitConceptIds Optional vector of visit concept IDs to restrict analysis.
-#' @param eventFilters Optional list of event filters. See details for structure.
-#' @param microCosting Logical; if TRUE, performs line-level costing at the visit_detail level.
-#' @param primaryEventFilterName For micro-costing, the name of the primary event filter.
-#' @param costConceptId Concept ID for the cost type. Default: 31978 (total charge).
-#' @param currencyConceptId Concept ID for the currency. Default: 44818668 (USD).
-#' @param additionalCostConceptIds Optional vector of additional cost concept IDs to analyze.
+#' @param anchorCol Character; which cohort column anchors the analysis window.
+#'   One of `"cohort_start_date"` or `"cohort_end_date"`. Default: `"cohort_start_date"`.
+#' @param startOffsetDays Integer; days to add to the anchor date for window start
+#'   (can be negative). Default: 0.
+#' @param endOffsetDays Integer; days to add to the anchor date for window end.
+#'   Must be greater than `startOffsetDays`. Default: 365.
+#' @param restrictVisitConceptIds Optional integer vector of visit concept IDs to restrict analysis.
+#'   If provided, only visits with these concept IDs are considered.
+#' @param eventFilters Optional list of event filters (see Details). Each filter defines a set of
+#'   concepts by OMOP domain; if provided, they can be used to constrain qualifying events/visits.
+#' @param microCosting Logical; if `TRUE`, performs line-level costing at the `visit_detail` level.
+#'   Requires `eventFilters` and `primaryEventFilterName`. Default: `FALSE`.
+#' @param primaryEventFilterName Character; when `microCosting = TRUE`, the name of the primary
+#'   event filter (one of the `eventFilters[[]]$name`) that identifies the line-level events to cost.
+#' @param costConceptId Integer; concept ID for the cost type. Default: `31978` (total charge).
+#' @param currencyConceptId Integer; concept ID for the currency. Default: `44818668` (USD).
+#' @param additionalCostConceptIds Optional integer vector of additional cost concept IDs to include.
+#'   These can be used by downstream SQL to widen the cost types considered.
+#' @param cpiAdjustment Logical; if `TRUE`, adjust costs using CPI factors from `cpiFilePath`. Default: `FALSE`.
+#' @param cpiFilePath Optional character path to a CPI adjustment table/file. Required if `cpiAdjustment = TRUE`.
 #'
 #' @details
+#' **Event filters structure**
+#'
 #' The `eventFilters` argument must be a list of lists, where each inner list has:
 #' \itemize{
 #'   \item `name`: A unique character string for the filter.
-#'   \item `domain`: The OMOP domain (e.g., "Drug", "Procedure").
-#'   \item `conceptIds`: A vector of integer concept IDs.
+#'   \item `domain`: The OMOP domain (one of `"All"`, `"Drug"`, `"Condition"`, `"Procedure"`,
+#'         `"Observation"`, `"Measurement"`, `"Device"`, `"Visit"`).
+#'   \item `conceptIds`: An integer vector of concept IDs (length \eqn{\ge} 1).
 #' }
 #'
-#' @return A `CostOfCareSettings` object.
-#' @export
+#' **CPI adjustment**
 #'
+#' If `cpiAdjustment = TRUE`, you must provide `cpiFilePath`. Your pipeline should read this
+#' into a table that exposes, at minimum, a `year` and an `adj_factor` column; downstream SQL
+#' joins on the `year` extracted from cost dates. The function only validates the file path;
+#' loading/attaching the table is left to the calling workflow.
+#'
+#' @return A `CostOfCareSettings` object (list with class) containing:
+#' \itemize{
+#'   \item `anchorCol`, `startOffsetDays`, `endOffsetDays`
+#'   \item `hasVisitRestriction`, `restrictVisitConceptIds`
+#'   \item `hasEventFilters`, `eventFilters`, `nFilters`
+#'   \item `microCosting`, `primaryEventFilterName`
+#'   \item `costConceptId`, `currencyConceptId`, `additionalCostConceptIds`
+#'   \item `cpiAdjustment`, `cpiFilePath`
+#' }
+#' @export
 createCostOfCareSettings <- function(
-    anchorCol = c("cohort_start_date"),
+    anchorCol = "cohort_start_date",
     startOffsetDays = 0L,
     endOffsetDays = 365L,
     restrictVisitConceptIds = NULL,
@@ -36,148 +63,139 @@ createCostOfCareSettings <- function(
     primaryEventFilterName = NULL,
     costConceptId = 31978L,
     currencyConceptId = 44818668L,
-    additionalCostConceptIds = NULL) {
+    additionalCostConceptIds = NULL,
+    cpiAdjustment = FALSE,
+    cpiFilePath = NULL
+) {
   # --- Input Validation with checkmate ---
   errorMessages <- checkmate::makeAssertCollection()
-
-  # Validate anchor column
+  
+  # anchor column
   checkmate::assertChoice(
     anchorCol,
     choices = c("cohort_start_date", "cohort_end_date"),
     add = errorMessages
   )
-
-  # Validate offset days
-  checkmate::assertIntegerish(
-    startOffsetDays,
-    len = 1,
-    any.missing = FALSE,
-    add = errorMessages
-  )
-  checkmate::assertIntegerish(
-    endOffsetDays,
-    len = 1,
-    any.missing = FALSE,
-    add = errorMessages
-  )
-
-  # Validate cost concept IDs
-  checkmate::assertIntegerish(
-    costConceptId,
-    len = 1,
-    lower = 1,
-    any.missing = FALSE,
-    add = errorMessages
-  )
-  checkmate::assertIntegerish(
-    currencyConceptId,
-    len = 1,
-    lower = 1,
-    any.missing = FALSE,
-    add = errorMessages
-  )
-
-  # Validate boolean flags
-  checkmate::assertFlag(microCosting, add = errorMessages)
-
-  # Report any basic validation errors
+  
+  # offsets
+  checkmate::assertIntegerish(startOffsetDays, len = 1, any.missing = FALSE, add = errorMessages)
+  checkmate::assertIntegerish(endOffsetDays,   len = 1, any.missing = FALSE, add = errorMessages)
+  
+  # costs/currency
+  checkmate::assertIntegerish(costConceptId,     len = 1, lower = 1, any.missing = FALSE, add = errorMessages)
+  checkmate::assertIntegerish(currencyConceptId, len = 1, lower = 1, any.missing = FALSE, add = errorMessages)
+  
+  # optional additional cost concepts
+  if (!is.null(additionalCostConceptIds)) {
+    checkmate::assertIntegerish(additionalCostConceptIds, lower = 1, any.missing = FALSE, unique = TRUE, add = errorMessages)
+  }
+  
+  # flags
+  checkmate::assertFlag(microCosting,    add = errorMessages)
+  checkmate::assertFlag(cpiAdjustment,   add = errorMessages)
+  
+  # visit restrictions
+  if (!is.null(restrictVisitConceptIds)) {
+    checkmate::assertIntegerish(restrictVisitConceptIds, lower = 1, min.len = 1, unique = TRUE, any.missing = FALSE, add = errorMessages)
+  }
+  
+  # event filters (structural validation after assertions)
+  if (!is.null(eventFilters)) {
+    # placeholder; detailed structural validation below
+    checkmate::assertList(eventFilters, add = errorMessages)
+  }
+  
+  # collect assertion failures (so far)
   checkmate::reportAssertions(errorMessages)
-
-  # Additional validation logic
+  
+  # semantic checks
   if (endOffsetDays <= startOffsetDays) {
     cli::cli_abort(c(
       "Invalid time window specification",
       "x" = "endOffsetDays ({endOffsetDays}) must be greater than startOffsetDays ({startOffsetDays})",
-      "i" = "The analysis window must have a positive duration"
+      "i" = "The analysis window must have a positive duration."
     ))
   }
-
-  # Validate visit restriction
-  if (!is.null(restrictVisitConceptIds)) {
-    checkmate::assertIntegerish(
-      restrictVisitConceptIds,
-      lower = 1,
-      min.len = 1,
-      unique = TRUE,
-      any.missing = FALSE
-    )
-    cli::cli_inform(c(
-      "i" = "Analysis will be restricted to {length(restrictVisitConceptIds)} visit concept{?s}"
-    ))
-  }
-
-  # Validate event filters
+  
+  # event filters detailed validation
   if (!is.null(eventFilters)) {
     validateEventFilters(eventFilters)
     nFilters <- length(eventFilters)
-    cli::cli_inform(c(
-      "i" = "Configured {nFilters} event filter{?s} for analysis"
-    ))
+    cli::cli_inform(c("i" = "Configured {nFilters} event filter{?s} for analysis"))
   } else {
-    nFilters <- 0
+    nFilters <- 0L
   }
-
-  # Validate micro-costing settings
-  if (microCosting) {
-    if (is.null(primaryEventFilterName)) {
+  
+  # micro-costing constraints
+  if (isTRUE(microCosting)) {
+    if (is.null(primaryEventFilterName) || !is.character(primaryEventFilterName) || length(primaryEventFilterName) != 1L || nchar(primaryEventFilterName) == 0L) {
       cli::cli_abort(c(
         "Micro-costing requires a primary event filter",
-        "x" = "primaryEventFilterName is NULL",
-        "i" = "Specify which event filter identifies the line-level events to cost"
+        "x" = "primaryEventFilterName must be a non-empty character string"
       ))
     }
-
-    checkmate::assertString(primaryEventFilterName, min.chars = 1)
-
-    if (!is.null(eventFilters)) {
-      filterNames <- purrr::map_chr(eventFilters, "name")
-      if (!primaryEventFilterName %in% filterNames) {
-        cli::cli_abort(c(
-          "Primary event filter not found",
-          "x" = "'{primaryEventFilterName}' is not in the event filters",
-          "i" = "Available filters: {.val {filterNames}}"
-        ))
-      }
-    } else {
+    if (is.null(eventFilters)) {
       cli::cli_abort(c(
         "Micro-costing requires event filters",
         "x" = "eventFilters is NULL but microCosting is TRUE",
-        "i" = "Define at least one event filter for micro-costing analysis"
+        "i" = "Define at least one event filter for micro-costing analysis."
+      ))
+    }
+    filterNames <- vapply(eventFilters, function(f) f$name, character(1))
+    if (!primaryEventFilterName %in% filterNames) {
+      cli::cli_abort(c(
+        "Primary event filter not found",
+        "x" = "'{primaryEventFilterName}' is not in the event filters",
+        "i" = "Available filters: {.val {filterNames}}"
       ))
     }
   }
-
-  # Validate additional cost concepts
-  if (!is.null(additionalCostConceptIds)) {
-    checkmate::assertIntegerish(
-      additionalCostConceptIds,
-      lower = 1,
-      unique = TRUE,
-      any.missing = FALSE
-    )
+  
+  # CPI constraints
+  if (isTRUE(cpiAdjustment)) {
+    if (is.null(cpiFilePath) || !is.character(cpiFilePath) || length(cpiFilePath) != 1L || nchar(cpiFilePath) == 0L) {
+      cli::cli_abort(c(
+        "CPI adjustment enabled but no CPI file provided",
+        "x" = "cpiFilePath must be a non-empty path when cpiAdjustment = TRUE"
+      ))
+    }
+    if (!file.exists(cpiFilePath)) {
+      cli::cli_abort(c(
+        "CPI file not found",
+        "x" = "File does not exist: '{cpiFilePath}'",
+        "i" = "Provide a valid path to CPI adjustment data."
+      ))
+    }
   }
-
+  
+  # helpful notices
+  if (!is.null(restrictVisitConceptIds)) {
+    cli::cli_inform(c("i" = "Analysis will be restricted to {length(restrictVisitConceptIds)} visit concept{?s}."))
+  }
+  
   # --- Create Settings Object ---
   settings <- structure(
     list(
-      anchorCol = anchorCol,
-      startOffsetDays = as.integer(startOffsetDays),
-      endOffsetDays = as.integer(endOffsetDays),
-      hasVisitRestriction = !is.null(restrictVisitConceptIds),
-      restrictVisitConceptIds = as.integer(restrictVisitConceptIds),
-      hasEventFilters = !is.null(eventFilters),
-      eventFilters = eventFilters,
-      nFilters = nFilters,
-      microCosting = microCosting,
-      primaryEventFilterName = primaryEventFilterName,
-      costConceptId = as.integer(costConceptId),
-      currencyConceptId = as.integer(currencyConceptId),
-      additionalCostConceptIds = as.integer(additionalCostConceptIds)
+      anchorCol               = anchorCol,
+      startOffsetDays         = as.integer(startOffsetDays),
+      endOffsetDays           = as.integer(endOffsetDays),
+      hasVisitRestriction     = !is.null(restrictVisitConceptIds),
+      restrictVisitConceptIds = if (is.null(restrictVisitConceptIds)) NULL else as.integer(restrictVisitConceptIds),
+      hasEventFilters         = !is.null(eventFilters),
+      eventFilters            = eventFilters,
+      nFilters                = as.integer(nFilters),
+      microCosting            = isTRUE(microCosting),
+      primaryEventFilterName  = primaryEventFilterName,
+      costConceptId           = as.integer(costConceptId),
+      currencyConceptId       = as.integer(currencyConceptId),
+      additionalCostConceptIds= if (is.null(additionalCostConceptIds)) NULL else as.integer(additionalCostConceptIds),
+      cpiAdjustment           = isTRUE(cpiAdjustment),
+      cpiFilePath             = cpiFilePath
     ),
     class = "CostOfCareSettings"
   )
-
-  return(settings)
+  
+  settings
 }
 
 #' Validate Event Filters

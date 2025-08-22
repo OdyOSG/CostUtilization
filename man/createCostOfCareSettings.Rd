@@ -5,7 +5,7 @@
 \title{Create Cost of Care Settings}
 \usage{
 createCostOfCareSettings(
-  anchorCol = c("cohort_start_date"),
+  anchorCol = "cohort_start_date",
   startOffsetDays = 0L,
   endOffsetDays = 365L,
   restrictVisitConceptIds = NULL,
@@ -14,42 +14,74 @@ createCostOfCareSettings(
   primaryEventFilterName = NULL,
   costConceptId = 31978L,
   currencyConceptId = 44818668L,
-  additionalCostConceptIds = NULL
+  additionalCostConceptIds = NULL,
+  cpiAdjustment = FALSE,
+  cpiFilePath = NULL
 )
 }
 \arguments{
-\item{anchorCol}{Column to use as anchor for time window ("cohort_start_date" or "cohort_end_date").}
+\item{anchorCol}{Character; which cohort column anchors the analysis window.
+One of \code{"cohort_start_date"} or \code{"cohort_end_date"}. Default: \code{"cohort_start_date"}.}
 
-\item{startOffsetDays}{Integer, days to add to anchor date for window start (can be negative).}
+\item{startOffsetDays}{Integer; days to add to the anchor date for window start
+(can be negative). Default: 0.}
 
-\item{endOffsetDays}{Integer, days to add to anchor date for window end.}
+\item{endOffsetDays}{Integer; days to add to the anchor date for window end.
+Must be greater than \code{startOffsetDays}. Default: 365.}
 
-\item{restrictVisitConceptIds}{Optional vector of visit concept IDs to restrict analysis.}
+\item{restrictVisitConceptIds}{Optional integer vector of visit concept IDs to restrict analysis.
+If provided, only visits with these concept IDs are considered.}
 
-\item{eventFilters}{Optional list of event filters. See details for structure.}
+\item{eventFilters}{Optional list of event filters (see Details). Each filter defines a set of
+concepts by OMOP domain; if provided, they can be used to constrain qualifying events/visits.}
 
-\item{microCosting}{Logical; if TRUE, performs line-level costing at the visit_detail level.}
+\item{microCosting}{Logical; if \code{TRUE}, performs line-level costing at the \code{visit_detail} level.
+Requires \code{eventFilters} and \code{primaryEventFilterName}. Default: \code{FALSE}.}
 
-\item{primaryEventFilterName}{For micro-costing, the name of the primary event filter.}
+\item{primaryEventFilterName}{Character; when \code{microCosting = TRUE}, the name of the primary
+event filter (one of the \code{eventFilters[[]]$name}) that identifies the line-level events to cost.}
 
-\item{costConceptId}{Concept ID for the cost type. Default: 31978 (total charge).}
+\item{costConceptId}{Integer; concept ID for the cost type. Default: \code{31978} (total charge).}
 
-\item{currencyConceptId}{Concept ID for the currency. Default: 44818668 (USD).}
+\item{currencyConceptId}{Integer; concept ID for the currency. Default: \code{44818668} (USD).}
 
-\item{additionalCostConceptIds}{Optional vector of additional cost concept IDs to analyze.}
+\item{additionalCostConceptIds}{Optional integer vector of additional cost concept IDs to include.
+These can be used by downstream SQL to widen the cost types considered.}
+
+\item{cpiAdjustment}{Logical; if \code{TRUE}, adjust costs using CPI factors from \code{cpiFilePath}. Default: \code{FALSE}.}
+
+\item{cpiFilePath}{Optional character path to a CPI adjustment table/file. Required if \code{cpiAdjustment = TRUE}.}
 }
 \value{
-A \code{CostOfCareSettings} object.
+A \code{CostOfCareSettings} object (list with class) containing:
+\itemize{
+\item \code{anchorCol}, \code{startOffsetDays}, \code{endOffsetDays}
+\item \code{hasVisitRestriction}, \code{restrictVisitConceptIds}
+\item \code{hasEventFilters}, \code{eventFilters}, \code{nFilters}
+\item \code{microCosting}, \code{primaryEventFilterName}
+\item \code{costConceptId}, \code{currencyConceptId}, \code{additionalCostConceptIds}
+\item \code{cpiAdjustment}, \code{cpiFilePath}
+}
 }
 \description{
-Creates a validated settings object for the \code{calculateCostOfCare} analysis. This
-is the recommended way to specify analysis parameters.
+Create a validated settings object for the \code{calculateCostOfCare} analysis.
+This is the recommended way to specify analysis parameters.
 }
 \details{
+\strong{Event filters structure}
+
 The \code{eventFilters} argument must be a list of lists, where each inner list has:
 \itemize{
 \item \code{name}: A unique character string for the filter.
-\item \code{domain}: The OMOP domain (e.g., "Drug", "Procedure").
-\item \code{conceptIds}: A vector of integer concept IDs.
+\item \code{domain}: The OMOP domain (one of \code{"All"}, \code{"Drug"}, \code{"Condition"}, \code{"Procedure"},
+\code{"Observation"}, \code{"Measurement"}, \code{"Device"}, \code{"Visit"}).
+\item \code{conceptIds}: An integer vector of concept IDs (length \eqn{\ge} 1).
 }
+
+\strong{CPI adjustment}
+
+If \code{cpiAdjustment = TRUE}, you must provide \code{cpiFilePath}. Your pipeline should read this
+into a table that exposes, at minimum, a \code{year} and an \code{adj_factor} column; downstream SQL
+joins on the \code{year} extracted from cost dates. The function only validates the file path;
+loading/attaching the table is left to the calling workflow.
 }
