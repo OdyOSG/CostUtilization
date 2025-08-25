@@ -12,8 +12,8 @@ createCostOfCareSettings(
   eventFilters = NULL,
   microCosting = FALSE,
   primaryEventFilterName = NULL,
-  costConceptId = 31978L,
-  currencyConceptId = 44818668L,
+  costConceptId = 31973,
+  currencyConceptId = 44818668,
   additionalCostConceptIds = NULL,
   cpiAdjustment = FALSE,
   cpiFilePath = NULL
@@ -41,7 +41,7 @@ Requires \code{eventFilters} and \code{primaryEventFilterName}. Default: \code{F
 \item{primaryEventFilterName}{Character; when \code{microCosting = TRUE}, the name of the primary
 event filter (one of the \code{eventFilters[[]]$name}) that identifies the line-level events to cost.}
 
-\item{costConceptId}{Integer; concept ID for the cost type. Default: \code{31978} (total charge).}
+\item{costConceptId}{Integer; concept ID for the cost type. Default: \code{31973} (charged).}
 
 \item{currencyConceptId}{Integer; concept ID for the currency. Default: \code{44818668} (USD).}
 

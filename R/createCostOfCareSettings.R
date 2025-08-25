@@ -292,7 +292,7 @@ validateEventFilters <- function(eventFilters) {
 #' @param ... Additional arguments (not used)
 #'
 #' @return Invisibly returns the input object
-#' @export
+#' @exportMethod print
 print.CostOfCareSettings <- function(x, ...) {
   cli::cli_h2("Cost of Care Settings")
 
