@@ -18,7 +18,7 @@
 #'   Requires `eventFilters` and `primaryEventFilterName`. Default: `FALSE`.
 #' @param primaryEventFilterName Character; when `microCosting = TRUE`, the name of the primary
 #'   event filter (one of the `eventFilters[[]]$name`) that identifies the line-level events to cost.
-#' @param costConceptId Integer; concept ID for the cost type. Default: `31978` (total charge).
+#' @param costConceptId Integer; concept ID for the cost type. Default: `31973` (charged).
 #' @param currencyConceptId Integer; concept ID for the currency. Default: `44818668` (USD).
 #' @param additionalCostConceptIds Optional integer vector of additional cost concept IDs to include.
 #'   These can be used by downstream SQL to widen the cost types considered.
@@ -61,8 +61,8 @@ createCostOfCareSettings <- function(
     eventFilters = NULL,
     microCosting = FALSE,
     primaryEventFilterName = NULL,
-    costConceptId = 31978L,
-    currencyConceptId = 44818668L,
+    costConceptId = 31973,
+    currencyConceptId = 44818668,
     additionalCostConceptIds = NULL,
     cpiAdjustment = FALSE,
     cpiFilePath = NULL

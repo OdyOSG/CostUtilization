@@ -14,7 +14,7 @@ INSERT INTO @diag_table (step_name, n_persons, n_events)
 SELECT
   '00_initial_cohort',
   COUNT(DISTINCT subject_id),
-  NULL
+  COUNT(*)
 FROM @cohort_database_schema.@cohort_table
 WHERE cohort_definition_id = @cohort_id;
 
@@ -321,6 +321,7 @@ DROP TABLE IF EXISTS #denominator;
 CREATE TABLE #denominator (
   total_person_days    BIGINT,
   total_person_months  DECIMAL(19,4),
+  total_person_quater  DECIMAL(19,4),
   total_person_years   DECIMAL(19,4)
 );
 
@@ -328,6 +329,7 @@ INSERT INTO #denominator
 SELECT
   SUM(pt.person_days)                          AS total_person_days,
   SUM(pt.person_days) / 30.4375                AS total_person_months,
+  SUM(pt.person_days) / 91.3                   AS total_person_quater,
   SUM(pt.person_days) / 365.25                 AS total_person_years
 FROM #person_time pt
 WHERE EXISTS (SELECT 1 FROM #analysis_window_clean awc WHERE awc.person_id = pt.person_id);
