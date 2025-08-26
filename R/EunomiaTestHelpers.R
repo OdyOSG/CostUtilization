@@ -37,7 +37,6 @@
 #' conn <- DatabaseConnector::connect(Eunomia::getEunomiaConnectionDetails())
 #' injectCostData(conn)
 #' }
-
 injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
   cli::cli_alert_info("Generating synthetic payer_plan_period and wide-format cost data.")
 
@@ -62,11 +61,11 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
   generate_random_plans <- function(pid, start_date, end_date, start_year, end_year) {
     # Ensure inputs are Date
     start_date <- as.Date(start_date)
-    end_date   <- as.Date(end_date)
-    
+    end_date <- as.Date(end_date)
+
     possible_change_years <- (start_year + 1):end_year
     n_possible_changes <- length(possible_change_years)
-    
+
     if (n_possible_changes == 0) {
       n_segments <- 1
       change_dates <- as.Date(character())
@@ -76,7 +75,7 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
       current_probs <- probs[1:(max_changes + 1)]
       current_probs <- current_probs / sum(current_probs)
       num_changes <- sample(0:max_changes, 1, prob = current_probs)
-      
+
       if (num_changes == 0) {
         n_segments <- 1
         change_dates <- as.Date(character())
@@ -86,18 +85,18 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
         change_dates <- as.Date(paste0(change_years, "-01-01"))
       }
     }
-    
+
     # Build boundaries
     starts <- c(start_date, change_dates)
     # End each segment the day before the next Jan 1 change, with the last ending at end_date
     ends <- c(if (length(change_dates) > 0) change_dates - 1L else NULL, end_date)
-    
+
     # Force Date class to avoid numeric coercion
     starts <- as.Date(starts, origin = "1970-01-01")
-    ends   <- as.Date(ends,   origin = "1970-01-01")
-    
+    ends <- as.Date(ends, origin = "1970-01-01")
+
     assigned_plans <- sample(plan_options, n_segments, replace = TRUE)
-    
+
     df <- data.frame(
       person_id = pid,
       plan_start_date = starts,
@@ -105,13 +104,13 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
       plan_name = assigned_plans,
       stringsAsFactors = FALSE
     )
-    
+
     # Extra safety: coerce again in case upstream inputs were odd
     df$plan_start_date <- as.Date(df$plan_start_date)
-    df$plan_end_date   <- as.Date(df$plan_end_date)
+    df$plan_end_date <- as.Date(df$plan_end_date)
     df
   }
-  
+
   # Apply to each person
   payer_plans_df_long <- purrr::pmap_dfr(
     person_obs_periods,
@@ -271,14 +270,13 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
 #'
 #' @return
 #' Returns the `connection`. Called primarily for its side effects (table inserts).
-#' 
+#'
 #' @examples
 #' \dontrun{
 #' injectVisitDetailsData(conn, cdmDatabaseSchema = "main")
 #' }
-
 injectVisitDetailsData <- function(connection, cdmDatabaseSchema = "main") {
-  visitDetailTable <- 'visit_detail'
+  visitDetailTable <- "visit_detail"
   DatabaseConnector::executeSql(connection, glue::glue("
     DROP TABLE IF EXISTS {cdmDatabaseSchema}.{visitDetailTable};
     CREATE TABLE {cdmDatabaseSchema}.{visitDetailTable} (
@@ -303,8 +301,8 @@ injectVisitDetailsData <- function(connection, cdmDatabaseSchema = "main") {
       visit_occurrence_id BIGINT NOT NULL
     );
   "))
-  
-  
+
+
   # 2) Build a staging of event records that should become line items in VISIT_DETAIL
   DatabaseConnector::renderTranslateExecuteSql(connection, glue::glue("
   DROP TABLE IF EXISTS tmp_event_detail_stage;
@@ -419,9 +417,9 @@ injectVisitDetailsData <- function(connection, cdmDatabaseSchema = "main") {
   ) s
   WHERE s.visit_occurrence_id IS NOT NULL;  -- enforce linkage to visit
 "))
-  
 
-  DatabaseConnector::executeSql(connection, glue::glue('
+
+  DatabaseConnector::executeSql(connection, glue::glue("
   WITH id_bounds AS (
   SELECT COALESCE(MAX(visit_detail_id), 0) AS id_offset
   FROM {cdmDatabaseSchema}.{visitDetailTable}
@@ -539,8 +537,8 @@ SELECT
   preceding_visit_detail_id,
   visit_detail_parent_id,
   visit_occurrence_id
-FROM final_rows;'))
-  
+FROM final_rows;"))
+
   return(connection)
 }
 
@@ -578,7 +576,6 @@ FROM final_rows;'))
 #' \dontrun{
 #' transformCostToCdmV5dot5()
 #' }
-
 transformCostToCdmV5dot5 <- function(
     connectionDetails = Eunomia::getEunomiaConnectionDetails(),
     cdmDatabaseSchema = "main",

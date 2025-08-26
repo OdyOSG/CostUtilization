@@ -2,6 +2,5 @@
 
 export(calculateCostOfCare)
 export(createCostOfCareSettings)
-exportMethods(print)
 import(dplyr)
 import(rlang)

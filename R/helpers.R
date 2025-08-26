@@ -11,7 +11,7 @@
 #' @noRd
 cleanupTempTables <- function(connection, schema = NULL, ...) {
   tables <- list(...)
-
+  
   purrr::walk(tables, function(table) {
     if (!is.null(table) && nchar(table) > 0) {
       tryCatch(
@@ -45,7 +45,7 @@ cleanupTempTables <- function(connection, schema = NULL, ...) {
       )
     }
   })
-
+  
   invisible(NULL)
 }
 
@@ -59,21 +59,20 @@ cleanupTempTables <- function(connection, schema = NULL, ...) {
 #' @param level The message level: "INFO", "WARNING", "ERROR", "DEBUG", "SUCCESS"
 #'
 #' @return NULL (invisibly)
-#' @noRd
 logMessage <- function(message, verbose = TRUE, level = "INFO") {
   if (!verbose) {
     return(invisible(NULL))
   }
-
+  
   switch(level,
-    "ERROR" = cli::cli_alert_danger(message),
-    "WARNING" = cli::cli_alert_warning(message),
-    "INFO" = cli::cli_alert_info(message),
-    "DEBUG" = cli::cli_text(cli::col_grey(message)),
-    "SUCCESS" = cli::cli_alert_success(message),
-    cli::cli_alert(message)
+         "ERROR" = cli::cli_alert_danger(message),
+         "WARNING" = cli::cli_alert_warning(message),
+         "INFO" = cli::cli_alert_info(message),
+         "DEBUG" = cli::cli_text(cli::col_grey(message)),
+         "SUCCESS" = cli::cli_alert_success(message),
+         cli::cli_alert(message)
   )
-
+  
   invisible(NULL)
 }
 
@@ -93,7 +92,7 @@ executeSqlStatements <- function(connection, sqlStatements, verbose = TRUE) {
   if (nStatements == 0L) {
     return(invisible(NULL))
   }
-
+  
   # Create a progress bar and keep its id so we can always address it explicitly
   pbId <- NULL
   if (verbose && nStatements > 1L) {
@@ -103,7 +102,7 @@ executeSqlStatements <- function(connection, sqlStatements, verbose = TRUE) {
       clear = FALSE
     )
   }
-
+  
   on.exit(
     {
       if (!is.null(pbId)) {
@@ -113,20 +112,20 @@ executeSqlStatements <- function(connection, sqlStatements, verbose = TRUE) {
     },
     add = TRUE
   )
-
+  
   # Helper: compact statement preview (single-line, max 120 chars)
   previewStmt <- function(x, n = 120L) {
     x <- gsub("[\r\n]+", " ", x, perl = TRUE)
     if (nchar(x) > n) paste0(substr(x, 1L, n), "...") else x
   }
-
+  
   purrr::iwalk(sqlStatements, function(sql, i) {
     # Skip empty statements
     if (is.null(sql) || !nzchar(trimws(sql))) {
       if (!is.null(pbId)) cli::cli_progress_update(id = pbId)
       return(invisible(NULL))
     }
-
+    
     tryCatch(
       {
         DatabaseConnector::executeSql(
@@ -151,7 +150,7 @@ executeSqlStatements <- function(connection, sqlStatements, verbose = TRUE) {
       }
     )
   })
-
+  
   # finalize
   if (!is.null(pbId)) cli::cli_progress_done(id = pbId)
   invisible(NULL)
@@ -175,5 +174,18 @@ formatDuration <- function(seconds) {
   } else {
     hours <- seconds / 3600
     return(sprintf("%.1f hours", hours))
+  }
+}
+
+
+
+# Helpers (simple, focused)
+.int_flag <- function(x) as.integer(isTRUE(x))
+
+.qualify <- function(table, schema) {
+  if (!is.null(schema) && nzchar(schema %||% "") && !is.null(table) && nzchar(table %||% "")) {
+    paste(schema, table, sep = ".")
+  } else {
+    table
   }
 }
