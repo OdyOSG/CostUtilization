@@ -17,7 +17,7 @@ calculateCostOfCare(
 )
 }
 \arguments{
-\item{connection}{A live \code{DatabaseConnector} connection object.}
+\item{connection}{A live \code{DatabaseConnector} or \code{DBI} connection object.}
 
 \item{connectionDetails}{Optional \code{ConnectionDetails} to create a connection
 if \code{connection} is not supplied (provide exactly one of the two).}

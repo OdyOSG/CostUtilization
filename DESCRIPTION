@@ -21,18 +21,13 @@ Imports:
     DatabaseConnector (>= 5.0.0),
     dplyr,
     glue,
-    jsonlite,
     purrr,
     rlang,
-    SqlRender (>= 1.6.0),
     utils
 Suggests:
     covr,
-    Eunomia,
-    knitr,
-    purrr,
-    rmarkdown,
-    RSQLite,
+    SqlRender,
+    duckdb,
     testthat (>= 3.0.0),
     withr
 VignetteBuilder: 

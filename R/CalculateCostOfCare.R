@@ -5,7 +5,7 @@
 #' `CostOfCareSettings` object. Creates temp helper tables as needed
 #' (visit restrictions, event filters, CPI) and executes the SQL plan.
 #'
-#' @param connection A live `DatabaseConnector` connection object.
+#' @param connection A live `DatabaseConnector` or `DBI` connection object.
 #' @param connectionDetails Optional `ConnectionDetails` to create a connection
 #'   if `connection` is not supplied (provide exactly one of the two).
 #' @param cdmDatabaseSchema Schema (or database) that contains CDM tables.
@@ -175,11 +175,11 @@ calculateCostOfCare <- function(
     timeB = as.integer(costOfCareSettings$endOffsetDays %||% 365L),
 
     # flags & knobs (logical where appropriate; numbers as integers)
-    hasVisitRestriction = isTRUE(costOfCareSettings$hasVisitRestriction),
-    hasEventFilters = isTRUE(costOfCareSettings$hasEventFilters),
+    hasVisitRestriction = costOfCareSettings$hasVisitRestriction,
+    hasEventFilters = costOfCareSettings$hasEventFilters,
     nFilters = as.integer(costOfCareSettings$nFilters %||% 0L),
     microCosting = costOfCareSettings$microCosting, # pass-through (string/int as your SQL expects)
-    cpiAdjustment = isTRUE(costOfCareSettings$cpiAdjustment),
+    cpiAdjustment = costOfCareSettings$cpiAdjustment,
 
     # costing
     costConceptId = as.integer(costOfCareSettings$costConceptId),
@@ -198,9 +198,6 @@ calculateCostOfCare <- function(
       }
     }
   )
-
-
-  # Let the execution helper render/translate/execute with these params
   executeSqlPlan(
     connection          = connection,
     params              = params,
