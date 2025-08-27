@@ -2,6 +2,8 @@
 
 export(calculateCostOfCare)
 export(createCostOfCareSettings)
+export(getEunomiaDuckDb)
+export(transformCostToCdmV5dot5)
 import(dplyr)
 import(rlang)
 importFrom(rlang,"%||%")

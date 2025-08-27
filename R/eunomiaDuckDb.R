@@ -510,7 +510,7 @@ return(connection)
 #' @param cdmDatabaseSchema OMOP CDM schema/database. Default: "main".
 #' @param sourceCostTable Name of the (wide) COST table to transform. Default: "cost".
 #' @return Returns the open DBI `connection` (invisibly).
-#'
+#' @export
 #' @examples
 #' \dontrun{
 #' # Assumes you have a DuckDB file with the Eunomia CDM

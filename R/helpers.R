@@ -1,10 +1,3 @@
-#' @param connection A live DBI connection 
-#' @param schema Optional schema name (character scalar). If NULL/empty, drops from the
-#'   current/default schema or temp scope depending on the backend and table name.
-#' @param ... Table names to drop (characters). NULL/"" are ignored.
-#'
-#' @return Invisibly returns NULL.
-#' 
 cleanupTempTables <- function(connection, schema = NULL, ...) {
   # Basic validation
   if (!DBI::dbIsValid(connection)) {
