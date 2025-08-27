@@ -12,8 +12,8 @@
 cleanupTempTables <- function(connection, schema = NULL, ...) {
   tables <- list(...)
   
-  purrr::walk(tables, function(table) {
-    if (!is.null(table) && nchar(table) > 0) {
+  purrr::walk(tables, ~ {
+    if (!is.null(.x) && nchar(.x) > 0) {
       tryCatch(
         {
           if (!is.null(schema) && nchar(schema) > 0) {
@@ -22,7 +22,7 @@ cleanupTempTables <- function(connection, schema = NULL, ...) {
               connection,
               sql,
               schema = schema,
-              table = table,
+              table = .x,
               progressBar = FALSE,
               reportOverallTime = FALSE
             )
@@ -31,7 +31,7 @@ cleanupTempTables <- function(connection, schema = NULL, ...) {
             DatabaseConnector::renderTranslateExecuteSql(
               connection,
               sql,
-              table = table,
+              table = .x,
               progressBar = FALSE,
               reportOverallTime = FALSE
             )
@@ -93,7 +93,7 @@ executeSqlStatements <- function(connection, sqlStatements, verbose = TRUE) {
     return(invisible(NULL))
   }
   
-  # Create a progress bar and keep its id so we can always address it explicitly
+  # Create a progress bar 
   pbId <- NULL
   if (verbose && nStatements > 1L) {
     pbId <- cli::cli_progress_bar(
@@ -106,7 +106,7 @@ executeSqlStatements <- function(connection, sqlStatements, verbose = TRUE) {
   on.exit(
     {
       if (!is.null(pbId)) {
-        # be defensive — don't error if the bar is already closed
+        
         try(cli::cli_progress_done(id = pbId), silent = TRUE)
       }
     },

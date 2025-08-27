@@ -83,7 +83,7 @@ calculateCostOfCare <- function(
   )
 
   # --- CPI Adjustment: prepare adjustment factors table (if enabled) ---
-  if (isTRUE(costOfCareSettings$cpiAdjustment)) {
+  if (costOfCareSettings$cpiAdjustment) {
     logMessage("Setting up CPI adjustment…", verbose, "INFO")
     cpiAdjTableName <- paste0(sessionPrefix, "_cpi_adj")
 

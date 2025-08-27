@@ -126,7 +126,7 @@ createCostOfCareSettings <- function(
   }
 
   # micro-costing constraints
-  if (isTRUE(microCosting)) {
+  if (microCosting) {
     if (is.null(primaryEventFilterName) || !is.character(primaryEventFilterName) || length(primaryEventFilterName) != 1L || nchar(primaryEventFilterName) == 0L) {
       cli::cli_abort(c(
         "Micro-costing requires a primary event filter",
@@ -194,7 +194,7 @@ createCostOfCareSettings <- function(
     class = "CostOfCareSettings"
   )
 
-  settings
+  return(settings)
 }
 
 #' Validate Event Filters

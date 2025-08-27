@@ -1,7 +1,5 @@
 -- ============================================================================
 -- Healthcare Cost Analysis Query (Consolidated, CDM v5.5 compliant)
--- Purpose: Calculate per-member-per-month costs and event rates for a cohort
-/* 0) Initialize diagnostics table */
 /* 0) Initialize diagnostics table */
 DROP TABLE IF EXISTS @diag_table;
 CREATE TABLE @diag_table (

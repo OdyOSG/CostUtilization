@@ -30,14 +30,13 @@ executeSqlPlan <- function(
 
   logMessage(sprintf("Translating SQL to %s dialect", targetDialect), verbose, "DEBUG")
 
-  # minimal, no boilerplate: pass mapped args directly
-  sql <- do.call(SqlRender::render, c(list(sql = sql), renderParams)) |> 
+  sqlStatements <- do.call(SqlRender::render, c(list(sql = sql), renderParams)) |> 
     SqlRender::translate(
       targetDialect = targetDialect,
       tempEmulationSchema = tempEmulationSchema
-  )
-
-  sqlStatements <- SqlRender::splitSql(sql)
+  ) |> 
+    SqlRender::splitSql()
+  
   logMessage(sprintf("Executing %d SQL statements", length(sqlStatements)), verbose, "INFO")
 
   executeSqlStatements(
@@ -62,7 +61,9 @@ executeSqlPlan <- function(
 #' @return Named list ready for SQL rendering.
 #' @noRd
 #'
-prepareSqlRenderParams <- function(params, tempEmulationSchema) {
+prepareSqlRenderParams <- function(
+    params, 
+    tempEmulationSchema) {
   # derive hasEventFilters if not explicitly set (keeps backward compatibility)
   has_event_filters <- params$hasEventFilters %||% (as.integer(params$nFilters %||% 0L) > 0L)
 
