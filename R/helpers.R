@@ -1,49 +1,59 @@
-#' Clean up temporary tables
+#' @param connection A live DBI connection 
+#' @param schema Optional schema name (character scalar). If NULL/empty, drops from the
+#'   current/default schema or temp scope depending on the backend and table name.
+#' @param ... Table names to drop (characters). NULL/"" are ignored.
 #'
-#' @description
-#' Safely drops temporary tables from the database.
-#'
-#' @param connection DatabaseConnector connection
-#' @param schema Schema name (can be NULL for temp tables)
-#' @param ... Table names to drop
-#'
-#' @return NULL (invisibly)
-#' @noRd
+#' @return Invisibly returns NULL.
+#' 
 cleanupTempTables <- function(connection, schema = NULL, ...) {
-  tables <- list(...)
+  # Basic validation
+  if (!DBI::dbIsValid(connection)) {
+    abort("`connection` is not a valid DBI connection.")
+  }
+  tables <- rlang::list2(...)
+  if (length(tables) == 0L) return(invisible(NULL))
   
-  purrr::walk(tables, ~ {
-    if (!is.null(.x) && nchar(.x) > 0) {
-      tryCatch(
-        {
-          if (!is.null(schema) && nchar(schema) > 0) {
-            sql <- "DROP TABLE IF EXISTS @schema.@table;"
-            DatabaseConnector::renderTranslateExecuteSql(
-              connection,
-              sql,
-              schema = schema,
-              table = .x,
-              progressBar = FALSE,
-              reportOverallTime = FALSE
-            )
-          } else {
-            sql <- "DROP TABLE IF EXISTS @table;"
-            DatabaseConnector::renderTranslateExecuteSql(
-              connection,
-              sql,
-              table = .x,
-              progressBar = FALSE,
-              reportOverallTime = FALSE
+  # Local helper: build a fully qualified, safely quoted identifier
+  quoteIdent <- function(conn, tbl, schema = NULL) {
+    if (!is.null(schema) && nzchar(schema %||% "")) {
+      id <- DBI::Id(schema = schema, table = tbl)
+    } else {
+      id <- DBI::Id(table = tbl)
+    }
+    DBI::dbQuoteIdentifier(conn, id)
+  }
+  
+  dropWithIfExists <- function(conn, qident) {
+    sql <- SQL(glue("DROP TABLE IF EXISTS {qident};"))
+    DBI::dbExecute(conn, sql)
+  }
+  dropWithoutIfExists <- function(conn, qident) {
+    sql <- SQL(glue("DROP TABLE {qident};"))
+    DBI::dbExecute(conn, sql)
+  }
+  
+  purrr::walk(tables, ~{
+    tbl <- .x
+    if (is.null(tbl) || !nzchar(tbl)) return(invisible(NULL))
+    
+    qident <- quoteIdent(connection, tbl, schema)
+    
+    tryCatch(
+      {
+        tryCatch(
+          dropWithIfExists(connection, qident),
+          error = function(eIf) {
+            tryCatch(
+              dropWithoutIfExists(connection, qident),
+              error = function(eDrop) invisible(NULL)
             )
           }
-        },
-        error = function(e) {
-          # Silently ignore errors when dropping tables
-          # This is intentional as tables may not exist
-          invisible(NULL)
-        }
-      )
-    }
+        )
+      },
+      error = function(e) invisible(NULL)
+    )
+    
+    invisible(NULL)
   })
   
   invisible(NULL)
@@ -125,14 +135,12 @@ executeSqlStatements <- function(connection, sqlStatements, verbose = TRUE) {
       if (!is.null(pbId)) cli::cli_progress_update(id = pbId)
       return(invisible(NULL))
     }
-    
     tryCatch(
       {
-        DatabaseConnector::executeSql(
-          connection = connection,
-          sql = sql,
-          progressBar = FALSE,
-          reportOverallTime = FALSE
+        
+        DBI::dbExecute(
+          connection,
+          sql
         )
         if (!is.null(pbId)) cli::cli_progress_update(id = pbId)
       },
@@ -188,4 +196,49 @@ formatDuration <- function(seconds) {
   } else {
     table
   }
+}
+
+
+
+
+
+
+#' Insert a data.frame into a DBI connection (replacement for DatabaseConnector::insertTable)
+#'
+#' @param connection A DBI connection.
+#' @param tableName Target table name (character).
+#' @param data A data.frame or tibble to insert.
+#' @param tempTable Logical, create a temporary table if supported.
+#' @param tempEmulationSchema Optional schema name to emulate temporary tables (e.g. for Oracle).
+#' @param camelCaseToSnakeCase Logical, convert column names before insert.
+#'
+#' @return Invisibly TRUE on success.
+insertTableDBI <- function(connection,
+                           tableName,
+                           data,
+                           tempTable = FALSE,
+                           tempEmulationSchema = NULL,
+                           camelCaseToSnakeCase = FALSE) {
+
+  # Optionally rename columns
+  if (isTRUE(camelCaseToSnakeCase)) {
+    names(data) <- SqlRender::camelCaseToSnakeCase(names(data))
+  }
+  
+  # Handle schema vs. temp table
+  if (!is.null(tempEmulationSchema) && nzchar(tempEmulationSchema)) {
+    id <- DBI::Id(schema = tempEmulationSchema, table = tableName)
+  } else {
+    id <- DBI::Id(table = tableName)
+  }
+  
+  DBI::dbWriteTable(
+    conn      = connection,
+    name      = id,
+    value     = data,
+    temporary = tempTable,
+    overwrite = TRUE
+  )
+  
+  invisible(TRUE)
 }

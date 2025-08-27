@@ -50,7 +50,7 @@ calculateCostOfCare <- function(
     connection <- DatabaseConnector::connect(connectionDetails)
     on.exit(DatabaseConnector::disconnect(connection), add = TRUE)
   } else {
-    checkmate::assertClass(connection, "DatabaseConnectorJdbcConnection")
+    checkmate::assertClass(connection, "DBIConnection")
   }
 
   # --- Setup ---
@@ -104,7 +104,7 @@ calculateCostOfCare <- function(
     checkmate::assertIntegerish(cpiData$year, lower = 1900, any.missing = FALSE)
     checkmate::assertNumeric(cpiData$adj_factor, any.missing = FALSE)
 
-    DatabaseConnector::insertTable(
+    insertTableDBI(
       connection = connection,
       tableName = cpiAdjTableName,
       data = cpiData,
@@ -119,7 +119,7 @@ calculateCostOfCare <- function(
   if (costOfCareSettings$hasVisitRestriction) {
     restrictVisitTableName <- paste0(sessionPrefix, "_visit_restr")
     visitConcepts <- tibble::tibble(visit_concept_id = costOfCareSettings$restrictVisitConceptIds)
-    DatabaseConnector::insertTable(
+    insertTableDBI(
       connection = connection,
       tableName = restrictVisitTableName,
       data = visitConcepts,
@@ -143,7 +143,7 @@ calculateCostOfCare <- function(
         )
       )
 
-    DatabaseConnector::insertTable(
+    insertTableDBI(
       connection = connection,
       tableName = eventConceptsTableName,
       data = eventConcepts,
@@ -217,10 +217,10 @@ calculateCostOfCare <- function(
   resultsSql <- sprintf("SELECT * FROM %s;", resultsFqn)
   diagnosticsSql <- sprintf("SELECT * FROM %s ORDER BY step_name;", diagFqn)
 
-  results <- DatabaseConnector::querySql(connection, resultsSql, snakeCaseToCamelCase = TRUE) |>
-    dplyr::as_tibble()
-  diagnostics <- DatabaseConnector::querySql(connection, diagnosticsSql, snakeCaseToCamelCase = TRUE) |>
-    dplyr::as_tibble()
+  results <- DBI::dbGetQuery(connection, resultsSql) |>
+    dplyr::as_tibble() |> dplyr::rename_all(SqlRender::snakeCaseToCamelCase)
+  diagnostics <- DBI::dbGetQuery(connection, diagnosticsSql) |>
+    dplyr::as_tibble() |> dplyr::rename_all(SqlRender::snakeCaseToCamelCase)
 
   logMessage(
     sprintf("Analysis complete in %0.1fs.", as.numeric(difftime(Sys.time(), startTime, units = "secs"))),
