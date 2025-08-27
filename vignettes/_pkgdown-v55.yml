@@ -1,0 +1,19 @@
+articles:
+- title: Getting Started with CDM v5.5
+  navbar: ~
+  contents:
+  - getting-started-v55
+  - eunomia-setup-v55
+  
+- title: Advanced Analysis
+  navbar: ~
+  contents:
+  - advanced-cost-analysis-v55
+  - cpi-adjustment
+  
+- title: Legacy Documentation
+  navbar: ~
+  contents:
+  - getting-started
+  - working-with-eunomia
+  - advanced-features
