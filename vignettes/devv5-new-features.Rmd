@@ -1,0 +1,494 @@
+---
+title: "New Features in CostUtilization devv5"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{New Features in CostUtilization devv5}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5,
+  message = FALSE,
+  warning = FALSE,
+  eval = FALSE
+)
+```
+
+## Introduction
+
+The devv5 branch of CostUtilization introduces significant improvements and new features:
+
+- **Modern R practices** with `rlang`, `purrr`, and native pipe operators
+- **Settings-based architecture** for better parameter management
+- **Enhanced visit_detail support** for micro-costing analysis
+- **Improved Eunomia integration** with realistic synthetic data
+- **Better error handling** and user feedback
+
+This vignette demonstrates these new features and how to use them effectively.
+
+## Setup
+
+```{r setup}
+library(CostUtilization)
+library(DatabaseConnector)
+library(dplyr)
+library(purrr)
+library(ggplot2)
+library(cli)
+
+# Setup Eunomia with enhanced cost data
+connectionDetails <- Eunomia::getEunomiaConnectionDetails()
+connection <- DatabaseConnector::connect(connectionDetails)
+
+# Use the enhanced transformation function
+transformCostToCdmV5dot5(connectionDetails)
+```
+
+## Settings-Based Architecture
+
+The new approach uses settings objects for better parameter management:
+
+```{r settings-architecture}
+# Create settings using the new function
+basicSettings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date",
+  startOffsetDays = -365L,
+  endOffsetDays = 365L,
+  costConceptId = 31978L,  # Total charge
+  currencyConceptId = 44818668L  # USD
+)
+
+# Settings with visit restrictions
+restrictedSettings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date", 
+  startOffsetDays = 0L,
+  endOffsetDays = 90L,
+  restrictVisitConceptIds = c(9201L, 9203L),  # Inpatient, Emergency
+  costConceptId = 31980L  # Total cost
+)
+
+# Settings with event filters
+eventSettings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date",
+  startOffsetDays = -30L,
+  endOffsetDays = 180L,
+  eventFilters = list(
+    list(
+      name = "Diabetes Medications",
+      domain = "Drug", 
+      conceptIds = c(1503297L, 1502826L, 1502855L)
+    ),
+    list(
+      name = "Diabetes Procedures",
+      domain = "Procedure",
+      conceptIds = c(4298794L, 4051466L)
+    )
+  )
+)
+
+# Micro-costing settings
+microSettings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date",
+  startOffsetDays = 0L,
+  endOffsetDays = 30L,
+  microCosting = TRUE,
+  eventFilters = list(
+    list(
+      name = "Surgery Procedures",
+      domain = "Procedure",
+      conceptIds = c(4301351L, 4142875L)
+    )
+  ),
+  primaryEventFilterName = "Surgery Procedures"
+)
+
+cli::cli_h3("Settings objects created successfully")
+print(basicSettings)
+```
+
+## Enhanced visit_detail Support
+
+The new version properly incorporates visit_detail for micro-costing:
+
+```{r visit-detail-support}
+# Create a test cohort
+DatabaseConnector::executeSql(connection, "
+  CREATE TABLE main.surgery_cohort AS
+  SELECT DISTINCT
+    1 AS cohort_definition_id,
+    person_id AS subject_id,
+    procedure_date AS cohort_start_date,
+    DATE(procedure_date, '+30 days') AS cohort_end_date
+  FROM main.procedure_occurrence
+  WHERE procedure_concept_id IN (4301351, 4142875, 4143316)
+  LIMIT 100
+")
+
+# Ensure visit_detail table exists with proper structure
+DatabaseConnector::executeSql(connection, "
+  CREATE TABLE IF NOT EXISTS main.visit_detail AS
+  SELECT 
+    ROW_NUMBER() OVER (PARTITION BY visit_occurrence_id ORDER BY visit_start_date) AS visit_detail_id,
+    person_id,
+    visit_occurrence_id,
+    visit_concept_id AS visit_detail_concept_id,
+    visit_start_date AS visit_detail_start_date,
+    visit_end_date AS visit_detail_end_date,
+    visit_type_concept_id AS visit_detail_type_concept_id
+  FROM main.visit_occurrence
+")
+
+# Run micro-costing analysis with visit_detail
+microResults <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main", 
+  cohortTable = "surgery_cohort",
+  cohortId = 1L,
+  costOfCareSettings = microSettings,
+  verbose = TRUE
+)
+
+cli::cli_h3("Micro-costing results with visit_detail:")
+print(microResults$results)
+print(microResults$diagnostics)
+```
+
+## Modern R Practices
+
+The new codebase uses modern R patterns:
+
+```{r modern-r-practices}
+# Using purrr for functional programming
+timeWindows <- list(
+  preOp = c(-30L, -1L),
+  periOp = c(0L, 7L), 
+  postOp = c(8L, 90L)
+)
+
+# Create settings for each window using purrr
+windowSettings <- timeWindows |>
+  imap(~ createCostOfCareSettings(
+    anchorCol = "cohort_start_date",
+    startOffsetDays = .x[1],
+    endOffsetDays = .x[2],
+    costConceptId = 31980L
+  ))
+
+# Run analyses using purrr::map
+windowResults <- windowSettings |>
+  imap_dfr(~ {
+    result <- calculateCostOfCare(
+      connection = connection,
+      cdmDatabaseSchema = "main",
+      cohortDatabaseSchema = "main",
+      cohortTable = "surgery_cohort", 
+      cohortId = 1L,
+      costOfCareSettings = .x,
+      verbose = FALSE
+    )
+    
+    result$results |>
+      mutate(timeWindow = .y)
+  })
+
+# Visualize using ggplot2
+windowPlot <- windowResults |>
+  ggplot(aes(x = timeWindow, y = costPppm, fill = timeWindow)) +
+  geom_col() +
+  scale_fill_viridis_d() +
+  labs(
+    title = "Cost Per Person Per Month by Time Window",
+    x = "Time Window", 
+    y = "Cost PPPM ($)",
+    fill = "Window"
+  ) +
+  theme_minimal()
+
+print(windowPlot)
+```
+
+## Enhanced Error Handling
+
+The new version provides better error messages and validation:
+
+```{r error-handling}
+# This will provide a clear error message
+tryCatch({
+  badSettings <- createCostOfCareSettings(
+    anchorCol = "invalid_column",  # Invalid anchor
+    startOffsetDays = 100L,
+    endOffsetDays = 50L  # End before start - will error
+  )
+}, error = function(e) {
+  cli::cli_alert_warning("Caught expected error: {e$message}")
+})
+
+# Micro-costing without proper event filter will error clearly
+tryCatch({
+  badMicroSettings <- createCostOfCareSettings(
+    anchorCol = "cohort_start_date",
+    microCosting = TRUE,
+    primaryEventFilterName = "Nonexistent Filter"  # No matching filter
+  )
+}, error = function(e) {
+  cli::cli_alert_warning("Caught expected error: {e$message}")
+})
+```
+
+## Advanced Event Filtering
+
+The new system supports complex event filtering patterns:
+
+```{r advanced-filtering}
+# Complex cardiovascular event filters
+cvFilters <- list(
+  list(
+    name = "Acute MI",
+    domain = "Condition",
+    conceptIds = c(4329847L, 314666L, 4108217L)
+  ),
+  list(
+    name = "Revascularization", 
+    domain = "Procedure",
+    conceptIds = c(4336464L, 4178904L)
+  ),
+  list(
+    name = "Cardiac Medications",
+    domain = "Drug", 
+    conceptIds = c(1308216L, 1310149L, 1545958L)
+  ),
+  list(
+    name = "Cardiac Biomarkers",
+    domain = "Measurement",
+    conceptIds = c(3016407L, 3005593L)
+  )
+)
+
+# Create CV cohort
+DatabaseConnector::executeSql(connection, "
+  CREATE TABLE main.cv_cohort AS
+  SELECT DISTINCT
+    1 AS cohort_definition_id,
+    person_id AS subject_id,
+    MIN(condition_start_date) AS cohort_start_date,
+    DATE(MIN(condition_start_date), '+1 year') AS cohort_end_date
+  FROM main.condition_occurrence
+  WHERE condition_concept_id IN (4329847, 314666, 4108217)
+  GROUP BY person_id
+  LIMIT 50
+")
+
+# Settings requiring multiple event types
+multiEventSettings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date",
+  startOffsetDays = -30L,
+  endOffsetDays = 365L,
+  eventFilters = cvFilters
+)
+
+# Run analysis
+cvResults <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "cv_cohort",
+  cohortId = 1L,
+  costOfCareSettings = multiEventSettings,
+  verbose = TRUE
+)
+
+cli::cli_h3("Cardiovascular event-filtered results:")
+print(cvResults$results)
+```
+
+## Improved Synthetic Data Generation
+
+The enhanced Eunomia helpers create more realistic data:
+
+```{r synthetic-data}
+# Check the quality of synthetic cost data
+costQuality <- DatabaseConnector::querySql(connection, "
+  SELECT 
+    cost_domain_id,
+    cost_concept_id,
+    COUNT(*) as n_records,
+    COUNT(DISTINCT person_id) as n_persons,
+    AVG(cost) as avg_cost,
+    MIN(cost) as min_cost,
+    MAX(cost) as max_cost,
+    COUNT(DISTINCT visit_detail_id) as n_visit_details
+  FROM main.cost
+  GROUP BY cost_domain_id, cost_concept_id
+  ORDER BY n_records DESC
+") |>
+  rename_with(tolower)
+
+cli::cli_h3("Synthetic cost data quality:")
+print(costQuality)
+
+# Check visit_detail integration
+visitDetailCosts <- DatabaseConnector::querySql(connection, "
+  SELECT 
+    COUNT(*) as total_costs,
+    COUNT(DISTINCT visit_occurrence_id) as unique_visits,
+    COUNT(DISTINCT visit_detail_id) as unique_visit_details,
+    SUM(CASE WHEN visit_detail_id IS NOT NULL THEN 1 ELSE 0 END) as costs_with_visit_detail
+  FROM main.cost
+") |>
+  rename_with(tolower)
+
+cli::cli_h3("Visit detail integration:")
+print(visitDetailCosts)
+```
+
+## Performance Improvements
+
+The new architecture includes performance optimizations:
+
+```{r performance}
+# Benchmark different approaches
+library(microbenchmark)
+
+# Settings-based approach (new)
+newApproach <- function() {
+  settings <- createCostOfCareSettings(
+    anchorCol = "cohort_start_date",
+    startOffsetDays = 0L,
+    endOffsetDays = 30L
+  )
+  
+  calculateCostOfCare(
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
+    cohortTable = "surgery_cohort",
+    cohortId = 1L,
+    costOfCareSettings = settings,
+    verbose = FALSE
+  )
+}
+
+# Time the new approach
+system.time(result <- newApproach())
+cli::cli_alert_info("New approach completed in {round(system.time(newApproach())[3], 2)} seconds")
+
+# Check SQL optimization
+sqlStats <- DatabaseConnector::querySql(connection, "
+  SELECT 
+    name,
+    type,
+    sql
+  FROM sqlite_master 
+  WHERE type = 'index' AND tbl_name = 'cost'
+") |>
+  rename_with(tolower)
+
+cli::cli_h3("Cost table indexes:")
+print(sqlStats)
+```
+
+## Comprehensive Testing
+
+The new version includes comprehensive test coverage:
+
+```{r testing}
+# Test edge cases
+# Empty cohort
+DatabaseConnector::executeSql(connection, "
+  CREATE TABLE main.empty_cohort AS
+  SELECT 
+    1 AS cohort_definition_id,
+    person_id AS subject_id,
+    '2025-01-01' AS cohort_start_date,
+    '2025-12-31' AS cohort_end_date
+  FROM main.person
+  WHERE 1 = 0
+")
+
+emptySettings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date",
+  startOffsetDays = 0L,
+  endOffsetDays = 30L
+)
+
+emptyResult <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main", 
+  cohortDatabaseSchema = "main",
+  cohortTable = "empty_cohort",
+  cohortId = 1L,
+  costOfCareSettings = emptySettings,
+  verbose = FALSE
+)
+
+cli::cli_h3("Empty cohort handled gracefully:")
+print(emptyResult$results)
+print(emptyResult$diagnostics)
+```
+
+## Migration Guide
+
+For users migrating from earlier versions:
+
+```{r migration-guide}
+# Old approach (deprecated)
+# calculateCostOfCare(
+#   connection = connection,
+#   anchorCol = "cohort_start_date",
+#   startOffsetDays = 0,
+#   endOffsetDays = 365,
+#   restrictVisitConceptIds = c(9201, 9203),
+#   ...
+# )
+
+# New approach (recommended)
+migrationSettings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date",
+  startOffsetDays = 0L,
+  endOffsetDays = 365L,
+  restrictVisitConceptIds = c(9201L, 9203L)
+)
+
+migrationResult <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "surgery_cohort",
+  cohortId = 1L,
+  costOfCareSettings = migrationSettings
+)
+
+cli::cli_alert_success("Migration to new settings-based approach complete!")
+```
+
+## Clean Up
+
+```{r cleanup}
+# Clean up test tables
+DatabaseConnector::executeSql(connection, "DROP TABLE IF EXISTS main.surgery_cohort")
+DatabaseConnector::executeSql(connection, "DROP TABLE IF EXISTS main.cv_cohort") 
+DatabaseConnector::executeSql(connection, "DROP TABLE IF EXISTS main.empty_cohort")
+
+# Disconnect
+DatabaseConnector::disconnect(connection)
+cli::cli_alert_success("Cleanup complete")
+```
+
+## Summary
+
+The devv5 branch introduces significant improvements:
+
+1. **Settings-based architecture** - Better parameter management and validation
+2. **Enhanced visit_detail support** - Proper micro-costing capabilities  
+3. **Modern R practices** - Using `purrr`, `rlang`, and native pipes
+4. **Improved error handling** - Clear, actionable error messages
+5. **Better synthetic data** - More realistic Eunomia integration
+6. **Performance optimizations** - Faster execution and better SQL
+
+These improvements make CostUtilization more robust, user-friendly, and suitable for production use in healthcare cost analysis.
