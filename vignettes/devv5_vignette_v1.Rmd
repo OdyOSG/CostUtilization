@@ -1,0 +1,112 @@
+---
+title: "CDM v5.5 Cost Analysis with Eunomia"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{CDM v5.5 Cost Analysis with Eunomia}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+## Introduction
+
+This vignette demonstrates cost analysis workflows using CDM v5.5 structure with the Eunomia test dataset. Key updates for v5.5 include:
+
+- Enhanced cost table structure
+- Improved currency handling
+- Standardized payer plan period linkages
+
+```{r packages}
+library(CostUtilization)
+library(DatabaseConnector)
+library(dplyr)
+
+# Install Eunomia if needed
+if (!requireNamespace("Eunomia", quietly = TRUE)) {
+  install.packages("Eunomia")
+}
+```
+
+## v5.5 Data Preparation
+
+```{r data_setup}
+# Get connection details
+connectionDetails <- Eunomia::getEunomiaConnectionDetails()
+
+# Create v5.5 cost structure
+transformCostToCdmV5dot5(
+  connectionDetails = connectionDetails,
+  cdmDatabaseSchema = "main"
+)
+
+# Verify table structure
+connection <- connect(connectionDetails)
+cost_structure <- querySql(connection, "PRAGMA table_info(cost)")
+
+cat("\nCDM v5.5 Cost Table Columns:\n")
+print(select(cost_structure, COLUMN_NAME, DATA_TYPE))
+```
+
+## Modern Cost Attribution
+
+```{r modern_analysis}
+# Create example cohort
+executeSql(connection, "
+  CREATE TABLE main.diabetes_cohort AS
+  SELECT
+    1 AS cohort_definition_id,
+    person_id,
+    condition_start_date AS cohort_date
+  FROM condition_occurrence
+  WHERE condition_concept_id IN (201820, 443238)
+")
+
+# Run analysis with v5.5 features
+results <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "diabetes_cohort",
+  currencyColumn = "total_charge",
+  adjustForCPI = TRUE,
+  baseYear = 2023
+)
+
+knitr::kable(results, caption = "Diabetes Cohort Cost Analysis")
+```
+
+## Advanced Features
+
+### Multi-Payer Analysis
+```{r multi_payer}
+payer_results <- calculateCostOfCare(
+  connection = connection,
+  payerAnalysis = TRUE,
+  breakdownColumns = c("plan_type", "payer_type")
+)
+
+ggplot(payer_results, aes(x = plan_type, y = total_paid, fill = payer_type)) +
+  geom_col(position = "dodge") +
+  labs(title = "Cost Distribution by Payer Type")
+```
+
+### Currency Conversion
+```{r currency}
+# Historical analysis with CPI adjustment
+historical_costs <- calculateCostOfCare(
+  connection = connection,
+  cpiReferenceYear = 2020,
+  currencyColumns = c("total_charge", "total_paid")
+)
+
+knitr::kable(historical_costs, caption = "CPI-Adjusted Costs")
+```
