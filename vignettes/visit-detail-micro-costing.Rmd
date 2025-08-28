@@ -1,0 +1,663 @@
+---
+title: "Visit Detail Micro-Costing Analysis"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Visit Detail Micro-Costing Analysis}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5,
+  message = FALSE,
+  warning = FALSE,
+  eval = FALSE
+)
+```
+
+## Introduction
+
+Visit detail micro-costing allows for granular cost analysis at the individual service line level within healthcare encounters. This vignette demonstrates how to use the enhanced visit_detail functionality in CostUtilization for detailed cost breakdowns.
+
+## Understanding Visit Details
+
+In OMOP CDM v5.4+, the `visit_detail` table captures individual services or encounters within a broader visit:
+
+- **visit_occurrence**: The overall hospital stay or clinic visit
+- **visit_detail**: Individual services like procedures, consultations, or room charges within that visit
+
+This enables micro-costing analysis where costs can be attributed to specific services rather than just the overall visit.
+
+## Setup
+
+```{r setup}
+library(CostUtilization)
+library(DatabaseConnector)
+library(dplyr)
+library(purrr)
+library(ggplot2)
+library(cli)
+
+# Setup enhanced Eunomia with visit_detail support
+connectionDetails <- Eunomia::getEunomiaConnectionDetails()
+connection <- DatabaseConnector::connect(connectionDetails)
+
+# Use the enhanced transformation that properly handles visit_detail
+transformCostToCdmV5dot5(connectionDetails)
+```
+
+## Creating Realistic Visit Detail Data
+
+For demonstration, let's create a more realistic visit_detail structure:
+
+```{r create-visit-details}
+# Create enhanced visit_detail table with different service types
+DatabaseConnector::executeSql(connection, "
+  DROP TABLE IF EXISTS main.visit_detail;
+  
+  CREATE TABLE main.visit_detail AS
+  WITH visit_services AS (
+    -- Room and board charges
+    SELECT 
+      ROW_NUMBER() OVER (ORDER BY visit_occurrence_id) AS visit_detail_id,
+      person_id,
+      visit_occurrence_id,
+      9201 AS visit_detail_concept_id,  -- Inpatient visit detail
+      visit_start_date AS visit_detail_start_date,
+      visit_end_date AS visit_detail_end_date,
+      32817 AS visit_detail_type_concept_id,  -- EHR
+      'Room and Board' AS service_type
+    FROM main.visit_occurrence
+    WHERE visit_concept_id = 9201  -- Inpatient visits
+    
+    UNION ALL
+    
+    -- Procedure services
+    SELECT 
+      ROW_NUMBER() OVER (ORDER BY visit_occurrence_id) + 10000,
+      vo.person_id,
+      vo.visit_occurrence_id,
+      9202 AS visit_detail_concept_id,  -- Outpatient visit detail
+      po.procedure_date,
+      po.procedure_date,
+      32817,
+      'Procedure Service'
+    FROM main.visit_occurrence vo
+    JOIN main.procedure_occurrence po ON vo.visit_occurrence_id = po.visit_occurrence_id
+    
+    UNION ALL
+    
+    -- Laboratory services  
+    SELECT
+      ROW_NUMBER() OVER (ORDER BY visit_occurrence_id) + 20000,
+      vo.person_id,
+      vo.visit_occurrence_id,
+      9202 AS visit_detail_concept_id,
+      m.measurement_date,
+      m.measurement_date, 
+      32817,
+      'Laboratory Service'
+    FROM main.visit_occurrence vo
+    JOIN main.measurement m ON vo.visit_occurrence_id = m.visit_occurrence_id
+    
+    UNION ALL
+    
+    -- Pharmacy services
+    SELECT
+      ROW_NUMBER() OVER (ORDER BY visit_occurrence_id) + 30000,
+      vo.person_id,
+      vo.visit_occurrence_id,
+      9202 AS visit_detail_concept_id,
+      de.drug_exposure_start_date,
+      de.drug_exposure_end_date,
+      32817,
+      'Pharmacy Service'
+    FROM main.visit_occurrence vo  
+    JOIN main.drug_exposure de ON vo.visit_occurrence_id = de.visit_occurrence_id
+  )
+  SELECT * FROM visit_services;
+")
+
+# Verify visit_detail creation
+visitDetailStats <- DatabaseConnector::querySql(connection, "
+  SELECT 
+    service_type,
+    COUNT(*) as n_services,
+    COUNT(DISTINCT person_id) as n_persons,
+    COUNT(DISTINCT visit_occurrence_id) as n_visits
+  FROM main.visit_detail
+  GROUP BY service_type
+  ORDER BY n_services DESC
+") |>
+  rename_with(tolower)
+
+cli::cli_h3("Visit detail services created:")
+print(visitDetailStats)
+```
+
+## Basic Micro-Costing Analysis
+
+Let's start with a basic micro-costing analysis for surgical procedures:
+
+```{r basic-micro-costing}
+# Create a surgical cohort
+DatabaseConnector::executeSql(connection, "
+  CREATE TABLE main.surgical_cohort AS
+  SELECT DISTINCT
+    1 AS cohort_definition_id,
+    po.person_id AS subject_id,
+    po.procedure_date AS cohort_start_date,
+    DATE(po.procedure_date, '+30 days') AS cohort_end_date
+  FROM main.procedure_occurrence po
+  JOIN main.visit_occurrence vo ON po.visit_occurrence_id = vo.visit_occurrence_id
+  WHERE po.procedure_concept_id IN (
+    4301351,  -- Laparoscopic appendectomy
+    4142875,  -- Cholecystectomy
+    4143316   -- Hernia repair
+  )
+  AND vo.visit_concept_id = 9201  -- Inpatient visits only
+  LIMIT 50
+")
+
+# Define surgical event filters for micro-costing
+surgicalFilters <- list(
+  list(
+    name = "Surgical Procedures",
+    domain = "Procedure", 
+    conceptIds = c(4301351L, 4142875L, 4143316L)
+  ),
+  list(
+    name = "Anesthesia",
+    domain = "Procedure",
+    conceptIds = c(4045049L, 4129389L)  # Anesthesia procedures
+  ),
+  list(
+    name = "Surgical Supplies",
+    domain = "Device",
+    conceptIds = c(4180790L, 4267417L)  # Surgical devices
+  )
+)
+
+# Create micro-costing settings
+microSettings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date",
+  startOffsetDays = 0L,
+  endOffsetDays = 7L,  # Week after surgery
+  microCosting = TRUE,
+  eventFilters = surgicalFilters,
+  primaryEventFilterName = "Surgical Procedures",
+  costConceptId = 31980L  # Total cost
+)
+
+# Run micro-costing analysis
+microResults <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "surgical_cohort",
+  cohortId = 1L,
+  costOfCareSettings = microSettings,
+  verbose = TRUE
+)
+
+cli::cli_h3("Surgical micro-costing results:")
+print(microResults$results)
+print(microResults$diagnostics)
+```
+
+## Service-Level Cost Breakdown
+
+Now let's analyze costs by service type within visits:
+
+```{r service-level-analysis}
+# Query to get cost breakdown by service type
+serviceCosts <- DatabaseConnector::querySql(connection, "
+  SELECT 
+    vd.service_type,
+    COUNT(DISTINCT c.cost_id) as n_cost_records,
+    COUNT(DISTINCT vd.visit_detail_id) as n_visit_details,
+    COUNT(DISTINCT vd.visit_occurrence_id) as n_visits,
+    AVG(c.cost) as avg_cost_per_service,
+    SUM(c.cost) as total_cost,
+    MIN(c.cost) as min_cost,
+    MAX(c.cost) as max_cost
+  FROM main.cost c
+  JOIN main.visit_detail vd ON c.visit_detail_id = vd.visit_detail_id
+  WHERE c.cost_concept_id = 31980  -- Total cost
+  GROUP BY vd.service_type
+  ORDER BY total_cost DESC
+") |>
+  rename_with(tolower)
+
+cli::cli_h3("Cost breakdown by service type:")
+print(serviceCosts)
+
+# Visualize service costs
+servicePlot <- serviceCosts |>
+  ggplot(aes(x = reorder(serviceType, totalCost), y = totalCost, fill = serviceType)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_viridis_d() +
+  labs(
+    title = "Total Costs by Service Type",
+    x = "Service Type",
+    y = "Total Cost ($)",
+    fill = "Service"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+print(servicePlot)
+```
+
+## Comparing Visit-Level vs Visit-Detail-Level Costing
+
+Let's compare traditional visit-level costing with visit-detail micro-costing:
+
+```{r comparison-analysis}
+# Visit-level costing settings
+visitLevelSettings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date",
+  startOffsetDays = 0L,
+  endOffsetDays = 7L,
+  microCosting = FALSE,  # Traditional visit-level
+  costConceptId = 31980L
+)
+
+# Run visit-level analysis
+visitResults <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main", 
+  cohortDatabaseSchema = "main",
+  cohortTable = "surgical_cohort",
+  cohortId = 1L,
+  costOfCareSettings = visitLevelSettings,
+  verbose = FALSE
+)
+
+# Compare results
+comparison <- tibble(
+  analysis_type = c("Visit Level", "Visit Detail (Micro)"),
+  total_cost = c(
+    visitResults$results$totalCost[1],
+    microResults$results$totalCost[1]
+  ),
+  cost_pppm = c(
+    visitResults$results$costPppm[1], 
+    microResults$results$costPppm[1]
+  ),
+  n_events = c(
+    visitResults$results$distinctVisits[1],
+    microResults$results$distinctVisitDetails[1]
+  )
+)
+
+cli::cli_h3("Visit-level vs Micro-costing comparison:")
+print(comparison)
+
+# Visualize comparison
+comparisonPlot <- comparison |>
+  ggplot(aes(x = analysisType, y = totalCost, fill = analysisType)) +
+  geom_col() +
+  scale_fill_manual(values = c("#1f77b4", "#ff7f0e")) +
+  labs(
+    title = "Total Cost: Visit-Level vs Visit-Detail Analysis",
+    x = "Analysis Type",
+    y = "Total Cost ($)",
+    fill = "Type"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+print(comparisonPlot)
+```
+
+## Advanced Micro-Costing: Multiple Event Types
+
+Let's perform a more complex analysis with multiple event types:
+
+```{r advanced-micro-costing}
+# Create a cardiac procedure cohort
+DatabaseConnector::executeSql(connection, "
+  CREATE TABLE main.cardiac_cohort AS  
+  SELECT DISTINCT
+    1 AS cohort_definition_id,
+    po.person_id AS subject_id,
+    po.procedure_date AS cohort_start_date,
+    DATE(po.procedure_date, '+90 days') AS cohort_end_date
+  FROM main.procedure_occurrence po
+  WHERE po.procedure_concept_id IN (
+    4336464,  -- Percutaneous coronary intervention
+    4178904   -- Coronary artery bypass graft
+  )
+  LIMIT 30
+")
+
+# Define comprehensive cardiac event filters
+cardiacFilters <- list(
+  list(
+    name = "Cardiac Procedures",
+    domain = "Procedure",
+    conceptIds = c(4336464L, 4178904L, 4019824L)  # PCI, CABG, Echo
+  ),
+  list(
+    name = "Cardiac Medications", 
+    domain = "Drug",
+    conceptIds = c(1308216L, 1310149L, 1545958L)  # Aspirin, Clopidogrel, Atorvastatin
+  ),
+  list(
+    name = "Cardiac Monitoring",
+    domain = "Measurement", 
+    conceptIds = c(3016407L, 3005593L, 3027114L)  # Troponin, BNP, Cholesterol
+  ),
+  list(
+    name = "Cardiac Devices",
+    domain = "Device",
+    conceptIds = c(4180790L, 4267417L)  # Stents, monitoring devices
+  )
+)
+
+# Advanced micro-costing settings
+advancedMicroSettings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date",
+  startOffsetDays = -1L,   # Day before procedure
+  endOffsetDays = 30L,     # Month after
+  microCosting = TRUE,
+  eventFilters = cardiacFilters,
+  primaryEventFilterName = "Cardiac Procedures",
+  costConceptId = 31980L
+)
+
+# Run advanced analysis
+advancedResults <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main", 
+  cohortTable = "cardiac_cohort",
+  cohortId = 1L,
+  costOfCareSettings = advancedMicroSettings,
+  verbose = TRUE
+)
+
+cli::cli_h3("Advanced cardiac micro-costing results:")
+print(advancedResults$results)
+print(advancedResults$diagnostics)
+```
+
+## Time-Based Micro-Costing Analysis
+
+Analyze how micro-costs evolve over time:
+
+```{r time-based-micro-costing}
+# Define time windows for analysis
+timeWindows <- list(
+  immediate = c(0L, 1L),      # Day of procedure
+  shortTerm = c(2L, 7L),      # Week after
+  mediumTerm = c(8L, 30L),    # Month after
+  longTerm = c(31L, 90L)      # Quarter after
+)
+
+# Create settings for each time window
+timeWindowSettings <- timeWindows |>
+  imap(~ createCostOfCareSettings(
+    anchorCol = "cohort_start_date",
+    startOffsetDays = .x[1],
+    endOffsetDays = .x[2], 
+    microCosting = TRUE,
+    eventFilters = cardiacFilters,
+    primaryEventFilterName = "Cardiac Procedures",
+    costConceptId = 31980L
+  ))
+
+# Run analysis for each window
+timeResults <- timeWindowSettings |>
+  imap_dfr(~ {
+    result <- calculateCostOfCare(
+      connection = connection,
+      cdmDatabaseSchema = "main",
+      cohortDatabaseSchema = "main",
+      cohortTable = "cardiac_cohort", 
+      cohortId = 1L,
+      costOfCareSettings = .x,
+      verbose = FALSE
+    )
+    
+    result$results |>
+      mutate(timeWindow = .y)
+  })
+
+cli::cli_h3("Time-based micro-costing results:")
+print(timeResults)
+
+# Visualize cost evolution over time
+timePlot <- timeResults |>
+  mutate(
+    timeWindow = factor(timeWindow, levels = names(timeWindows)),
+    windowLabel = case_when(
+      timeWindow == "immediate" ~ "Day 0-1",
+      timeWindow == "shortTerm" ~ "Days 2-7", 
+      timeWindow == "mediumTerm" ~ "Days 8-30",
+      timeWindow == "longTerm" ~ "Days 31-90"
+    )
+  ) |>
+  ggplot(aes(x = windowLabel, y = totalCost, fill = timeWindow)) +
+  geom_col() +
+  scale_fill_viridis_d() +
+  labs(
+    title = "Cardiac Procedure Costs Over Time",
+    x = "Time Window",
+    y = "Total Cost ($)",
+    fill = "Window"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  )
+
+print(timePlot)
+```
+
+## Cost Attribution Analysis
+
+Understand which services drive the highest costs:
+
+```{r cost-attribution}
+# Detailed cost attribution query
+costAttribution <- DatabaseConnector::querySql(connection, "
+  WITH service_costs AS (
+    SELECT 
+      vd.service_type,
+      vd.visit_detail_concept_id,
+      c.cost_concept_id,
+      c.cost,
+      CASE 
+        WHEN c.cost_concept_id = 31973 THEN 'Total Charge'
+        WHEN c.cost_concept_id = 31980 THEN 'Total Cost'
+        WHEN c.cost_concept_id = 31981 THEN 'Paid by Patient'
+        WHEN c.cost_concept_id = 31982 THEN 'Paid by Payer'
+        ELSE 'Other'
+      END as cost_type
+    FROM main.cost c
+    JOIN main.visit_detail vd ON c.visit_detail_id = vd.visit_detail_id
+    WHERE c.cost > 0
+  )
+  SELECT 
+    service_type,
+    cost_type,
+    COUNT(*) as n_records,
+    AVG(cost) as avg_cost,
+    SUM(cost) as total_cost,
+    ROUND(100.0 * SUM(cost) / SUM(SUM(cost)) OVER (), 2) as pct_of_total
+  FROM service_costs
+  GROUP BY service_type, cost_type
+  ORDER BY total_cost DESC
+") |>
+  rename_with(tolower)
+
+cli::cli_h3("Cost attribution by service and cost type:")
+print(costAttribution)
+
+# Create attribution visualization
+attributionPlot <- costAttribution |>
+  filter(costType == "Total Cost") |>
+  ggplot(aes(x = reorder(serviceType, totalCost), y = pctOfTotal, fill = serviceType)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_viridis_d() +
+  labs(
+    title = "Cost Attribution by Service Type",
+    x = "Service Type", 
+    y = "Percentage of Total Cost (%)",
+    fill = "Service"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+print(attributionPlot)
+```
+
+## Quality Assurance for Micro-Costing
+
+Validate the micro-costing results:
+
+```{r quality-assurance}
+# Check data quality metrics
+qualityMetrics <- DatabaseConnector::querySql(connection, "
+  SELECT 
+    'Total cost records' as metric,
+    COUNT(*) as value
+  FROM main.cost
+  
+  UNION ALL
+  
+  SELECT 
+    'Records with visit_detail_id',
+    COUNT(*)
+  FROM main.cost
+  WHERE visit_detail_id IS NOT NULL
+  
+  UNION ALL
+  
+  SELECT
+    'Unique visit_detail records',
+    COUNT(DISTINCT visit_detail_id)
+  FROM main.cost
+  WHERE visit_detail_id IS NOT NULL
+  
+  UNION ALL
+  
+  SELECT
+    'Visit details with costs',
+    COUNT(DISTINCT vd.visit_detail_id)
+  FROM main.visit_detail vd
+  JOIN main.cost c ON vd.visit_detail_id = c.visit_detail_id
+  
+  UNION ALL
+  
+  SELECT
+    'Total visit details',
+    COUNT(*)
+  FROM main.visit_detail
+") |>
+  rename_with(tolower)
+
+cli::cli_h3("Micro-costing data quality metrics:")
+print(qualityMetrics)
+
+# Validate cost consistency
+costConsistency <- DatabaseConnector::querySql(connection, "
+  SELECT 
+    visit_occurrence_id,
+    COUNT(DISTINCT visit_detail_id) as n_visit_details,
+    SUM(CASE WHEN cost_concept_id = 31980 THEN cost ELSE 0 END) as visit_detail_total,
+    -- Compare with visit-level costs if available
+    COUNT(*) as n_cost_records
+  FROM main.cost c
+  JOIN main.visit_detail vd ON c.visit_detail_id = vd.visit_detail_id
+  WHERE c.cost_concept_id = 31980
+  GROUP BY visit_occurrence_id
+  HAVING COUNT(DISTINCT visit_detail_id) > 1
+  ORDER BY visit_detail_total DESC
+  LIMIT 10
+") |>
+  rename_with(tolower)
+
+cli::cli_h3("Cost consistency check (top visits by detail cost):")
+print(costConsistency)
+```
+
+## Best Practices for Micro-Costing
+
+Key recommendations for effective micro-costing analysis:
+
+```{r best-practices}
+cli::cli_h2("Best Practices for Visit Detail Micro-Costing")
+
+cli::cli_h3("1. Data Preparation")
+cli::cli_ul(c(
+  "Ensure visit_detail table is properly populated",
+  "Verify cost records are linked to visit_detail_id",
+  "Check for complete cost concept coverage",
+  "Validate temporal alignment between events and costs"
+))
+
+cli::cli_h3("2. Analysis Design")
+cli::cli_ul(c(
+  "Define clear primary event filters for micro-costing",
+  "Use appropriate time windows for the clinical question",
+  "Consider both direct and indirect costs",
+  "Account for cost attribution methodology"
+))
+
+cli::cli_h3("3. Validation")
+cli::cli_ul(c(
+  "Compare micro-costing totals with visit-level costs",
+  "Check for missing or orphaned cost records", 
+  "Validate cost distributions are realistic",
+  "Ensure consistent cost concept usage"
+))
+
+cli::cli_h3("4. Interpretation")
+cli::cli_ul(c(
+  "Consider clinical context when interpreting results",
+  "Account for variations in coding practices",
+  "Be aware of cost attribution limitations",
+  "Document assumptions and methodology clearly"
+))
+```
+
+## Clean Up
+
+```{r cleanup}
+# Clean up test tables
+DatabaseConnector::executeSql(connection, "DROP TABLE IF EXISTS main.surgical_cohort")
+DatabaseConnector::executeSql(connection, "DROP TABLE IF EXISTS main.cardiac_cohort")
+
+# Disconnect
+DatabaseConnector::disconnect(connection)
+cli::cli_alert_success("Visit detail micro-costing analysis complete!")
+```
+
+## Summary
+
+This vignette demonstrated:
+
+1. **Visit detail setup** - Creating realistic visit_detail structures
+2. **Basic micro-costing** - Service-level cost analysis
+3. **Comparative analysis** - Visit-level vs visit-detail costing
+4. **Advanced techniques** - Multiple event types and time windows
+5. **Cost attribution** - Understanding cost drivers
+6. **Quality assurance** - Validating micro-costing results
+
+Visit detail micro-costing enables granular cost analysis that can provide insights into:
+- Service-specific cost drivers
+- Resource utilization patterns  
+- Cost attribution within complex encounters
+- Opportunities for cost optimization
+
+The enhanced visit_detail support in CostUtilization makes these analyses more accessible and reliable for healthcare cost research.
