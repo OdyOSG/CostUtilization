@@ -32,7 +32,7 @@ if \code{connection} is not supplied (provide exactly one of the two).}
 
 \item{costOfCareSettings}{A settings object from \code{createCostOfCareSettings()}.}
 
-\item{tempEmulationSchema}{Optional schema for temp table emulation (Oracle/Redshift/…).}
+\item{tempEmulationSchema}{Optional schema for temp table emulation (Oracle/Redshift/...).}
 
 \item{verbose}{Logical; print progress messages.}
 }

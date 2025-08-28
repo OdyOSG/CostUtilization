@@ -14,17 +14,21 @@
 #'
 injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
   cli::cli_alert_info("Generating synthetic payer_plan_period and wide-format cost data.")
-  
   cli::cli_alert_info("- Step 1: Creating realistic payer_plan_period table.")
   
   # Fetch observation periods and calculate start/end years
-  person_obs_periods <- DBI::dbGetQuery(connection, glue::glue("SELECT person_id, observation_period_start_date, observation_period_end_date FROM {cdmDatabaseSchema}.observation_period")) |>
+  person_obs_periods <- DBI::dbGetQuery(
+    connection,
+    glue::glue(
+      "SELECT person_id, observation_period_start_date, observation_period_end_date 
+       FROM {cdmDatabaseSchema}.observation_period"
+    )
+  ) |>
     dplyr::rename_with(tolower) |>
     dplyr::mutate(dplyr::across(dplyr::ends_with("_date"), as.Date)) |>
-    # Determine the calendar years covered by the observation period
     dplyr::mutate(
-      start_year = as.integer(format(observation_period_start_date, "%Y")),
-      end_year = as.integer(format(observation_period_end_date, "%Y"))
+      start_year = as.integer(format(.data$observation_period_start_date, "%Y")),
+      end_year   = as.integer(format(.data$observation_period_end_date, "%Y"))
     )
   
   set.seed(seed)
@@ -34,9 +38,8 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
   
   # Simulates plan changes on Jan 1 with a bias toward continuous enrollment
   generate_random_plans <- function(pid, start_date, end_date, start_year, end_year) {
-    # Ensure inputs are Date
     start_date <- as.Date(start_date)
-    end_date <- as.Date(end_date)
+    end_date   <- as.Date(end_date)
     
     possible_change_years <- (start_year + 1):end_year
     n_possible_changes <- length(possible_change_years)
@@ -63,12 +66,11 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
     
     # Build boundaries
     starts <- c(start_date, change_dates)
-    # End each segment the day before the next Jan 1 change, with the last ending at end_date
-    ends <- c(if (length(change_dates) > 0) change_dates - 1L else NULL, end_date)
+    ends   <- c(if (length(change_dates) > 0) change_dates - 1L else NULL, end_date)
     
     # Force Date class to avoid numeric coercion
     starts <- as.Date(starts, origin = "1970-01-01")
-    ends <- as.Date(ends, origin = "1970-01-01")
+    ends   <- as.Date(ends,   origin = "1970-01-01")
     
     assigned_plans <- sample(plan_options, n_segments, replace = TRUE)
     
@@ -79,65 +81,70 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
       plan_name = assigned_plans,
       stringsAsFactors = FALSE
     )
-    
-    # Extra safety: coerce again in case upstream inputs were odd
     df$plan_start_date <- as.Date(df$plan_start_date)
-    df$plan_end_date <- as.Date(df$plan_end_date)
+    df$plan_end_date   <- as.Date(df$plan_end_date)
     df
   }
   
-  # Apply to each person
-  payer_plans_df_long <- purrr::pmap_dfr(
-    person_obs_periods,
-    ~ generate_random_plans(..1, ..2, ..3, ..4, ..5)
-  )
+  # Apply to each person (rowwise pmap over the 5 needed columns)
+  payer_plans_df_long <- person_obs_periods |>
+    dplyr::select(
+      .data$person_id,
+      .data$observation_period_start_date,
+      .data$observation_period_end_date,
+      .data$start_year,
+      .data$end_year
+    ) |>
+    purrr::pmap_dfr(~ generate_random_plans(..1, ..2, ..3, ..4, ..5))
   
   # Final formatting of the payer_plan_period table
   payer_plans_df <- payer_plans_df_long |>
     dplyr::arrange(.data$person_id, .data$plan_start_date) |>
     dplyr::mutate(
       payerPlanPeriodId = dplyr::row_number(),
-      # Derive payer type (Source Value) from the simulated plan name
       payerSourceValue = dplyr::case_when(
-        grepl("PPO", plan_name) ~ "Commercial PPO",
-        grepl("HMO", plan_name) ~ "Managed Care HMO",
-        grepl("EPO", plan_name) ~ "Exclusive Provider Organization",
+        grepl("PPO", .data$plan_name) ~ "Commercial PPO",
+        grepl("HMO", .data$plan_name) ~ "Managed Care HMO",
+        grepl("EPO", .data$plan_name) ~ "Exclusive Provider Organization",
         TRUE ~ "Other Insurance"
       ),
       planSourceValue = .data$plan_name
     ) |>
-    dplyr::select(.data$payerPlanPeriodId,
-                  .data$person_id,
-                  payerPlanPeriodStartDate = .data$plan_start_date,
-                  payerPlanPeriodEndDate = .data$plan_end_date,
-                  .data$payerSourceValue,
-                  .data$planSourceValue
+    dplyr::select(
+      .data$payerPlanPeriodId,
+      .data$person_id,
+      payerPlanPeriodStartDate = .data$plan_start_date,
+      payerPlanPeriodEndDate   = .data$plan_end_date,
+      .data$payerSourceValue,
+      .data$planSourceValue
     )
   
   # --- Define Cost Structure and Fetch Event Data ---
   cli::cli_alert_info("- Step 2: Fetching clinical events and mapping to plan periods.")
   costStructure <- list(
-    "Procedure" = c("procedure_occurrence", "procedure_occurrence_id", "person_id", "procedure_date"),
-    "Measurement" = c("measurement", "measurement_id", "person_id", "measurement_date"),
-    "Visit" = c("visit_occurrence", "visit_occurrence_id", "person_id", "visit_start_date"),
-    "Device" = c("device_exposure", "device_exposure_id", "person_id", "device_exposure_start_date"),
-    "Drug" = c("drug_exposure", "drug_exposure_id", "person_id", "drug_exposure_start_date"),
-    "Observation" = c("observation", "observation_id", "person_id", "observation_date"),
-    "Condition" = c("condition_occurrence", "condition_occurrence_id", "person_id", "condition_start_date")
+    "Procedure"  = c("procedure_occurrence", "procedure_occurrence_id", "person_id", "procedure_date"),
+    "Measurement"= c("measurement", "measurement_id", "person_id", "measurement_date"),
+    "Visit"      = c("visit_occurrence", "visit_occurrence_id", "person_id", "visit_start_date"),
+    "Device"     = c("device_exposure", "device_exposure_id", "person_id", "device_exposure_start_date"),
+    "Drug"       = c("drug_exposure", "drug_exposure_id", "person_id", "drug_exposure_start_date"),
+    "Observation"= c("observation", "observation_id", "person_id", "observation_date"),
+    "Condition"  = c("condition_occurrence", "condition_occurrence_id", "person_id", "condition_start_date")
   )
   
   eventTable <- purrr::map2_df(
     names(costStructure), costStructure, ~ {
-      sql <- glue::glue("SELECT t1.{.y[[2]]} as event_id, t1.{.y[[3]]} as person_id, t1.{.y[[4]]} as event_date FROM {cdmDatabaseSchema}.{.y[[1]]} t1")
+      sql <- glue::glue(
+        "SELECT t1.{.y[[2]]} AS event_id, t1.{.y[[3]]} AS person_id, t1.{.y[[4]]} AS event_date 
+         FROM {cdmDatabaseSchema}.{.y[[1]]} t1"
+      )
       domain_table <- DBI::dbGetQuery(connection, sql) |>
         dplyr::rename_with(tolower) |>
         dplyr::mutate(domain_id = .x, event_date = as.Date(.data$event_date))
       
-      # Join events to the generated payer plans to assign the correct payer_plan_period_id
       domain_table |>
         dplyr::left_join(payer_plans_df, by = "person_id", relationship = "many-to-many") |>
-        # Filter to ensure the event date falls within the specific payer plan period
-        dplyr::filter(.data$event_date >= .data$payerPlanPeriodStartDate & .data$event_date <= .data$payerPlanPeriodEndDate)
+        dplyr::filter(.data$event_date >= .data$payerPlanPeriodStartDate &
+                        .data$event_date <= .data$payerPlanPeriodEndDate)
     }
   )
   
@@ -149,17 +156,17 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
     set.seed(seed)
     base_cost <- stats::runif(n_records, 23, 1500)
     total_charge <- round(base_cost * stats::runif(n_records, 1.1, 1.5), 2)
-    total_cost <- round(base_cost * stats::runif(n_records, 0.7, 0.9), 2)
+    total_cost   <- round(base_cost * stats::runif(n_records, 0.7, 0.9), 2)
     insurance_coverage <- stats::runif(n_records, 0.54, 1)
-    paid_by_payer <- round(total_cost * insurance_coverage, 2)
+    paid_by_payer   <- round(total_cost * insurance_coverage, 2)
     paid_by_patient <- round(total_cost - paid_by_payer, 2)
     
     cost_records_df <- dplyr::tibble(
-      costId = 1:n_records,
+      costId = seq_len(n_records),
       costEventId = eventTable$event_id,
       costDomainId = eventTable$domain_id,
-      costTypeConceptId = 5032, # Administrative cost record
-      currencyConceptId = 44818668, # USD
+      costTypeConceptId = 5032,       # Administrative cost record
+      currencyConceptId = 44818668,   # USD
       totalCharge = total_charge,
       totalCost = total_cost,
       totalPaid = paid_by_payer + paid_by_patient,
@@ -167,11 +174,11 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
       paidByPatient = paid_by_patient,
       paidPatientCopay = pmin(paid_by_patient, 50),
       paidPatientCoinsurance = round(paid_by_patient * 0.7, 2),
-      paidPatientDeductible = round(paid_by_patient * 0.3, 2),
+      paidPatientDeductible  = round(paid_by_patient * 0.3, 2),
       paidByPrimary = paid_by_payer,
       paidIngredientCost = NA_real_,
-      paidDispensingFee = NA_real_,
-      payerPlanPeriodId = eventTable$payerPlanPeriodId,
+      paidDispensingFee  = NA_real_,
+      payerPlanPeriodId  = eventTable$payerPlanPeriodId,
       amountAllowed = total_cost,
       revenueCodeConceptId = 0,
       revenueCodeSourceValue = NA_character_,
@@ -185,34 +192,18 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
   
   # --- Insert Tables into the Database ---
   cli::cli_alert_info("- Step 4: Inserting new tables into the database.")
-  
-  # Manual camelCase to snake_case conversion
-  toSnakeCase <- function(x) {
-    stringr::str_to_lower(gsub("(?<=[a-z])(?=[A-Z])", "_", x, perl = TRUE))
-  }
-  
+
   # Write payer_plan_period table
   payer_plans_to_write <- payer_plans_df
-  names(payer_plans_to_write) <- toSnakeCase(names(payer_plans_to_write))
-  DBI::dbWriteTable(
-    connection,
-    name = "payer_plan_period",
-    value = payer_plans_to_write,
-    overwrite = TRUE
-  )
-  
+  names(payer_plans_to_write) <- SqlRender::camelCaseToSnakeCase(names(payer_plans_to_write))
+  DBI::dbWriteTable(connection, name = "payer_plan_period", value = payer_plans_to_write, overwrite = TRUE)
   
   if (nrow(cost_records_df) > 0) {
-    # Write cost table
     cost_records_to_write <- cost_records_df
-    names(cost_records_to_write) <- toSnakeCase(names(cost_records_to_write))
-    DBI::dbWriteTable(
-      connection,
-      name = "cost",
-      value = cost_records_to_write,
-      overwrite = TRUE
-    )
+    names(cost_records_to_write) <- SqlRender::camelCaseToSnakeCase(names(cost_records_to_write))
+    DBI::dbWriteTable(connection, name = "cost", value = cost_records_to_write, overwrite = TRUE)
   }
+  
   cli::cli_alert_info("Successfully injected synthetic payer_plan_period and wide-format cost tables.")
   return(connection)
 }

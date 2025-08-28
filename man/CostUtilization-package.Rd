@@ -4,11 +4,12 @@
 \name{CostUtilization-package}
 \alias{CostUtilization}
 \alias{CostUtilization-package}
-\title{CostUtilization: What the Package Does (One Line, Title Case)}
+\title{CostUtilization: Healthcare Cost and Utilization Analysis for OMOP CDM v5.5}
 \description{
-\if{html}{\figure{logo.png}{options: style='float: right' alt='logo' width='120'}}
-
-Provides a framework for executing standardized cost and healthcare utilization analyses on the OMOP Common Data Model. This package computes aggregated or person-level cost and utilization metrics across various domains (e.g., Drug, Visit) and temporal windows relative to a cohort. The primary output is a `CostCovariateData` object, which can be summarized, plotted, and used in downstream OHDSI study pipelines.
+The CostUtilization package provides a comprehensive framework for analyzing
+healthcare costs and resource utilization using OMOP Common Data Model (CDM)
+databases. This version is specifically designed for \strong{CDM v5.5} with enhanced
+support for the new long-format COST table structure.
 }
 \seealso{
 Useful links:

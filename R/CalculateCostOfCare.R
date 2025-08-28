@@ -13,7 +13,7 @@
 #' @param cohortTable Name of the cohort table.
 #' @param cohortId Numeric cohort definition id to analyze.
 #' @param costOfCareSettings A settings object from `createCostOfCareSettings()`.
-#' @param tempEmulationSchema Optional schema for temp table emulation (Oracle/Redshift/…).
+#' @param tempEmulationSchema Optional schema for temp table emulation (Oracle/Redshift/...).
 #' @param verbose Logical; print progress messages.
 #'
 #' @return A list with two tibbles: `results` and `diagnostics`.
@@ -37,14 +37,14 @@ calculateCostOfCare <- function(
   checkmate::assertIntegerish(cohortId, len = 1, any.missing = FALSE, add = errorMessages)
   checkmate::assertFlag(verbose, add = errorMessages)
   checkmate::reportAssertions(errorMessages)
-
+  
   if (is.null(connectionDetails) && is.null(connection)) {
     stop("Provide either `connectionDetails` or an open `connection`.")
   }
   if (!is.null(connectionDetails) && !is.null(connection)) {
     stop("Provide exactly one of `connectionDetails` or `connection`, not both.")
   }
-
+  
   if (!is.null(connectionDetails)) {
     checkmate::assertClass(connectionDetails, "ConnectionDetails")
     connection <- DatabaseConnector::connect(connectionDetails)
@@ -52,11 +52,11 @@ calculateCostOfCare <- function(
   } else {
     checkmate::assertClass(connection, "DBIConnection")
   }
-
+  
   # --- Setup ---
   startTime <- Sys.time()
   targetDialect <- DatabaseConnector::dbms(connection)
-
+  
   # Unique prefix for this run (temp/staging tables)
   sessionPrefix <- purrr::chuck(SqlRender::translate('#', 'oracle'), 1)
   resultsTableName <- paste0(sessionPrefix, "_results")
@@ -64,11 +64,11 @@ calculateCostOfCare <- function(
   restrictVisitTableName <- NULL
   eventConceptsTableName <- NULL
   cpiAdjTableName <- NULL
-
+  
   # Always attempt cleanup on exit
   on.exit(
     {
-      logMessage("Cleaning up temporary tables…", verbose, "INFO")
+      logMessage("Cleaning up temporary tables...", verbose, "INFO")
       cleanupTempTables(
         connection          = connection,
         schema              = tempEmulationSchema,
@@ -81,16 +81,16 @@ calculateCostOfCare <- function(
     },
     add = TRUE
   )
-
+  
   # --- CPI Adjustment: prepare adjustment factors table (if enabled) ---
   if (costOfCareSettings$cpiAdjustment) {
-    logMessage("Setting up CPI adjustment…", verbose, "INFO")
+    logMessage("Setting up CPI adjustment...", verbose, "INFO")
     cpiAdjTableName <- paste0(sessionPrefix, "_cpi_adj")
-
+    
     # Load CPI data from explicit path; caller validated existence already
     cpiPath <- costOfCareSettings$cpiFilePath
     cpiData <- utils::read.csv(cpiPath, stringsAsFactors = FALSE)
-
+    
     if (!all(c("year", "adj_factor") %in% names(cpiData))) {
       # Backward compatibility: allow a file with `year` and `cpi` by renaming
       if (all(c("year", "cpi") %in% names(cpiData))) {
@@ -99,11 +99,11 @@ calculateCostOfCare <- function(
         cli::cli_abort("CPI data must contain columns 'year' and 'adj_factor' (or 'year' and 'cpi').")
       }
     }
-
+    
     cpiData <- cpiData[, c("year", "adj_factor")]
     checkmate::assertIntegerish(cpiData$year, lower = 1900, any.missing = FALSE)
     checkmate::assertNumeric(cpiData$adj_factor, any.missing = FALSE)
-
+    
     insertTableDBI(
       connection = connection,
       tableName = cpiAdjTableName,
@@ -114,11 +114,11 @@ calculateCostOfCare <- function(
     )
     logMessage(sprintf("Uploaded %d CPI rows to #%s", nrow(cpiData), cpiAdjTableName), verbose, "DEBUG")
   }
-
+  
   # --- Upload helper tables ---
   if (costOfCareSettings$hasVisitRestriction) {
     restrictVisitTableName <- paste0(sessionPrefix, "_visit_restr")
-    visitConcepts <- tibble::tibble(visit_concept_id = costOfCareSettings$restrictVisitConceptIds)
+    visitConcepts <- dplyr::tibble(visit_concept_id = costOfCareSettings$restrictVisitConceptIds)
     insertTableDBI(
       connection = connection,
       tableName = restrictVisitTableName,
@@ -129,7 +129,7 @@ calculateCostOfCare <- function(
     )
     logMessage(sprintf("Uploaded %d visit concepts to #%s", nrow(visitConcepts), restrictVisitTableName), verbose, "DEBUG")
   }
-
+  
   if (costOfCareSettings$hasEventFilters) {
     eventConceptsTableName <- paste0(sessionPrefix, "_evt_concepts")
     # Build a long table: one row per concept id per filter
@@ -142,7 +142,7 @@ calculateCostOfCare <- function(
           concept_id   = as.integer(costOfCareSettings$eventFilters[[.x]]$conceptIds)
         )
       )
-
+    
     insertTableDBI(
       connection = connection,
       tableName = eventConceptsTableName,
@@ -153,7 +153,7 @@ calculateCostOfCare <- function(
     )
     logMessage(sprintf("Uploaded %d event concept rows to #%s", nrow(eventConcepts), eventConceptsTableName), verbose, "DEBUG")
   }
-
+  
   # --- Assemble SQL parameters from settings (refactored; camelCase only) ---
   params <- list(
     # core
@@ -161,30 +161,30 @@ calculateCostOfCare <- function(
     cohortDatabaseSchema = cohortDatabaseSchema,
     cohortTable = cohortTable,
     cohortId = as.integer(cohortId),
-
+    
     # output / helper tables (unqualified here)
     resultsTable = resultsTableName,
     diagTable = diagTableName,
     restrictVisitTable = restrictVisitTableName,
     eventConceptsTable = eventConceptsTableName,
     cpiAdjTable = cpiAdjTableName,
-
+    
     # window & anchor
     anchorOnEnd = isTRUE(identical(costOfCareSettings$anchorCol, "cohort_end_date")),
     timeA = as.integer(costOfCareSettings$startOffsetDays %||% 0L),
     timeB = as.integer(costOfCareSettings$endOffsetDays %||% 365L),
-
+    
     # flags & knobs (logical where appropriate; numbers as integers)
     hasVisitRestriction = costOfCareSettings$hasVisitRestriction,
     hasEventFilters = costOfCareSettings$hasEventFilters,
     nFilters = as.integer(costOfCareSettings$nFilters %||% 0L),
     microCosting = costOfCareSettings$microCosting, # pass-through (string/int as your SQL expects)
     cpiAdjustment = costOfCareSettings$cpiAdjustment,
-
+    
     # costing
     costConceptId = as.integer(costOfCareSettings$costConceptId),
     currencyConceptId = as.integer(costOfCareSettings$currencyConceptId),
-
+    
     # primary filter id (index in eventFilters) if named
     primaryFilterId = {
       pefn <- costOfCareSettings$primaryEventFilterName %||% NULL
@@ -205,25 +205,25 @@ calculateCostOfCare <- function(
     tempEmulationSchema = tempEmulationSchema,
     verbose             = verbose
   )
-
+  
   # --- Fetch & return results ---
-  logMessage("Fetching results from database…", verbose, "INFO")
+  logMessage("Fetching results from database...", verbose, "INFO")
   resultsFqn <- if (!is.null(tempEmulationSchema)) paste(tempEmulationSchema, resultsTableName, sep = ".") else resultsTableName
   diagFqn <- if (!is.null(tempEmulationSchema)) paste(tempEmulationSchema, diagTableName, sep = ".") else diagTableName
-
+  
   resultsSql <- sprintf("SELECT * FROM %s;", resultsFqn)
   diagnosticsSql <- sprintf("SELECT * FROM %s ORDER BY step_name;", diagFqn)
-
+  
   results <- DBI::dbGetQuery(connection, resultsSql) |>
     dplyr::as_tibble() |> dplyr::rename_all(SqlRender::snakeCaseToCamelCase)
   diagnostics <- DBI::dbGetQuery(connection, diagnosticsSql) |>
     dplyr::as_tibble() |> dplyr::rename_all(SqlRender::snakeCaseToCamelCase)
-
+  
   logMessage(
     sprintf("Analysis complete in %0.1fs.", as.numeric(difftime(Sys.time(), startTime, units = "secs"))),
     verbose = verbose,
     level = "SUCCESS"
   )
-
+  
   list(results = results, diagnostics = diagnostics)
 }

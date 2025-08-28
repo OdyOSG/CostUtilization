@@ -17,11 +17,11 @@ cleanupTempTables <- function(connection, schema = NULL, ...) {
   }
   
   dropWithIfExists <- function(conn, qident) {
-    sql <- SQL(glue("DROP TABLE IF EXISTS {qident};"))
+    sql <- DBI::SQL(glue::glue("DROP TABLE IF EXISTS {qident};"))
     DBI::dbExecute(conn, sql)
   }
   dropWithoutIfExists <- function(conn, qident) {
-    sql <- SQL(glue("DROP TABLE {qident};"))
+    sql <- DBI::SQL(glue::glue("DROP TABLE {qident};"))
     DBI::dbExecute(conn, sql)
   }
   
