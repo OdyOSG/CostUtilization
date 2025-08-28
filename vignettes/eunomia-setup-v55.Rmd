@@ -24,7 +24,7 @@ knitr::opts_chunk$set(
 
 # Introduction
 
-This vignette provides detailed instructions for setting up the Eunomia synthetic dataset with CDM v5.5 cost data for testing and development with the `CostUtilization` package. Eunomia provides a lightweight, self-contained OMOP CDM database that's perfect for learning, testing, and development.
+This vignette provides comprehensive instructions for setting up the Eunomia synthetic dataset with CDM v5.5 cost data for testing and development with the `CostUtilization` package. Eunomia provides a lightweight, self-contained OMOP CDM database that's perfect for learning, testing, and development.
 
 ## What is Eunomia?
 
@@ -52,23 +52,35 @@ library(DBI)
 library(duckdb)
 library(dplyr)
 library(rlang)
+library(tibble)
+library(purrr)
 ```
+
+# Core Functions Overview
+
+The CostUtilization package provides four key functions for setting up Eunomia with cost data:
+
+1. **`getEunomiaDuckDb()`** - Downloads and creates base Eunomia database
+2. **`injectCostData()`** - Adds synthetic cost records to the database
+3. **`injectVisitDetailsData()`** - Creates visit detail records for micro-costing
+4. **`transformCostToCdmV5dot5()`** - Complete transformation including all steps above
 
 # Step-by-Step Setup
 
-## Step 1: Download and Create Eunomia Database
+## Step 1: Download and Create Base Eunomia Database
 
 The `getEunomiaDuckDb()` function handles downloading and setting up the Eunomia dataset:
 
 ```{r download-eunomia}
 # Set up data directory (optional - uses temp by default)
 data_dir <- file.path(tempdir(), "eunomia_data")
-dir.create(data_dir, showWarnings = FALSE)
+dir.create(data_dir, showWarnings = FALSE, recursive = TRUE)
 
 # Download and create Eunomia DuckDB database
 databaseFile <- getEunomiaDuckDb(
-  databaseFile = file.path(tempdir(), "eunomia_v55.duckdb"),
-  pathToData = data_dir
+  databaseFile = file.path(tempdir(), "eunomia_base.duckdb"),
+  pathToData = data_dir,
+  overwrite = TRUE
 )
 
 # Connect to the database
@@ -76,8 +88,36 @@ connection <- DBI::dbConnect(duckdb::duckdb(databaseFile))
 
 # Verify basic CDM tables exist
 tables <- DBI::dbListTables(connection)
+cdm_tables <- sort(tables[!grepl("^(sqlite_|cdm_)", tables)])
 cat("Available CDM tables:\n")
-cat(paste(sort(tables), collapse = ", "))
+cat(paste(cdm_tables, collapse = ", "))
+```
+
+### Function Parameters and Options
+
+```{r getEunomiaDuckDb-options}
+# Basic usage with defaults
+databaseFile1 <- getEunomiaDuckDb()
+
+# Custom database location
+databaseFile2 <- getEunomiaDuckDb(
+  databaseFile = "/path/to/my/eunomia.duckdb"
+)
+
+# Custom data directory for downloads
+databaseFile3 <- getEunomiaDuckDb(
+  pathToData = "/path/to/eunomia/archives"
+)
+
+# Overwrite existing database
+databaseFile4 <- getEunomiaDuckDb(
+  databaseFile = "eunomia.duckdb",
+  overwrite = TRUE
+)
+
+# Using environment variable for consistent paths
+Sys.setenv(EUNOMIA_DATA_FOLDER = data_dir)
+databaseFile5 <- getEunomiaDuckDb()  # Will use EUNOMIA_DATA_FOLDER
 ```
 
 ## Step 2: Examine Base CDM Data
@@ -94,7 +134,8 @@ obs_periods <- DBI::dbGetQuery(connection, "
   SELECT 
     MIN(observation_period_start_date) as earliest_date,
     MAX(observation_period_end_date) as latest_date,
-    COUNT(*) as n_periods
+    COUNT(*) as n_periods,
+    COUNT(DISTINCT person_id) as n_persons
   FROM observation_period
 ")
 print(obs_periods)
@@ -104,19 +145,23 @@ visit_summary <- DBI::dbGetQuery(connection, "
   SELECT 
     visit_concept_id,
     COUNT(*) as n_visits,
-    COUNT(DISTINCT person_id) as n_persons
+    COUNT(DISTINCT person_id) as n_persons,
+    MIN(visit_start_date) as earliest_visit,
+    MAX(visit_start_date) as latest_visit
   FROM visit_occurrence 
   GROUP BY visit_concept_id
   ORDER BY n_visits DESC
 ")
 print(visit_summary)
 
-# Check clinical events
+# Check clinical events by domain
 event_summary <- DBI::dbGetQuery(connection, "
   SELECT 
     'Conditions' as domain,
     COUNT(*) as n_events,
-    COUNT(DISTINCT person_id) as n_persons
+    COUNT(DISTINCT person_id) as n_persons,
+    MIN(condition_start_date) as earliest_date,
+    MAX(condition_start_date) as latest_date
   FROM condition_occurrence
   
   UNION ALL
@@ -124,7 +169,9 @@ event_summary <- DBI::dbGetQuery(connection, "
   SELECT 
     'Drug Exposures' as domain,
     COUNT(*) as n_events,
-    COUNT(DISTINCT person_id) as n_persons  
+    COUNT(DISTINCT person_id) as n_persons,  
+    MIN(drug_exposure_start_date) as earliest_date,
+    MAX(drug_exposure_start_date) as latest_date
   FROM drug_exposure
   
   UNION ALL
@@ -132,7 +179,9 @@ event_summary <- DBI::dbGetQuery(connection, "
   SELECT 
     'Procedures' as domain,
     COUNT(*) as n_events,
-    COUNT(DISTINCT person_id) as n_persons
+    COUNT(DISTINCT person_id) as n_persons,
+    MIN(procedure_date) as earliest_date,
+    MAX(procedure_date) as latest_date
   FROM procedure_occurrence
   
   UNION ALL
@@ -140,58 +189,352 @@ event_summary <- DBI::dbGetQuery(connection, "
   SELECT 
     'Measurements' as domain,
     COUNT(*) as n_events,
-    COUNT(DISTINCT person_id) as n_persons
+    COUNT(DISTINCT person_id) as n_persons,
+    MIN(measurement_date) as earliest_date,
+    MAX(measurement_date) as latest_date
   FROM measurement
 ")
 print(event_summary)
+
+# Check vocabularies
+vocab_summary <- DBI::dbGetQuery(connection, "
+  SELECT 
+    vocabulary_id,
+    vocabulary_name,
+    COUNT(*) as n_concepts
+  FROM concept
+  WHERE invalid_reason IS NULL
+  GROUP BY vocabulary_id, vocabulary_name
+  ORDER BY n_concepts DESC
+  LIMIT 10
+")
+print(vocab_summary)
 ```
 
-## Step 3: Transform to CDM v5.5 with Cost Data
+## Step 3: Inject Synthetic Cost Data
 
-The `transformCostToCdmV5dot5()` function performs several operations:
+The `injectCostData()` function adds synthetic cost records in CDM v5.3 wide format:
 
-1. **Injects synthetic cost data** in wide format (v5.3 style)
-2. **Creates payer plan periods** with realistic insurance coverage
-3. **Populates visit_detail table** from clinical events
-4. **Transforms cost data** to CDM v5.5 long format
-
-```{r transform-v55}
-# Transform to CDM v5.5 with cost data
-connection <- transformCostToCdmV5dot5(
+```{r inject-cost-data}
+# Inject cost data with default settings
+connection <- injectCostData(
   connection = connection,
   cdmDatabaseSchema = "main"
 )
 
-# Verify new tables were created
-new_tables <- DBI::dbListTables(connection)
-cost_tables <- new_tables[grepl("cost|payer|visit_detail", new_tables, ignore.case = TRUE)]
-cat("Cost-related tables:\n")
-cat(paste(sort(cost_tables), collapse = ", "), "\n")
+# Check if cost data was added to clinical tables
+cost_columns_check <- DBI::dbGetQuery(connection, "
+  PRAGMA table_info(visit_occurrence)
+")
+
+# Look for cost-related columns
+cost_cols <- cost_columns_check$name[grepl("cost|paid", cost_columns_check$name, ignore.case = TRUE)]
+cat("Cost columns added to visit_occurrence:\n")
+cat(paste(cost_cols, collapse = ", "), "\n")
+
+# Check cost data distribution in visit_occurrence
+visit_cost_summary <- DBI::dbGetQuery(connection, "
+  SELECT 
+    COUNT(*) as total_visits,
+    COUNT(total_paid) as visits_with_total_paid,
+    COUNT(paid_by_payer) as visits_with_payer_paid,
+    COUNT(paid_by_patient) as visits_with_patient_paid,
+    ROUND(AVG(total_paid), 2) as avg_total_paid,
+    ROUND(AVG(paid_by_payer), 2) as avg_payer_paid,
+    ROUND(AVG(paid_by_patient), 2) as avg_patient_paid
+  FROM visit_occurrence
+  WHERE total_paid IS NOT NULL
+")
+print(visit_cost_summary)
+
+# Check cost data in drug_exposure table
+drug_cost_summary <- DBI::dbGetQuery(connection, "
+  SELECT 
+    COUNT(*) as total_drugs,
+    COUNT(total_paid) as drugs_with_cost,
+    ROUND(AVG(total_paid), 2) as avg_drug_cost,
+    ROUND(MIN(total_paid), 2) as min_drug_cost,
+    ROUND(MAX(total_paid), 2) as max_drug_cost
+  FROM drug_exposure
+  WHERE total_paid IS NOT NULL
+")
+print(drug_cost_summary)
 ```
 
-## Step 4: Examine Generated Cost Data
+### Advanced Cost Data Injection Options
 
-Let's explore the synthetic cost data that was generated:
+```{r inject-cost-advanced}
+# Disconnect and reconnect to clean state for demonstration
+DBI::dbDisconnect(connection, shutdown = TRUE)
+connection <- DBI::dbConnect(duckdb::duckdb(databaseFile))
 
-```{r examine-cost}
-# Check payer plan periods
-payer_summary <- DBI::dbGetQuery(connection, "
+# Inject cost data with custom seed for reproducible results
+connection <- injectCostData(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  seed = 12345  # For reproducible synthetic cost data
+)
+
+# Alternative: inject to specific schema (if using multi-schema setup)
+# connection <- injectCostData(
+#   connection = connection,
+#   cdmDatabaseSchema = "cdm_eunomia",
+#   seed = 12345
+# )
+
+# Verify reproducibility with same seed
+connection2 <- DBI::dbConnect(duckdb::duckdb(":memory:"))
+# Would need to recreate base tables first, then:
+# connection2 <- injectCostData(connection2, "main", seed = 12345)
+# Results should be identical
+
+# Check specific cost distributions
+cost_distribution <- DBI::dbGetQuery(connection, "
   SELECT 
-    payer_source_value,
-    plan_source_value,
-    COUNT(*) as n_periods,
-    COUNT(DISTINCT person_id) as n_persons
-  FROM payer_plan_period
-  GROUP BY payer_source_value, plan_source_value
-  ORDER BY n_periods DESC
+    'Visit Occurrence' as table_name,
+    COUNT(*) as n_records,
+    COUNT(total_paid) as n_with_cost,
+    ROUND(AVG(total_paid), 2) as mean_cost,
+    ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY total_paid), 2) as median_cost,
+    ROUND(STDDEV(total_paid), 2) as sd_cost
+  FROM visit_occurrence
+  WHERE total_paid IS NOT NULL
+  
+  UNION ALL
+  
+  SELECT 
+    'Drug Exposure' as table_name,
+    COUNT(*) as n_records,
+    COUNT(total_paid) as n_with_cost,
+    ROUND(AVG(total_paid), 2) as mean_cost,
+    ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY total_paid), 2) as median_cost,
+    ROUND(STDDEV(total_paid), 2) as sd_cost
+  FROM drug_exposure
+  WHERE total_paid IS NOT NULL
+  
+  UNION ALL
+  
+  SELECT 
+    'Procedure Occurrence' as table_name,
+    COUNT(*) as n_records,
+    COUNT(total_paid) as n_with_cost,
+    ROUND(AVG(total_paid), 2) as mean_cost,
+    ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY total_paid), 2) as median_cost,
+    ROUND(STDDEV(total_paid), 2) as sd_cost
+  FROM procedure_occurrence
+  WHERE total_paid IS NOT NULL
 ")
-print(payer_summary)
+print(cost_distribution)
+```
 
+## Step 4: Inject Visit Details Data
+
+The `injectVisitDetailsData()` function creates visit detail records for micro-costing analysis:
+
+```{r inject-visit-details}
+# Inject visit details data
+connection <- injectVisitDetailsData(
+  connection = connection,
+  cdmDatabaseSchema = "main"
+)
+
+# Verify visit_detail table was created
+visit_detail_exists <- DBI::dbExistsTable(connection, "visit_detail")
+cat("Visit detail table created:", visit_detail_exists, "\n")
+
+# Examine visit detail structure
+visit_detail_structure <- DBI::dbGetQuery(connection, "
+  SELECT * FROM visit_detail LIMIT 3
+")
+print(visit_detail_structure)
+
+# Visit detail summary statistics
+visit_detail_summary <- DBI::dbGetQuery(connection, "
+  SELECT 
+    COUNT(*) as n_visit_details,
+    COUNT(DISTINCT person_id) as n_persons,
+    COUNT(DISTINCT visit_occurrence_id) as n_visits,
+    COUNT(DISTINCT visit_detail_concept_id) as n_detail_concepts,
+    MIN(visit_detail_start_date) as earliest_detail,
+    MAX(visit_detail_start_date) as latest_detail
+  FROM visit_detail
+")
+print(visit_detail_summary)
+
+# Visit detail concept distribution
+visit_detail_concepts <- DBI::dbGetQuery(connection, "
+  SELECT 
+    visit_detail_concept_id,
+    COUNT(*) as n_details,
+    COUNT(DISTINCT person_id) as n_persons,
+    COUNT(DISTINCT visit_occurrence_id) as n_visits
+  FROM visit_detail
+  GROUP BY visit_detail_concept_id
+  ORDER BY n_details DESC
+")
+print(visit_detail_concepts)
+
+# Relationship between visits and visit details
+visit_detail_relationship <- DBI::dbGetQuery(connection, "
+  SELECT 
+    vo.visit_concept_id,
+    COUNT(DISTINCT vo.visit_occurrence_id) as n_visits,
+    COUNT(vd.visit_detail_id) as n_visit_details,
+    ROUND(CAST(COUNT(vd.visit_detail_id) AS FLOAT) / COUNT(DISTINCT vo.visit_occurrence_id), 2) as avg_details_per_visit
+  FROM visit_occurrence vo
+  LEFT JOIN visit_detail vd ON vo.visit_occurrence_id = vd.visit_occurrence_id
+  GROUP BY vo.visit_concept_id
+  ORDER BY n_visits DESC
+")
+print(visit_detail_relationship)
+```
+
+### Advanced Visit Details Options
+
+```{r inject-visit-details-advanced}
+# The function automatically creates visit details based on:
+# 1. Clinical events during visits (conditions, procedures, drugs, measurements)
+# 2. Visit type and duration
+# 3. Realistic care patterns
+
+# Check how clinical events map to visit details
+event_mapping <- DBI::dbGetQuery(connection, "
+  SELECT 
+    'Condition -> Visit Detail' as mapping_type,
+    COUNT(DISTINCT co.condition_occurrence_id) as n_source_events,
+    COUNT(DISTINCT vd.visit_detail_id) as n_visit_details
+  FROM condition_occurrence co
+  JOIN visit_detail vd ON co.visit_occurrence_id = vd.visit_occurrence_id
+    AND co.condition_start_date = vd.visit_detail_start_date
+  
+  UNION ALL
+  
+  SELECT 
+    'Procedure -> Visit Detail' as mapping_type,
+    COUNT(DISTINCT po.procedure_occurrence_id) as n_source_events,
+    COUNT(DISTINCT vd.visit_detail_id) as n_visit_details
+  FROM procedure_occurrence po
+  JOIN visit_detail vd ON po.visit_occurrence_id = vd.visit_occurrence_id
+    AND po.procedure_date = vd.visit_detail_start_date
+  
+  UNION ALL
+  
+  SELECT 
+    'Drug -> Visit Detail' as mapping_type,
+    COUNT(DISTINCT de.drug_exposure_id) as n_source_events,
+    COUNT(DISTINCT vd.visit_detail_id) as n_visit_details
+  FROM drug_exposure de
+  JOIN visit_detail vd ON de.visit_occurrence_id = vd.visit_occurrence_id
+    AND de.drug_exposure_start_date = vd.visit_detail_start_date
+")
+print(event_mapping)
+
+# Check visit detail hierarchy (parent-child relationships)
+visit_detail_hierarchy <- DBI::dbGetQuery(connection, "
+  SELECT 
+    COUNT(*) as total_visit_details,
+    COUNT(visit_detail_parent_id) as n_with_parent,
+    COUNT(CASE WHEN visit_detail_parent_id IS NULL THEN 1 END) as n_root_details
+  FROM visit_detail
+")
+print(visit_detail_hierarchy)
+```
+
+## Step 5: Add Payer Plan Periods
+
+```{r add-payer-plans}
+# Check if payer plan periods were created (part of cost injection)
+payer_exists <- DBI::dbExistsTable(connection, "payer_plan_period")
+cat("Payer plan period table exists:", payer_exists, "\n")
+
+if (payer_exists) {
+  # Examine payer plan structure
+  payer_structure <- DBI::dbGetQuery(connection, "
+    SELECT * FROM payer_plan_period LIMIT 3
+  ")
+  print(payer_structure)
+  
+  # Payer plan summary
+  payer_summary <- DBI::dbGetQuery(connection, "
+    SELECT 
+      payer_source_value,
+      plan_source_value,
+      COUNT(*) as n_periods,
+      COUNT(DISTINCT person_id) as n_persons,
+      MIN(payer_plan_period_start_date) as earliest_coverage,
+      MAX(payer_plan_period_end_date) as latest_coverage,
+      ROUND(AVG(JULIANDAY(payer_plan_period_end_date) - JULIANDAY(payer_plan_period_start_date)), 0) as avg_coverage_days
+    FROM payer_plan_period
+    GROUP BY payer_source_value, plan_source_value
+    ORDER BY n_periods DESC
+  ")
+  print(payer_summary)
+  
+  # Coverage overlap with observation periods
+  coverage_overlap <- DBI::dbGetQuery(connection, "
+    SELECT 
+      COUNT(DISTINCT p.person_id) as n_persons_total,
+      COUNT(DISTINCT ppp.person_id) as n_persons_with_coverage,
+      ROUND(CAST(COUNT(DISTINCT ppp.person_id) AS FLOAT) / COUNT(DISTINCT p.person_id) * 100, 1) as coverage_percentage
+    FROM person p
+    LEFT JOIN payer_plan_period ppp ON p.person_id = ppp.person_id
+  ")
+  print(coverage_overlap)
+}
+```
+
+## Step 6: Complete CDM v5.5 Transformation
+
+The `transformCostToCdmV5dot5()` function performs all steps above plus converts to CDM v5.5 long format:
+
+```{r transform-v55-complete}
+# Start fresh for complete transformation demonstration
+DBI::dbDisconnect(connection, shutdown = TRUE)
+
+# Create new database for complete transformation
+databaseFile_v55 <- file.path(tempdir(), "eunomia_v55_complete.duckdb")
+databaseFile_v55 <- getEunomiaDuckDb(
+  databaseFile = databaseFile_v55,
+  pathToData = data_dir,
+  overwrite = TRUE
+)
+
+connection <- DBI::dbConnect(duckdb::duckdb(databaseFile_v55))
+
+# Apply complete transformation to CDM v5.5 with cost data
+connection <- transformCostToCdmV5dot5(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  seed = 12345  # For reproducible results
+)
+
+# Verify all new tables were created
+all_tables <- DBI::dbListTables(connection)
+new_tables <- c("cost", "payer_plan_period", "visit_detail")
+new_tables_exist <- new_tables %in% all_tables
+
+cat("New CDM v5.5 tables created:\n")
+for (i in seq_along(new_tables)) {
+  cat(sprintf("  %s: %s\n", new_tables[i], ifelse(new_tables_exist[i], "✓", "✗")))
+}
+```
+
+### Examine CDM v5.5 Cost Table Structure
+
+```{r examine-v55-cost}
 # Check cost table structure (CDM v5.5 long format)
 cost_structure <- DBI::dbGetQuery(connection, "
-  SELECT * FROM cost LIMIT 5
+  PRAGMA table_info(cost)
 ")
 print(cost_structure)
+
+# Sample cost records
+cost_sample <- DBI::dbGetQuery(connection, "
+  SELECT * FROM cost 
+  ORDER BY person_id, visit_occurrence_id, cost_concept_id
+  LIMIT 10
+")
+print(cost_sample)
 
 # Cost concept distribution
 cost_concepts <- DBI::dbGetQuery(connection, "
@@ -199,7 +542,10 @@ cost_concepts <- DBI::dbGetQuery(connection, "
     cost_concept_id,
     cost_source_value,
     COUNT(*) as n_records,
+    COUNT(DISTINCT person_id) as n_persons,
     ROUND(AVG(cost), 2) as avg_cost,
+    ROUND(MIN(cost), 2) as min_cost,
+    ROUND(MAX(cost), 2) as max_cost,
     ROUND(SUM(cost), 2) as total_cost
   FROM cost
   GROUP BY cost_concept_id, cost_source_value
@@ -207,27 +553,165 @@ cost_concepts <- DBI::dbGetQuery(connection, "
 ")
 print(cost_concepts)
 
-# Visit detail summary
-visit_detail_summary <- DBI::dbGetQuery(connection, "
+# Cost by domain
+cost_by_domain <- DBI::dbGetQuery(connection, "
   SELECT 
-    COUNT(*) as n_visit_details,
+    CASE 
+      WHEN visit_occurrence_id IS NOT NULL AND visit_detail_id IS NULL THEN 'Visit Level'
+      WHEN visit_detail_id IS NOT NULL THEN 'Visit Detail Level'
+      WHEN drug_exposure_id IS NOT NULL THEN 'Drug Exposure'
+      WHEN procedure_occurrence_id IS NOT NULL THEN 'Procedure'
+      WHEN device_exposure_id IS NOT NULL THEN 'Device'
+      WHEN measurement_id IS NOT NULL THEN 'Measurement'
+      ELSE 'Other'
+    END as cost_domain,
+    COUNT(*) as n_records,
     COUNT(DISTINCT person_id) as n_persons,
-    COUNT(DISTINCT visit_occurrence_id) as n_visits
-  FROM visit_detail
+    ROUND(SUM(cost), 2) as total_cost,
+    ROUND(AVG(cost), 2) as avg_cost
+  FROM cost
+  GROUP BY cost_domain
+  ORDER BY total_cost DESC
 ")
-print(visit_detail_summary)
+print(cost_by_domain)
 ```
 
-## Step 5: Create Sample Cohort
+## Step 7: Data Quality Validation
 
-For testing, let's create a simple cohort:
+```{r data-quality-validation}
+# Comprehensive data quality checks
+validation_checks <- list()
 
-```{r create-cohort}
-# Create a simple cohort table for testing
-# This creates a cohort of patients with any condition occurrence
-cohort_sql <- "
+# 1. Referential integrity
+validation_checks$referential_integrity <- DBI::dbGetQuery(connection, "
+  SELECT 
+    'Cost -> Person' as check_name,
+    COUNT(*) as total_records,
+    COUNT(DISTINCT c.person_id) as unique_persons,
+    COUNT(DISTINCT p.person_id) as valid_persons,
+    CASE WHEN COUNT(DISTINCT c.person_id) = COUNT(DISTINCT p.person_id) 
+         THEN 'PASS' ELSE 'FAIL' END as result
+  FROM cost c
+  LEFT JOIN person p ON c.person_id = p.person_id
+  
+  UNION ALL
+  
+  SELECT 
+    'Cost -> Visit' as check_name,
+    COUNT(*) as total_records,
+    COUNT(c.visit_occurrence_id) as records_with_visit,
+    COUNT(v.visit_occurrence_id) as valid_visits,
+    CASE WHEN COUNT(c.visit_occurrence_id) = COUNT(v.visit_occurrence_id) 
+         THEN 'PASS' ELSE 'FAIL' END as result
+  FROM cost c
+  LEFT JOIN visit_occurrence v ON c.visit_occurrence_id = v.visit_occurrence_id
+  WHERE c.visit_occurrence_id IS NOT NULL
+  
+  UNION ALL
+  
+  SELECT 
+    'Visit Detail -> Visit' as check_name,
+    COUNT(*) as total_records,
+    COUNT(vd.visit_occurrence_id) as records_with_visit,
+    COUNT(v.visit_occurrence_id) as valid_visits,
+    CASE WHEN COUNT(vd.visit_occurrence_id) = COUNT(v.visit_occurrence_id) 
+         THEN 'PASS' ELSE 'FAIL' END as result
+  FROM visit_detail vd
+  LEFT JOIN visit_occurrence v ON vd.visit_occurrence_id = v.visit_occurrence_id
+")
+
+print("=== REFERENTIAL INTEGRITY CHECKS ===")
+print(validation_checks$referential_integrity)
+
+# 2. Data completeness
+validation_checks$completeness <- DBI::dbGetQuery(connection, "
+  SELECT 
+    'Cost Records' as metric,
+    COUNT(*) as total_count,
+    COUNT(cost) as non_null_cost,
+    COUNT(cost_concept_id) as non_null_concept,
+    ROUND(CAST(COUNT(cost) AS FLOAT) / COUNT(*) * 100, 1) as completeness_pct
+  FROM cost
+  
+  UNION ALL
+  
+  SELECT 
+    'Payer Periods' as metric,
+    COUNT(*) as total_count,
+    COUNT(payer_source_value) as non_null_payer,
+    COUNT(plan_source_value) as non_null_plan,
+    ROUND(CAST(COUNT(payer_source_value) AS FLOAT) / COUNT(*) * 100, 1) as completeness_pct
+  FROM payer_plan_period
+  
+  UNION ALL
+  
+  SELECT 
+    'Visit Details' as metric,
+    COUNT(*) as total_count,
+    COUNT(visit_detail_concept_id) as non_null_concept,
+    COUNT(visit_detail_start_date) as non_null_start_date,
+    ROUND(CAST(COUNT(visit_detail_concept_id) AS FLOAT) / COUNT(*) * 100, 1) as completeness_pct
+  FROM visit_detail
+")
+
+print("=== DATA COMPLETENESS CHECKS ===")
+print(validation_checks$completeness)
+
+# 3. Date consistency
+validation_checks$date_consistency <- DBI::dbGetQuery(connection, "
+  SELECT 
+    'Visit Detail Dates' as check_name,
+    COUNT(*) as total_records,
+    COUNT(CASE WHEN visit_detail_start_date <= visit_detail_end_date THEN 1 END) as valid_date_order,
+    COUNT(CASE WHEN visit_detail_start_date <= visit_detail_end_date THEN 1 END) * 100.0 / COUNT(*) as pass_rate_pct
+  FROM visit_detail
+  WHERE visit_detail_end_date IS NOT NULL
+  
+  UNION ALL
+  
+  SELECT 
+    'Payer Period Dates' as check_name,
+    COUNT(*) as total_records,
+    COUNT(CASE WHEN payer_plan_period_start_date <= payer_plan_period_end_date THEN 1 END) as valid_date_order,
+    COUNT(CASE WHEN payer_plan_period_start_date <= payer_plan_period_end_date THEN 1 END) * 100.0 / COUNT(*) as pass_rate_pct
+  FROM payer_plan_period
+  WHERE payer_plan_period_end_date IS NOT NULL
+")
+
+print("=== DATE CONSISTENCY CHECKS ===")
+print(validation_checks$date_consistency)
+
+# 4. Cost value ranges
+validation_checks$cost_ranges <- DBI::dbGetQuery(connection, "
+  SELECT 
+    cost_concept_id,
+    cost_source_value,
+    COUNT(*) as n_records,
+    ROUND(MIN(cost), 2) as min_cost,
+    ROUND(MAX(cost), 2) as max_cost,
+    ROUND(AVG(cost), 2) as avg_cost,
+    COUNT(CASE WHEN cost < 0 THEN 1 END) as negative_costs,
+    COUNT(CASE WHEN cost = 0 THEN 1 END) as zero_costs,
+    COUNT(CASE WHEN cost > 100000 THEN 1 END) as high_costs
+  FROM cost
+  GROUP BY cost_concept_id, cost_source_value
+  ORDER BY cost_concept_id
+")
+
+print("=== COST VALUE RANGE CHECKS ===")
+print(validation_checks$cost_ranges)
+```
+
+# Testing Cost Analysis Functions
+
+## Create Sample Cohorts
+
+```{r create-cohorts}
+# Create multiple cohorts for comprehensive testing
+cohort_creation_sql <- "
   CREATE TABLE cohort AS
-  SELECT DISTINCT
+  -- Cohort 1: Patients with any condition
+  SELECT 
     1 as cohort_definition_id,
     person_id as subject_id,
     MIN(condition_start_date) as cohort_start_date,
@@ -237,423 +721,68 @@ cohort_sql <- "
   WHERE condition_start_date >= observation_period_start_date
     AND condition_start_date <= observation_period_end_date
   GROUP BY person_id, observation_period_end_date
-  HAVING COUNT(*) >= 2  -- At least 2 conditions
+  HAVING COUNT(*) >= 1
+  
+  UNION ALL
+  
+  -- Cohort 2: Patients with diabetes (Type 2 diabetes mellitus - 201826)
+  SELECT 
+    2 as cohort_definition_id,
+    person_id as subject_id,
+    MIN(condition_start_date) as cohort_start_date,
+    observation_period_end_date as cohort_end_date
+  FROM condition_occurrence co
+  JOIN observation_period op ON op.person_id = co.person_id
+  WHERE condition_concept_id IN (201826, 4193704)  -- T2DM concepts
+    AND condition_start_date >= observation_period_start_date
+    AND condition_start_date <= observation_period_end_date
+  GROUP BY person_id, observation_period_end_date
+  
+  UNION ALL
+  
+  -- Cohort 3: Patients with any drug exposure
+  SELECT 
+    3 as cohort_definition_id,
+    person_id as subject_id,
+    MIN(drug_exposure_start_date) as cohort_start_date,
+    observation_period_end_date as cohort_end_date
+  FROM drug_exposure de
+  JOIN observation_period op ON op.person_id = de.person_id
+  WHERE drug_exposure_start_date >= observation_period_start_date
+    AND drug_exposure_start_date <= observation_period_end_date
+  GROUP BY person_id, observation_period_end_date
 "
 
-DBI::dbExecute(connection, cohort_sql)
+DBI::dbExecute(connection, cohort_creation_sql)
 
-# Check cohort
+# Check cohort sizes
 cohort_summary <- DBI::dbGetQuery(connection, "
   SELECT 
     cohort_definition_id,
     COUNT(*) as n_subjects,
     MIN(cohort_start_date) as earliest_index,
-    MAX(cohort_start_date) as latest_index
+    MAX(cohort_start_date) as latest_index,
+    ROUND(AVG(JULIANDAY(cohort_end_date) - JULIANDAY(cohort_start_date)), 0) as avg_followup_days
   FROM cohort
   GROUP BY cohort_definition_id
+  ORDER BY cohort_definition_id
 ")
+print("=== COHORT SUMMARY ===")
 print(cohort_summary)
 ```
 
-# Validation and Testing
-
 ## Test Basic Cost Analysis
 
-Let's run a basic cost analysis to validate the setup:
-
-```{r test-analysis}
-# Create basic settings
-test_settings <- createCostOfCareSettings(
-  anchorCol = "cohort_start_date",
-  startOffsetDays = -90L,
-  endOffsetDays = 90L,
-  costConceptId = 31973L  # Total charge
-)
-
-# Run analysis
-test_results <- calculateCostOfCare(
-  connection = connection,
-  cdmDatabaseSchema = "main",
-  cohortDatabaseSchema = "main",
-  cohortTable = "cohort",
-  cohortId = 1,
-  costOfCareSettings = test_settings,
-  verbose = TRUE
-)
-
-# Check results
-print("=== RESULTS ===")
-print(test_results$results)
-
-print("\n=== DIAGNOSTICS ===")
-print(test_results$diagnostics)
-```
-
-## Test Visit Detail (Micro-Costing)
-
-Test the visit detail functionality:
-
-```{r test-micro-costing}
-# Create event filters for testing
-test_filters <- list(
-  list(
-    name = "Any Condition",
-    domain = "Condition",
-    conceptIds = c(4329847L, 4223659L)  # Common condition concepts in Eunomia
+```{r test-basic-analysis}
+# Test basic cost analysis with different settings
+test_basic_cost <- function(cohort_id, cost_concept_id, description) {
+  cat("\n=== Testing:", description, "for Cohort", cohort_id, "===\n")
+  
+  settings <- createCostOfCareSettings(
+    anchorCol = "cohort_start_date",
+    startOffsetDays = -90L,
+    endOffsetDays = 90L,
+    costConceptId = cost_concept_id
   )
-)
-
-# Create micro-costing settings
-micro_settings <- createCostOfCareSettings(
-  anchorCol = "cohort_start_date",
-  startOffsetDays = -30L,
-  endOffsetDays = 30L,
-  eventFilters = test_filters,
-  primaryEventFilterName = "Any Condition",
-  microCosting = TRUE,
-  costConceptId = 31973L
-)
-
-# Run micro-costing analysis
-micro_results <- calculateCostOfCare(
-  connection = connection,
-  cdmDatabaseSchema = "main",
-  cohortDatabaseSchema = "main",
-  cohortTable = "cohort",
-  cohortId = 1,
-  costOfCareSettings = micro_settings,
-  verbose = TRUE
-)
-
-print("=== MICRO-COSTING RESULTS ===")
-print(micro_results$results)
-```
-
-## Test Multiple Cost Concepts
-
-Test analysis across different cost concepts:
-
-```{r test-multi-concepts}
-# Test different cost concepts
-cost_concepts_test <- tibble::tribble(
-  ~concept_id, ~description,
-  31973L,      "Total charge",
-  31985L,      "Total cost", 
-  31980L,      "Paid by payer",
-  31981L,      "Paid by patient"
-)
-
-multi_concept_results <- cost_concepts_test |>
-  purrr::pmap_dfr(function(concept_id, description) {
-    settings <- createCostOfCareSettings(
-      anchorCol = "cohort_start_date",
-      startOffsetDays = -90L,
-      endOffsetDays = 90L,
-      costConceptId = concept_id
-    )
-    
-    result <- calculateCostOfCare(
-      connection = connection,
-      cdmDatabaseSchema = "main",
-      cohortDatabaseSchema = "main",
-      cohortTable = "cohort",
-      cohortId = 1,
-      costOfCareSettings = settings
-    )
-    
-    result$results |>
-      mutate(
-        cost_concept_id = concept_id,
-        cost_description = description
-      )
-  })
-
-# Compare results across cost concepts
-multi_concept_results |>
-  select(cost_description, total_cost, cost_pppm, n_persons_with_cost) |>
-  arrange(desc(total_cost))
-```
-
-# Advanced Setup Options
-
-## Custom Cost Data Generation
-
-You can customize the synthetic cost data generation:
-
-```{r custom-cost-generation}
-# For more control, you can inject cost data separately
-# (This is done automatically by transformCostToCdmV5dot5, but shown for reference)
-
-# Reset to clean state (optional)
-# connection <- DBI::dbConnect(duckdb::duckdb(databaseFile))
-
-# Inject cost data with custom seed for reproducibility
-connection <- injectCostData(
-  connection = connection,
-  seed = 456,  # Different seed for different synthetic data
-  cdmDatabaseSchema = "main"
-)
-
-# Inject visit details separately
-connection <- injectVisitDetailsData(
-  connection = connection,
-  cdmDatabaseSchema = "main"
-)
-```
-
-## Environment Variables
-
-Set up environment variables for consistent data paths:
-
-```{r env-vars}
-# Set environment variable for data folder
-Sys.setenv(EUNOMIA_DATA_FOLDER = data_dir)
-
-# Now getEunomiaDuckDb() will use this path by default
-databaseFile2 <- getEunomiaDuckDb()
-```
-
-## Database Persistence
-
-Save your configured database for reuse:
-
-```{r persistence}
-# The DuckDB file is automatically saved
-# You can reuse it in future sessions:
-
-# Close current connection
-DBI::dbDisconnect(connection, shutdown = TRUE)
-
-# Reconnect later
-connection <- DBI::dbConnect(duckdb::duckdb(databaseFile))
-
-# Verify cost data is still there
-cost_check <- DBI::dbGetQuery(connection, "SELECT COUNT(*) as n FROM cost")
-cat("Cost records available:", cost_check$n, "\n")
-```
-
-# Troubleshooting
-
-## Common Issues
-
-### 1. Download Problems
-
-```{r troubleshoot-download}
-# If download fails, check internet connection and try again
-# The function will resume if partially downloaded
-
-tryCatch({
-  databaseFile <- getEunomiaDuckDb(pathToData = data_dir)
-}, error = function(e) {
-  cat("Download error:", e$message, "\n")
-  cat("Check internet connection and try again\n")
-})
-```
-
-### 2. Memory Issues
-
-```{r troubleshoot-memory}
-# For large datasets, you might need to increase memory
-# DuckDB is generally memory-efficient, but you can optimize:
-
-# Check database size
-file_size <- file.size(databaseFile)
-cat("Database size:", round(file_size / 1024^2, 2), "MB\n")
-
-# Monitor memory usage during operations
-gc()  # Garbage collection
-```
-
-### 3. Cost Data Validation
-
-```{r troubleshoot-validation}
-# Validate cost data integrity
-validation_queries <- list(
-  "Cost records" = "SELECT COUNT(*) FROM cost",
-  "Unique persons with cost" = "SELECT COUNT(DISTINCT person_id) FROM cost",
-  "Cost concepts" = "SELECT COUNT(DISTINCT cost_concept_id) FROM cost",
-  "Visit details" = "SELECT COUNT(*) FROM visit_detail",
-  "Payer plans" = "SELECT COUNT(*) FROM payer_plan_period"
-)
-
-validation_results <- purrr::map_dfr(validation_queries, ~{
-  result <- DBI::dbGetQuery(connection, .x)
-  tibble(count = result[[1]])
-}, .id = "check")
-
-print(validation_results)
-```
-
-# Performance Optimization
-
-## Indexing
-
-Add indexes for better query performance:
-
-```{r indexing}
-# Add useful indexes (optional, for large datasets)
-index_queries <- c(
-  "CREATE INDEX IF NOT EXISTS idx_cost_person ON cost(person_id)",
-  "CREATE INDEX IF NOT EXISTS idx_cost_visit ON cost(visit_occurrence_id)", 
-  "CREATE INDEX IF NOT EXISTS idx_cost_visit_detail ON cost(visit_detail_id)",
-  "CREATE INDEX IF NOT EXISTS idx_cost_concept ON cost(cost_concept_id)",
-  "CREATE INDEX IF NOT EXISTS idx_visit_detail_person ON visit_detail(person_id)",
-  "CREATE INDEX IF NOT EXISTS idx_visit_detail_visit ON visit_detail(visit_occurrence_id)"
-)
-
-purrr::walk(index_queries, ~{
+  
   tryCatch({
-    DBI::dbExecute(connection, .x)
-  }, error = function(e) {
-    cat("Index creation warning:", e$message, "\n")
-  })
-})
-```
-
-## Query Optimization
-
-```{r query-optimization}
-# Enable DuckDB optimizations
-DBI::dbExecute(connection, "PRAGMA enable_optimizer=true")
-DBI::dbExecute(connection, "PRAGMA enable_profiling=true")
-```
-
-# Integration with Other Tools
-
-## CDMConnector Integration
-
-If you're using CDMConnector, you can integrate the setup:
-
-```{r cdmconnector-integration, eval=FALSE}
-# This is conceptual - adjust based on your CDMConnector setup
-library(CDMConnector)
-
-# Create CDM reference
-cdm <- cdm_from_con(
-  con = connection,
-  cdm_schema = "main",
-  write_schema = "main"
-)
-
-# Use with CostUtilization
-# (Pass the underlying connection to CostUtilization functions)
-```
-
-## DatabaseConnector Integration
-
-Use with OHDSI DatabaseConnector:
-
-```{r databaseconnector-integration}
-# Create connection details for DatabaseConnector
-connectionDetails <- DatabaseConnector::createConnectionDetails(
-  dbms = "duckdb",
-  server = databaseFile
-)
-
-# Use with CostUtilization
-results <- calculateCostOfCare(
-  connectionDetails = connectionDetails,  # Use connection details instead of direct connection
-  cdmDatabaseSchema = "main",
-  cohortDatabaseSchema = "main",
-  cohortTable = "cohort",
-  cohortId = 1,
-  costOfCareSettings = test_settings
-)
-```
-
-# Best Practices
-
-## 1. Reproducible Setup
-
-```{r reproducible-setup}
-# Use consistent seeds and paths for reproducible results
-setup_eunomia_v55 <- function(data_dir = tempdir(), seed = 123) {
-  # Create database
-  db_file <- file.path(data_dir, "eunomia_v55.duckdb")
-  
-  if (!file.exists(db_file)) {
-    db_file <- getEunomiaDuckDb(
-      databaseFile = db_file,
-      pathToData = file.path(data_dir, "eunomia_archives")
-    )
-  }
-  
-  # Connect and transform
-  con <- DBI::dbConnect(duckdb::duckdb(db_file))
-  con <- transformCostToCdmV5dot5(con)
-  
-  return(con)
-}
-
-# Use the function
-# connection <- setup_eunomia_v55()
-```
-
-## 2. Testing Framework
-
-```{r testing-framework}
-# Create a testing function
-test_cost_analysis <- function(connection, settings) {
-  tryCatch({
-    results <- calculateCostOfCare(
-      connection = connection,
-      cdmDatabaseSchema = "main",
-      cohortDatabaseSchema = "main",
-      cohortTable = "cohort",
-      cohortId = 1,
-      costOfCareSettings = settings,
-      verbose = FALSE
-    )
-    
-    # Basic validation
-    stopifnot(
-      !is.null(results$results),
-      !is.null(results$diagnostics),
-      nrow(results$results) > 0
-    )
-    
-    cat("✓ Test passed\n")
-    return(TRUE)
-    
-  }, error = function(e) {
-    cat("✗ Test failed:", e$message, "\n")
-    return(FALSE)
-  })
-}
-
-# Run tests
-test_settings <- createCostOfCareSettings(
-  anchorCol = "cohort_start_date",
-  startOffsetDays = -30L,
-  endOffsetDays = 30L,
-  costConceptId = 31973L
-)
-
-test_cost_analysis(connection, test_settings)
-```
-
-# Cleanup
-
-```{r cleanup}
-# Always disconnect when done
-DBI::dbDisconnect(connection, shutdown = TRUE)
-
-# Optionally clean up temporary files
-# unlink(data_dir, recursive = TRUE)
-```
-
-# Next Steps
-
-Now that you have Eunomia set up with CDM v5.5 cost data, you can:
-
-- **[Run advanced analyses](advanced-cost-analysis-v55.html)** with complex event filters
-- **[Explore micro-costing](visit-detail-analysis.html)** with visit details
-- **[Apply CPI adjustments](cpi-adjustment.html)** for inflation analysis
-- **[Integrate with your workflows](getting-started-v55.html)** using the patterns shown
-
-# Resources
-
-- **[Eunomia Documentation](https://github.com/OHDSI/Eunomia)**: Original Eunomia package
-- **[OMOP CDM v5.5 Specification](https://ohdsi.github.io/CommonDataModel/)**: Official CDM documentation
-- **[DuckDB Documentation](https://duckdb.org/docs/)**: DuckDB database engine
-- **[CostUtilization GitHub](https://github.com/OHDSI/CostUtilization)**: Package source and issues
