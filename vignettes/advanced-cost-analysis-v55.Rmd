@@ -1,0 +1,123 @@
+---
+title: "Advanced Cost Analysis (CDM v5.5)"
+author: "CostUtilization Team"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{Advanced Cost Analysis (CDM v5.5)}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+This vignette demonstrates event filters, visit restrictions, micro-costing, and purrr-driven multi-scenarios.
+
+Setup
+-----
+```{r}
+library(CostUtilization)
+library(DBI)
+library(dplyr)
+library(purrr)
+```
+
+DB and cohort
+-------------
+```{r}
+path <- tempdir()
+db_file <- getEunomiaDuckDb(pathToData = path)
+con <- DBI::dbConnect(duckdb::duckdb(db_file))
+transformCostToCdmV5dot5(con)
+cohort <- read.csv(system.file("testdata","cohort.csv", package = "CostUtilization"))
+DBI::dbWriteTable(con, "cohort", cohort, overwrite = TRUE)
+```
+
+Event filters and visit restriction
+-----------------------------------
+```{r}
+filters <- list(
+  list(name = "Diabetes Dx", domain = "Condition", conceptIds = c(201820L, 201826L)),
+  list(name = "Diabetes Meds", domain = "Drug", conceptIds = c(1503297L, 1502826L))
+)
+
+settings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date",
+  startOffsetDays = -180L,
+  endOffsetDays = 180L,
+  eventFilters = filters,
+  restrictVisitConceptIds = 9201L, # inpatient
+  costConceptId = 31985L # total_cost
+)
+
+res <- calculateCostOfCare(
+  connection = con,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "cohort",
+  cohortId = 1,
+  costOfCareSettings = settings,
+  verbose = TRUE
+)
+res$results
+```
+
+Micro-costing
+-------------
+```{r}
+settings_micro <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date",
+  startOffsetDays = 0L,
+  endOffsetDays = 365L,
+  eventFilters = list(list(name = "Procedures", domain = "Procedure", conceptIds = c(40489223L, 4187094L))),
+  microCosting = TRUE,
+  primaryEventFilterName = "Procedures",
+  costConceptId = 31973L
+)
+
+res_micro <- calculateCostOfCare(
+  connection = con,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "cohort",
+  cohortId = 1,
+  costOfCareSettings = settings_micro
+)
+res_micro$results
+```
+
+Multiple scenarios with purrr
+-----------------------------
+```{r}
+scenarios <- tibble::tibble(
+  label = c("charge","paid_payer","paid_patient"),
+  concept = c(31973L, 31980L, 31981L)
+)
+
+multi <- scenarios %>%
+  pmap_dfr(function(label, concept){
+    s <- createCostOfCareSettings(costConceptId = concept)
+    out <- calculateCostOfCare(
+      connection = con,
+      cdmDatabaseSchema = "main",
+      cohortDatabaseSchema = "main",
+      cohortTable = "cohort",
+      cohortId = 1,
+      costOfCareSettings = s,
+      verbose = FALSE
+    )
+    out$results %>% dplyr::mutate(costType = label)
+  })
+
+multi
+```
+
+Cleanup
+-------
+```{r}
+DBI::dbDisconnect(con, shutdown = TRUE)
+unlink(db_file)
+```

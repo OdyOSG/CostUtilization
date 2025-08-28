@@ -1,0 +1,72 @@
+---
+title: "CPI Adjustment in CostUtilization"
+author: "CostUtilization Team"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{CPI Adjustment in CostUtilization}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+This vignette shows how to enable CPI adjustment so costs are scaled to a common price level.
+
+# Setup Eunomia DuckDB and transform COST to v5.5
+
+```{r setup}
+library(CostUtilization)
+library(DBI)
+path <- tempdir()
+db_file <- getEunomiaDuckDb(pathToData = path)
+con <- DBI::dbConnect(duckdb::duckdb(db_file))
+transformCostToCdmV5dot5(con)
+```
+
+# Provide CPI factors
+
+The CPI CSV must contain columns year and adj_factor (or year and cpi, which will be renamed).
+
+```{r cpi}
+cpi_file <- tempfile(fileext = ".csv")
+write.csv(data.frame(year = 1980:2030, adj_factor = 1.05), cpi_file, row.names = FALSE)
+```
+
+# Load cohort and run analysis with and without CPI
+
+```{r run}
+cohort <- read.csv(system.file("testdata","cohort.csv", package = "CostUtilization"))
+DBI::dbWriteTable(con, "cohort", cohort, overwrite = TRUE)
+
+mk <- function(use_cpi) {
+  s <- createCostOfCareSettings(
+    anchorCol = "cohort_start_date",
+    startOffsetDays = 0L,
+    endOffsetDays = 365L,
+    costConceptId = 31985L,
+    cpiAdjustment = use_cpi,
+    cpiFilePath = cpi_file
+  )
+  calculateCostOfCare(
+    connection = con,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main",
+    cohortTable = "cohort",
+    cohortId = 1,
+    costOfCareSettings = s
+  )$results |>
+    dplyr::mutate(cpi = use_cpi)
+}
+
+res <- dplyr::bind_rows(mk(FALSE), mk(TRUE))
+res
+```
+
+```{r cleanup, include=FALSE}
+DBI::dbDisconnect(con, shutdown = TRUE)
+unlink(cpi_file)
+```
