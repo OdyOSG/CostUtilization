@@ -9,11 +9,8 @@
     verbose             = verbose
   )
   andromeda <- Andromeda::andromeda()
-  DatabaseConnector::querySqlToAndromeda(
-    connection,
-    glue::glue("select * from {params$cohortDatabaseSchema}.{params$resultTable}"),
-    andromeda = andromeda,
-    andromedaTableName = "results"
-  )
+  andromeda[['results']] <- DBI::dbGetQuery(
+    connection, glue::glue("select * from {params$cohortDatabaseSchema}.{params$resultsTable}")
+    )
   return(andromeda)
 }

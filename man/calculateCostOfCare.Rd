@@ -12,6 +12,7 @@ calculateCostOfCare(
   cohortTable,
   cohortId,
   costOfCareSettings,
+  aggregated = TRUE,
   tempEmulationSchema = NULL,
   verbose = TRUE
 )
@@ -31,6 +32,8 @@ if \code{connection} is not supplied (provide exactly one of the two).}
 \item{cohortId}{Numeric cohort definition id to analyze.}
 
 \item{costOfCareSettings}{A settings object from \code{createCostOfCareSettings()}.}
+
+\item{aggregated}{Should aggregate statistics be computed instead of covariates per cohort entry? If aggregated is set to FALSE, the results returned will be based on each subject_id and cohort_start_date in your cohort table. If your cohort contains multiple entries for the same subject_id (due to different cohort_start_date values), you must carefully set the rowIdField so you can identify the patients properly.}
 
 \item{tempEmulationSchema}{Optional schema for temp table emulation (Oracle/Redshift/...).}
 

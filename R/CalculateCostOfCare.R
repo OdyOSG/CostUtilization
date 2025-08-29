@@ -206,7 +206,7 @@ calculateCostOfCare <- function(
   # --- Fetch & return results ---
   logMessage("Fetching results from database...", verbose, "INFO")
   
-  
+  .res <- .fetchResults(params, connection, tempEmulationSchema, verbose)
   
 
 
@@ -215,4 +215,5 @@ calculateCostOfCare <- function(
     verbose = verbose,
     level = "SUCCESS"
   )
+  return(.res)
 }

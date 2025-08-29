@@ -1,559 +1,551 @@
-#' Convert Cost Analysis Results to FeatureExtraction CovariateData Format
+#' Create FeatureExtraction CovariateData from Cost Analysis Results
 #'
 #' @description
-#' Transforms cost analysis results from `calculateCostOfCare()` into a standardized
-#' `CovariateData` object compatible with the FeatureExtraction package. This enables
-#' seamless integration with OHDSI study pipelines and provides standardized
-#' metadata, covariate references, and analysis references.
+#' Converts cost analysis results from `calculateCostOfCare()` into standardized
+#' FeatureExtraction `CovariateData` format. Handles both aggregated and non-aggregated
+#' results from Andromeda objects returned by the database query.
 #'
-#' @param costResults A list returned by `calculateCostOfCare()` containing `results` and `diagnostics`.
-#' @param costOfCareSettings The `CostOfCareSettings` object used in the analysis.
-#' @param cohortId The cohort ID analyzed.
-#' @param databaseId Optional database identifier for multi-database studies.
-#' @param analysisId Optional analysis ID for tracking multiple analyses.
+#' @param costResults List containing `results` and `diagnostics` from `calculateCostOfCare()`.
+#'   The `results` can be either:
+#'   - **Aggregated**: Andromeda table with columns `metric_type`, `metric_name`, `metric_value`
+#'   - **Non-aggregated**: Andromeda table with columns `person_id`, `cost`, `adjusted_cost` (optional)
+#' @param costOfCareSettings Settings object from `createCostOfCareSettings()`.
+#' @param cohortId Integer cohort ID for the analysis.
+#' @param databaseId Character database identifier.
+#' @param analysisId Integer analysis ID (default: 1000).
+#' @param aggregated Logical indicating if results are aggregated (default: auto-detect).
+#' @param temporalCovariateSettings Optional temporal covariate settings for time-based analysis.
 #'
-#' @return A `CovariateData` object with Andromeda backend containing:
-#'   - `covariates`: Person-level cost and utilization metrics
-#'   - `covariateRef`: Reference table describing each covariate
-#'   - `analysisRef`: Reference table describing analysis parameters
-#'   - `timeRef`: Reference table for time windows (if applicable)
-#'   - `metaData`: Analysis metadata and settings
-#'
+#' @return A `CovariateData` object compatible with FeatureExtraction package.
 #' @export
+#'
 #' @examples
 #' \dontrun{
-#' # Run cost analysis
+#' # Basic usage with aggregated results
 #' settings <- createCostOfCareSettings(costConceptId = 31973L)
-#' results <- calculateCostOfCare(
-#'   connection = connection,
-#'   cdmDatabaseSchema = "main",
-#'   cohortDatabaseSchema = "main", 
-#'   cohortTable = "cohort",
-#'   cohortId = 1,
-#'   costOfCareSettings = settings
-#' )
+#' results <- calculateCostOfCare(...)
 #' 
-#' # Convert to FeatureExtraction format
 #' covariateData <- createCostCovariateData(
 #'   costResults = results,
 #'   costOfCareSettings = settings,
-#'   cohortId = 1
+#'   cohortId = 1,
+#'   databaseId = "MyDatabase"
 #' )
 #' 
-#' # Use with FeatureExtraction functions
-#' summary(covariateData)
+#' # Usage with non-aggregated person-level results
+#' covariateData <- createCostCovariateData(
+#'   costResults = results,
+#'   costOfCareSettings = settings,
+#'   cohortId = 1,
+#'   databaseId = "MyDatabase",
+#'   aggregated = FALSE
+#' )
 #' }
 createCostCovariateData <- function(costResults,
-                                   costOfCareSettings,
-                                   cohortId,
-                                   databaseId = "Unknown",
-                                   analysisId = 1L) {
+                                    costOfCareSettings,
+                                    cohortId,
+                                    databaseId,
+                                    analysisId = 1000L,
+                                    aggregated = NULL,
+                                    temporalCovariateSettings = NULL) {
   
-  # Validate inputs
-  checkmate::assertClass(costResults, "Andromeda")
-  checkmate::assertClass(costOfCareSettings, "CostOfCareSettings")
-  checkmate::assertIntegerish(cohortId, len = 1)
-  checkmate::assertCharacter(databaseId, len = 1)
-  checkmate::assertIntegerish(analysisId, len = 1)
+  # Input validation
+  errorMessages <- checkmate::makeAssertCollection()
+  checkmate::assertList(costResults, names = "named", add = errorMessages)
+  checkmate::assertClass(costOfCareSettings, "CostOfCareSettings", add = errorMessages)
+  checkmate::assertIntegerish(cohortId, len = 1, add = errorMessages)
+  checkmate::assertCharacter(databaseId, len = 1, add = errorMessages)
+  checkmate::assertIntegerish(analysisId, len = 1, add = errorMessages)
+  checkmate::assertFlag(aggregated, null.ok = TRUE, add = errorMessages)
+  checkmate::reportAssertions(errorMessages)
   
-  # Create Andromeda object
-  covariateData <- Andromeda::andromeda()
-  
-  # Generate analysis metadata
-  analysisRef <- createAnalysisRef(costOfCareSettings, analysisId)
-  
-  # Generate covariate reference table
-  covariateRef <- createCovariateRef(costResults$results, analysisRef, costOfCareSettings)
-  
-  # Generate covariates (person-level data)
-  covariates <- createCovariatesTable(costResults$results, covariateRef, cohortId)
-  
-  # Generate time reference (if applicable)
-  timeRef <- createTimeRef(costOfCareSettings)
-  
-  # Create metadata
-  metaData <- createMetaData(costOfCareSettings, costResults, databaseId, analysisId)
-  
-  # Store in Andromeda
-  covariateData$covariates <- covariates
-  covariateData$covariateRef <- covariateRef
-  covariateData$analysisRef <- analysisRef
-  
-  if (!is.null(timeRef)) {
-    covariateData$timeRef <- timeRef
+  if (!all(c("results", "diagnostics") %in% names(costResults))) {
+    cli::cli_abort("costResults must contain 'results' and 'diagnostics' elements")
   }
   
-  # Add metadata as attributes
-  attr(covariateData, "metaData") <- metaData
-  class(covariateData) <- c("CovariateData", class(covariateData))
+  # Auto-detect aggregation level if not specified
+  if (is.null(aggregated)) {
+    aggregated <- .detectAggregationLevel(costResults$results)
+  }
   
-  return(covariateData)
+  # Create CovariateData based on aggregation level
+  if (aggregated) {
+    .createAggregatedCovariateData(
+      costResults = costResults,
+      costOfCareSettings = costOfCareSettings,
+      cohortId = cohortId,
+      databaseId = databaseId,
+      analysisId = analysisId,
+      temporalCovariateSettings = temporalCovariateSettings
+    )
+  } else {
+    .createPersonLevelCovariateData(
+      costResults = costResults,
+      costOfCareSettings = costOfCareSettings,
+      cohortId = cohortId,
+      databaseId = databaseId,
+      analysisId = analysisId,
+      temporalCovariateSettings = temporalCovariateSettings
+    )
+  }
+}
+
+#' Convert Cost Results to FeatureExtraction Format (Convenience Function)
+#'
+#' @description
+#' Convenience wrapper around `createCostCovariateData()` for quick conversion.
+#'
+#' @inheritParams createCostCovariateData
+#' @return A `CovariateData` object.
+#' @export
+convertToFeatureExtractionFormat <- function(costResults,
+                                             costOfCareSettings,
+                                             cohortId,
+                                             databaseId,
+                                             analysisId = 1000L) {
+  createCostCovariateData(
+    costResults = costResults,
+    costOfCareSettings = costOfCareSettings,
+    cohortId = cohortId,
+    databaseId = databaseId,
+    analysisId = analysisId
+  )
+}
+
+# ============================================================================
+# Internal Helper Functions
+# ============================================================================
+
+#' Detect Aggregation Level from Results
+#' @param results Results table (tibble or Andromeda table)
+#' @return Logical indicating if results are aggregated
+#' @noRd
+.detectAggregationLevel <- function(results) {
+  # Check column names to determine aggregation level
+  if (inherits(results, "tbl_Andromeda")) {
+    colNames <- names(results)
+  } else {
+    colNames <- names(results)
+  }
+  
+  # Aggregated results have metric_type, metric_name, metric_value
+  aggregatedCols <- c("metric_type", "metric_name", "metric_value")
+  # Non-aggregated results have person_id, cost
+  personLevelCols <- c("person_id", "cost")
+  
+  hasAggregatedCols <- all(aggregatedCols %in% colNames)
+  hasPersonLevelCols <- all(personLevelCols %in% colNames)
+  
+  if (hasAggregatedCols && !hasPersonLevelCols) {
+    return(TRUE)
+  } else if (hasPersonLevelCols && !hasAggregatedCols) {
+    return(FALSE)
+  } else {
+    cli::cli_warn("Cannot auto-detect aggregation level. Assuming aggregated format.")
+    return(TRUE)
+  }
+}
+
+#' Create CovariateData from Aggregated Results
+#' @inheritParams createCostCovariateData
+#' @return CovariateData object
+#' @noRd
+.createAggregatedCovariateData <- function(costResults,
+                                           costOfCareSettings,
+                                           cohortId,
+                                           databaseId,
+                                           analysisId,
+                                           temporalCovariateSettings) {
+  
+  results <- costResults$results
+  
+  # Convert Andromeda to tibble if needed
+  if (inherits(results, "tbl_Andromeda")) {
+    results <- results |> dplyr::collect()
+  }
+  
+  # Create Andromeda object for CovariateData
+  andromedaObject <- Andromeda::andromeda()
+  
+  # Transform aggregated metrics to covariates format
+  covariates <- results |>
+    dplyr::mutate(
+      rowId = cohortId,
+      covariateId = .generateCovariateId(analysisId, .data$metric_type, .data$metric_name),
+      covariateValue = as.numeric(.data$metric_value)
+    ) |>
+    dplyr::select(.data$rowId, .data$covariateId, .data$covariateValue) |>
+    dplyr::filter(!is.na(.data$covariateValue))
+  
+  andromedaObject$covariates <- covariates
+  
+  # Create covariate reference
+  andromedaObject$covariateRef <- results |>
+    dplyr::mutate(
+      covariateId = .generateCovariateId(analysisId, .data$metric_type, .data$metric_name),
+      covariateName = stringr::str_c(.data$metric_type, ": ", .data$metric_name),
+      analysisId = analysisId,
+      conceptId = 0L
+    ) |>
+    dplyr::select(.data$covariateId, .data$covariateName, .data$analysisId, .data$conceptId) |>
+    dplyr::distinct()
+  
+  # Create analysis reference
+  andromedaObject$analysisRef <- .createAnalysisRef(
+    analysisId = analysisId,
+    costOfCareSettings = costOfCareSettings,
+    aggregated = TRUE
+  )
+  
+  # Create metadata
+  metaData <- .createMetaData(
+    costOfCareSettings = costOfCareSettings,
+    cohortId = cohortId,
+    databaseId = databaseId,
+    aggregated = TRUE,
+    temporalCovariateSettings = temporalCovariateSettings
+  )
+  
+  # Create CovariateData object
+  result <- list(
+    covariates = andromedaObject$covariates,
+    covariateRef = andromedaObject$covariateRef,
+    analysisRef = andromedaObject$analysisRef,
+    metaData = metaData
+  )
+  
+  class(result) <- "CovariateData"
+  attr(result, "metaData") <- metaData
+  
+  return(result)
+}
+
+#' Create CovariateData from Person-Level Results
+#' @inheritParams createCostCovariateData
+#' @return CovariateData object
+#' @noRd
+.createPersonLevelCovariateData <- function(costResults,
+                                            costOfCareSettings,
+                                            cohortId,
+                                            databaseId,
+                                            analysisId,
+                                            temporalCovariateSettings) {
+  
+  results <- costResults$results
+  
+  # Convert Andromeda to tibble if needed
+  if (inherits(results, "tbl_Andromeda")) {
+    results <- results |> dplyr::collect()
+  }
+  
+  # Create Andromeda object for CovariateData
+  andromedaObject <- Andromeda::andromeda()
+  
+  # Check if CPI adjustment is present
+  hasCpiAdjustment <- "adjusted_cost" %in% names(results) && costOfCareSettings$cpiAdjustment
+  
+  # Create covariates from person-level data
+  covariates_list <- list()
+  
+  # Base cost covariate
+  covariates_list[[1]] <- results |>
+    dplyr::mutate(
+      rowId = .data$person_id,
+      covariateId = analysisId * 1000L + 1L,  # Cost covariate
+      covariateValue = as.numeric(.data$cost)
+    ) |>
+    dplyr::select(.data$rowId, .data$covariateId, .data$covariateValue) |>
+    dplyr::filter(!is.na(.data$covariateValue), .data$covariateValue > 0)
+  
+  # CPI-adjusted cost covariate (if available)
+  if (hasCpiAdjustment) {
+    covariates_list[[2]] <- results |>
+      dplyr::mutate(
+        rowId = .data$person_id,
+        covariateId = analysisId * 1000L + 2L,  # Adjusted cost covariate
+        covariateValue = as.numeric(.data$adjusted_cost)
+      ) |>
+      dplyr::select(.data$rowId, .data$covariateId, .data$covariateValue) |>
+      dplyr::filter(!is.na(.data$covariateValue), .data$covariateValue > 0)
+  }
+  
+  # Binary indicator covariate (has any cost)
+  covariates_list[[length(covariates_list) + 1]] <- results |>
+    dplyr::filter(!is.na(.data$cost), .data$cost > 0) |>
+    dplyr::mutate(
+      rowId = .data$person_id,
+      covariateId = analysisId * 1000L + 10L,  # Binary indicator
+      covariateValue = 1.0
+    ) |>
+    dplyr::select(.data$rowId, .data$covariateId, .data$covariateValue) |>
+    dplyr::distinct()
+  
+  # Combine all covariates
+  andromedaObject$covariates <- purrr::reduce(covariates_list, dplyr::bind_rows)
+  
+  # Create covariate reference
+  covariateRef_list <- list(
+    dplyr::tibble(
+      covariateId = analysisId * 1000L + 1L,
+      covariateName = .createCovariateName(costOfCareSettings, "cost"),
+      analysisId = analysisId,
+      conceptId = as.integer(costOfCareSettings$costConceptId %||% 0L)
+    ),
+    dplyr::tibble(
+      covariateId = analysisId * 1000L + 10L,
+      covariateName = .createCovariateName(costOfCareSettings, "has_cost"),
+      analysisId = analysisId,
+      conceptId = as.integer(costOfCareSettings$costConceptId %||% 0L)
+    )
+  )
+  
+  if (hasCpiAdjustment) {
+    covariateRef_list[[length(covariateRef_list) + 1]] <- dplyr::tibble(
+      covariateId = analysisId * 1000L + 2L,
+      covariateName = .createCovariateName(costOfCareSettings, "adjusted_cost"),
+      analysisId = analysisId,
+      conceptId = as.integer(costOfCareSettings$costConceptId %||% 0L)
+    )
+  }
+  
+  andromedaObject$covariateRef <- purrr::reduce(covariateRef_list, dplyr::bind_rows)
+  
+  # Create analysis reference
+  andromedaObject$analysisRef <- .createAnalysisRef(
+    analysisId = analysisId,
+    costOfCareSettings = costOfCareSettings,
+    aggregated = FALSE
+  )
+  
+  # Create metadata
+  metaData <- .createMetaData(
+    costOfCareSettings = costOfCareSettings,
+    cohortId = cohortId,
+    databaseId = databaseId,
+    aggregated = FALSE,
+    temporalCovariateSettings = temporalCovariateSettings
+  )
+  
+  # Create CovariateData object
+  result <- list(
+    covariates = andromedaObject$covariates,
+    covariateRef = andromedaObject$covariateRef,
+    analysisRef = andromedaObject$analysisRef,
+    metaData = metaData
+  )
+  
+  class(result) <- "CovariateData"
+  attr(result, "metaData") <- metaData
+  
+  return(result)
+}
+
+#' Generate Covariate ID from Analysis Components
+#' @param analysisId Base analysis ID
+#' @param metricType Type of metric (e.g., "visit_level", "line_level")
+#' @param metricName Name of metric (e.g., "total_cost", "cost_pppm")
+#' @return Integer covariate ID
+#' @noRd
+.generateCovariateId <- function(analysisId, metricType, metricName) {
+  # Create a systematic ID scheme
+  baseId <- analysisId * 1000L
+  
+  # Type offset
+  typeOffset <- dplyr::case_when(
+    metricType == "visit_level" ~ 100L,
+    metricType == "line_level" ~ 200L,
+    TRUE ~ 0L
+  )
+  
+  # Metric offset
+  metricOffset <- dplyr::case_when(
+    stringr::str_detect(metricName, "total_cost") ~ 1L,
+    stringr::str_detect(metricName, "total_adjusted_cost") ~ 2L,
+    stringr::str_detect(metricName, "cost_pppm") ~ 3L,
+    stringr::str_detect(metricName, "adjusted_cost_pppm") ~ 4L,
+    stringr::str_detect(metricName, "cost_pppy") ~ 5L,
+    stringr::str_detect(metricName, "adjusted_cost_pppy") ~ 6L,
+    stringr::str_detect(metricName, "n_persons_with_cost") ~ 10L,
+    stringr::str_detect(metricName, "distinct_visits") ~ 11L,
+    stringr::str_detect(metricName, "distinct_events") ~ 12L,
+    stringr::str_detect(metricName, "events_per_1000_py") ~ 13L,
+    TRUE ~ 99L
+  )
+  
+  return(baseId + typeOffset + metricOffset)
 }
 
 #' Create Analysis Reference Table
-#'
-#' @description
-#' Creates a standardized analysis reference table describing the cost analysis parameters.
-#'
-#' @param costOfCareSettings The settings object used in the analysis.
-#' @param analysisId The analysis ID.
-#'
-#' @return A tibble with analysis reference information.
+#' @param analysisId Analysis ID
+#' @param costOfCareSettings Settings object
+#' @param aggregated Whether results are aggregated
+#' @return Tibble with analysis reference
 #' @noRd
-createAnalysisRef <- function(costOfCareSettings, analysisId) {
+.createAnalysisRef <- function(analysisId, costOfCareSettings, aggregated) {
   
-  # Determine analysis type based on settings
-  analysisName <- if (isTRUE(costOfCareSettings$microCosting)) {
-    "Cost Analysis - Line Level"
-  } else {
-    "Cost Analysis - Visit Level"
-  }
+  # Determine analysis type
+  analysisType <- if (aggregated) "Cost Analysis (Aggregated)" else "Cost Analysis (Person-Level)"
   
   # Create domain description
   domainDescription <- if (!is.null(costOfCareSettings$eventFilters) && length(costOfCareSettings$eventFilters) > 0) {
     domains <- purrr::map_chr(costOfCareSettings$eventFilters, ~ .x$domain)
-    paste("Filtered by domains:", paste(unique(domains), collapse = ", "))
+    paste("Filtered by:", paste(unique(domains), collapse = ", "))
   } else {
-    "All clinical domains"
+    "All domains"
   }
   
-  # Create time window description
-  timeWindow <- sprintf(
-    "Days %d to %d relative to %s",
-    costOfCareSettings$startOffsetDays %||% 0L,
-    costOfCareSettings$endOffsetDays %||% 365L,
-    costOfCareSettings$anchorCol %||% "cohort_start_date"
-  )
-  
-  # Cost concept description
-  costConceptDesc <- switch(
-    as.character(costOfCareSettings$costConceptId %||% 31973L),
-    "31973" = "Total Charge",
-    "31985" = "Total Cost", 
-    "31980" = "Paid by Payer",
-    "31981" = "Paid by Patient",
-    "31974" = "Patient Copay",
-    "31975" = "Patient Coinsurance",
-    "31976" = "Patient Deductible",
-    "31979" = "Amount Allowed",
-    paste("Cost Concept ID", costOfCareSettings$costConceptId)
-  )
+  # Time window description
+  timeWindow <- sprintf("Days %d to %d relative to %s",
+                        costOfCareSettings$startOffsetDays %||% 0L,
+                        costOfCareSettings$endOffsetDays %||% 365L,
+                        costOfCareSettings$anchorCol %||% "cohort_start_date")
   
   dplyr::tibble(
-    analysisId = as.integer(analysisId),
-    analysisName = analysisName,
+    analysisId = analysisId,
+    analysisName = analysisType,
     domainId = "Cost",
     startDay = as.integer(costOfCareSettings$startOffsetDays %||% 0L),
     endDay = as.integer(costOfCareSettings$endOffsetDays %||% 365L),
-    isBinary = "N",
+    isBinary = if (aggregated) "N" else "Y",
     missingMeansZero = "Y",
-    description = paste(
-      costConceptDesc, "analysis.",
-      domainDescription, ".",
-      timeWindow, ".",
-      if (costOfCareSettings$cpiAdjustment) "CPI adjusted." else "Not CPI adjusted."
-    )
+    description = paste(analysisType, "-", domainDescription, "-", timeWindow)
   )
 }
 
-#' Create Covariate Reference Table
-#'
-#' @description
-#' Creates a reference table describing each covariate generated from the cost analysis.
-#'
-#' @param results The results tibble from cost analysis.
-#' @param analysisRef The analysis reference table.
-#' @param costOfCareSettings The settings object.
-#'
-#' @return A tibble with covariate reference information.
+#' Create Covariate Name
+#' @param costOfCareSettings Settings object
+#' @param metricType Type of metric
+#' @return Character covariate name
 #' @noRd
-createCovariateRef <- function(results, analysisRef, costOfCareSettings) {
+.createCovariateName <- function(costOfCareSettings, metricType) {
   
-  # Base covariate ID (using analysis ID * 1000 as base)
-  baseId <- analysisRef$analysisId * 1000L
-  
-  # Determine cost type for naming
-  costType <- switch(
-    as.character(costOfCareSettings$costConceptId %||% 31973L),
-    "31973" = "charge",
-    "31985" = "cost", 
-    "31980" = "payer_payment",
-    "31981" = "patient_payment",
-    "31974" = "copay",
-    "31975" = "coinsurance", 
-    "31976" = "deductible",
-    "31979" = "allowed_amount",
-    "cost"
+  # Base cost concept description
+  costConceptDesc <- dplyr::case_when(
+    costOfCareSettings$costConceptId == 31973L ~ "Total Charge",
+    costOfCareSettings$costConceptId == 31985L ~ "Total Cost",
+    costOfCareSettings$costConceptId == 31980L ~ "Paid by Payer",
+    costOfCareSettings$costConceptId == 31981L ~ "Paid by Patient",
+    costOfCareSettings$costConceptId == 31974L ~ "Patient Copay",
+    costOfCareSettings$costConceptId == 31975L ~ "Patient Coinsurance",
+    costOfCareSettings$costConceptId == 31976L ~ "Patient Deductible",
+    costOfCareSettings$costConceptId == 31979L ~ "Amount Allowed",
+    TRUE ~ paste("Cost Concept", costOfCareSettings$costConceptId)
   )
   
-  # Create covariates based on available metrics
-  covariateRefs <- list()
-  
-  # Total cost/charge
-  if ("totalCost" %in% names(results) || "total_cost" %in% names(results)) {
-    covariateRefs[[length(covariateRefs) + 1]] <- dplyr::tibble(
-      covariateId = baseId + 1L,
-      covariateName = paste0("Total ", stringr::str_to_title(costType)),
-      analysisId = analysisRef$analysisId,
-      conceptId = as.integer(costOfCareSettings$costConceptId %||% 31973L)
-    )
-  }
-  
-  # CPI adjusted cost (if available)
-  if ("totalAdjustedCost" %in% names(results) || "total_adjusted_cost" %in% names(results)) {
-    covariateRefs[[length(covariateRefs) + 1]] <- dplyr::tibble(
-      covariateId = baseId + 2L,
-      covariateName = paste0("Total ", stringr::str_to_title(costType), " (CPI Adjusted)"),
-      analysisId = analysisRef$analysisId,
-      conceptId = as.integer(costOfCareSettings$costConceptId %||% 31973L)
-    )
-  }
-  
-  # Per-person-per-month (PPPM)
-  if ("costPppm" %in% names(results) || "cost_pppm" %in% names(results)) {
-    covariateRefs[[length(covariateRefs) + 1]] <- dplyr::tibble(
-      covariateId = baseId + 3L,
-      covariateName = paste0(stringr::str_to_title(costType), " Per Person Per Month"),
-      analysisId = analysisRef$analysisId,
-      conceptId = as.integer(costOfCareSettings$costConceptId %||% 31973L)
-    )
-  }
-  
-  # Per-person-per-year (PPPY)
-  if ("costPppy" %in% names(results) || "cost_pppy" %in% names(results)) {
-    covariateRefs[[length(covariateRefs) + 1]] <- dplyr::tibble(
-      covariateId = baseId + 4L,
-      covariateName = paste0(stringr::str_to_title(costType), " Per Person Per Year"),
-      analysisId = analysisRef$analysisId,
-      conceptId = as.integer(costOfCareSettings$costConceptId %||% 31973L)
-    )
-  }
-  
-  # Utilization metrics
-  if ("distinctVisits" %in% names(results) || "distinct_visits" %in% names(results)) {
-    covariateRefs[[length(covariateRefs) + 1]] <- dplyr::tibble(
-      covariateId = baseId + 10L,
-      covariateName = "Number of Visits",
-      analysisId = analysisRef$analysisId,
-      conceptId = 0L
-    )
-  }
-  
-  if ("distinctEvents" %in% names(results) || "distinct_events" %in% names(results)) {
-    covariateRefs[[length(covariateRefs) + 1]] <- dplyr::tibble(
-      covariateId = baseId + 11L,
-      covariateName = "Number of Events",
-      analysisId = analysisRef$analysisId,
-      conceptId = 0L
-    )
-  }
-  
-  # Events per 1000 person-years
-  if ("eventsPer1000Py" %in% names(results) || "events_per_1000_py" %in% names(results)) {
-    covariateRefs[[length(covariateRefs) + 1]] <- dplyr::tibble(
-      covariateId = baseId + 12L,
-      covariateName = "Events Per 1000 Person-Years",
-      analysisId = analysisRef$analysisId,
-      conceptId = 0L
-    )
-  }
-  
-  # Combine all covariate references
-  if (length(covariateRefs) == 0) {
-    # Fallback if no standard metrics found
-    covariateRefs[[1]] <- dplyr::tibble(
-      covariateId = baseId + 1L,
-      covariateName = "Total Cost",
-      analysisId = analysisRef$analysisId,
-      conceptId = as.integer(costOfCareSettings$costConceptId %||% 31973L)
-    )
-  }
-  
-  dplyr::bind_rows(covariateRefs)
-}
-
-#' Create Covariates Table (Person-Level Data)
-#'
-#' @description
-#' Creates the main covariates table with person-level cost and utilization metrics.
-#' Since the current results are aggregated, this creates a single row representing
-#' the cohort-level metrics that can be applied to all persons in the cohort.
-#'
-#' @param results The results tibble from cost analysis.
-#' @param covariateRef The covariate reference table.
-#' @param cohortId The cohort ID.
-#'
-#' @return A tibble with person-level covariate data.
-#' @noRd
-createCovariatesTable <- function(results, covariateRef, cohortId) {
-  
-  # Since current results are aggregated at cohort level, we create template
-  # that can be expanded to person level in future versions
-  
-  # Create base structure
-  covariates <- purrr::map_dfr(seq_len(nrow(covariateRef)), function(i) {
-    ref <- covariateRef[i, ]
-    
-    # Extract value based on covariate name pattern
-    value <- extractCovariateValue(results, ref$covariateName, ref$covariateId)
-    
-    dplyr::tibble(
-      rowId = as.integer(cohortId),  # Using cohortId as rowId for now
-      covariateId = ref$covariateId,
-      covariateValue = as.numeric(value)
-    )
-  })
-  
-  # Filter out zero/NA values if needed
-  covariates <- covariates |>
-    dplyr::filter(!is.na(.data$covariateValue) & .data$covariateValue != 0)
-  
-  return(covariates)
-}
-
-#' Extract Covariate Value from Results
-#'
-#' @description
-#' Helper function to extract the appropriate value from results based on covariate name.
-#'
-#' @param results The results tibble.
-#' @param covariateName The name of the covariate.
-#' @param covariateId The covariate ID for fallback.
-#'
-#' @return The numeric value for the covariate.
-#' @noRd
-extractCovariateValue <- function(results, covariateName, covariateId) {
-  
-  # Normalize column names to handle both camelCase and snake_case
-  resultsNorm <- results |>
-    dplyr::rename_all(~ stringr::str_to_lower(stringr::str_replace_all(.x, "([A-Z])", "_\\1"))) |>
-    dplyr::rename_all(~ stringr::str_replace_all(.x, "^_", ""))
-  
-  # Extract value based on covariate name pattern
-  value <- switch(
-    stringr::str_to_lower(covariateName),
-    
-    # Cost metrics
-    "total charge" = resultsNorm$total_cost[1] %||% 0,
-    "total cost" = resultsNorm$total_cost[1] %||% 0,
-    "total payer_payment" = resultsNorm$total_cost[1] %||% 0,
-    "total patient_payment" = resultsNorm$total_cost[1] %||% 0,
-    "total copay" = resultsNorm$total_cost[1] %||% 0,
-    "total coinsurance" = resultsNorm$total_cost[1] %||% 0,
-    "total deductible" = resultsNorm$total_cost[1] %||% 0,
-    "total allowed_amount" = resultsNorm$total_cost[1] %||% 0,
-    
-    # CPI adjusted
-    "total charge (cpi adjusted)" = resultsNorm$total_adjusted_cost[1] %||% 0,
-    "total cost (cpi adjusted)" = resultsNorm$total_adjusted_cost[1] %||% 0,
-    
-    # PPPM/PPPY
-    "charge per person per month" = resultsNorm$cost_pppm[1] %||% 0,
-    "cost per person per month" = resultsNorm$cost_pppm[1] %||% 0,
-    "charge per person per year" = resultsNorm$cost_pppy[1] %||% 0,
-    "cost per person per year" = resultsNorm$cost_pppy[1] %||% 0,
-    
-    # Utilization
-    "number of visits" = resultsNorm$distinct_visits[1] %||% 0,
-    "number of events" = resultsNorm$distinct_events[1] %||% 0,
-    "events per 1000 person-years" = resultsNorm$events_per_1000_py[1] %||% 0,
-    
-    # Fallback
-    0
+  # Metric type description
+  metricDesc <- dplyr::case_when(
+    metricType == "cost" ~ "Amount",
+    metricType == "adjusted_cost" ~ "CPI-Adjusted Amount",
+    metricType == "has_cost" ~ "Has Any Cost",
+    TRUE ~ stringr::str_to_title(stringr::str_replace_all(metricType, "_", " "))
   )
   
-  return(as.numeric(value))
-}
-
-#' Create Time Reference Table
-#'
-#' @description
-#' Creates a time reference table for time-windowed analyses.
-#'
-#' @param costOfCareSettings The settings object.
-#'
-#' @return A tibble with time reference information, or NULL if not applicable.
-#' @noRd
-createTimeRef <- function(costOfCareSettings) {
+  # Time window
+  timeWindow <- sprintf("days %d to %d",
+                        costOfCareSettings$startOffsetDays %||% 0L,
+                        costOfCareSettings$endOffsetDays %||% 365L)
   
-  # Only create time reference if we have meaningful time windows
-  startDay <- costOfCareSettings$startOffsetDays %||% 0L
-  endDay <- costOfCareSettings$endOffsetDays %||% 365L
-  
-  if (startDay == 0L && endDay == 365L) {
-    return(NULL)  # Standard 1-year window, no need for special reference
+  # Event filter description
+  filterDesc <- if (!is.null(costOfCareSettings$eventFilters) && length(costOfCareSettings$eventFilters) > 0) {
+    paste("filtered by", length(costOfCareSettings$eventFilters), "event types")
+  } else {
+    "all events"
   }
   
-  dplyr::tibble(
-    timeId = 1L,
-    startDay = as.integer(startDay),
-    endDay = as.integer(endDay),
-    description = sprintf("Days %d to %d", startDay, endDay)
-  )
+  paste(costConceptDesc, metricDesc, timeWindow, filterDesc, sep = " - ")
 }
 
 #' Create Metadata for CovariateData
-#'
-#' @description
-#' Creates comprehensive metadata describing the cost analysis.
-#'
-#' @param costOfCareSettings The settings object.
-#' @param costResults The results from cost analysis.
-#' @param databaseId The database identifier.
-#' @param analysisId The analysis ID.
-#'
-#' @return A list with metadata information.
+#' @param costOfCareSettings Settings object
+#' @param cohortId Cohort ID
+#' @param databaseId Database ID
+#' @param aggregated Whether results are aggregated
+#' @param temporalCovariateSettings Temporal settings
+#' @return List with metadata
 #' @noRd
-createMetaData <- function(costOfCareSettings, costResults, databaseId, analysisId) {
+.createMetaData <- function(costOfCareSettings,
+                            cohortId,
+                            databaseId,
+                            aggregated,
+                            temporalCovariateSettings) {
   
   list(
-    # Basic identifiers
-    databaseId = databaseId,
-    analysisId = analysisId,
-    
-    # Package and version info
-    packageName = "CostUtilization",
-    packageVersion = utils::packageVersion("CostUtilization"),
-    
-    # Analysis parameters
-    call = list(
-      anchorCol = costOfCareSettings$anchorCol %||% "cohort_start_date",
-      startOffsetDays = costOfCareSettings$startOffsetDays %||% 0L,
-      endOffsetDays = costOfCareSettings$endOffsetDays %||% 365L,
-      costConceptId = costOfCareSettings$costConceptId %||% 31973L,
-      currencyConceptId = costOfCareSettings$currencyConceptId,
-      microCosting = costOfCareSettings$microCosting %||% FALSE,
-      cpiAdjustment = costOfCareSettings$cpiAdjustment %||% FALSE,
-      hasEventFilters = costOfCareSettings$hasEventFilters %||% FALSE,
-      hasVisitRestriction = costOfCareSettings$hasVisitRestriction %||% FALSE
-    ),
-    
-    # Results summary
-    populationSize = costResults$results$nPersonsWithCost[1] %||% 0L,
-    metricType = costResults$results$metricType[1] %||% "unknown",
-    
-    # Timing
-    executionTime = Sys.time(),
-    
-    # Data characteristics
-    isBinary = FALSE,
-    isAggregated = TRUE,
-    
-    # Diagnostics summary
-    diagnosticsAvailable = !is.null(costResults$diagnostics),
-    nDiagnosticSteps = if (!is.null(costResults$diagnostics)) nrow(costResults$diagnostics) else 0L
-  )
-}
-
-#' Summary Method for CostCovariateData
-#'
-#' @description
-#' Provides a summary of the cost covariate data object.
-#'
-#' @param object A `CovariateData` object created by `createCostCovariateData()`.
-#' @param ... Additional arguments (not used).
-#'
-#' @return A summary object.
-#' @export
-summary.CovariateData <- function(object, ...) {
-  
-  if (!inherits(object, "CovariateData")) {
-    stop("Object must be of class 'CovariateData'")
-  }
-  
-  metaData <- attr(object, "metaData")
-  
-  # Count covariates
-  nCovariates <- if ("covariateRef" %in% names(object)) {
-    nrow(dplyr::collect(object$covariateRef))
-  } else {
-    0L
-  }
-  
-  nPersons <- if ("covariates" %in% names(object)) {
-    length(unique(dplyr::pull(dplyr::collect(object$covariates), "rowId")))
-  } else {
-    0L
-  }
-  
-  cat("Cost Covariate Data Summary\n")
-  cat("===========================\n\n")
-  
-  if (!is.null(metaData)) {
-    cat("Database ID:", metaData$databaseId, "\n")
-    cat("Analysis ID:", metaData$analysisId, "\n")
-    cat("Package:", metaData$packageName, "v", as.character(metaData$packageVersion), "\n")
-    cat("Metric Type:", metaData$metricType, "\n")
-    cat("Population Size:", metaData$populationSize, "\n\n")
-    
-    cat("Analysis Parameters:\n")
-    cat("- Time Window:", metaData$call$startOffsetDays, "to", metaData$call$endOffsetDays, "days\n")
-    cat("- Anchor Column:", metaData$call$anchorCol, "\n")
-    cat("- Cost Concept ID:", metaData$call$costConceptId, "\n")
-    cat("- Micro Costing:", metaData$call$microCosting, "\n")
-    cat("- CPI Adjustment:", metaData$call$cpiAdjustment, "\n")
-    cat("- Event Filters:", metaData$call$hasEventFilters, "\n")
-    cat("- Visit Restrictions:", metaData$call$hasVisitRestriction, "\n\n")
-  }
-  
-  cat("Data Summary:\n")
-  cat("- Number of Covariates:", nCovariates, "\n")
-  cat("- Number of Persons:", nPersons, "\n")
-  
-  if ("covariateRef" %in% names(object)) {
-    cat("\nAvailable Covariates:\n")
-    covRef <- dplyr::collect(object$covariateRef)
-    for (i in seq_len(nrow(covRef))) {
-      cat(sprintf("  %d: %s\n", covRef$covariateId[i], covRef$covariateName[i]))
-    }
-  }
-  
-  invisible(object)
-}
-
-#' Print Method for CostCovariateData
-#'
-#' @description
-#' Print method for cost covariate data objects.
-#'
-#' @param x A `CovariateData` object.
-#' @param ... Additional arguments (not used).
-#'
-#' @return The object invisibly.
-#' @export
-print.CovariateData <- function(x, ...) {
-  summary(x, ...)
-  invisible(x)
-}
-
-#' Convert Legacy Results to FeatureExtraction Format
-#'
-#' @description
-#' Convenience function to convert existing cost analysis results to the
-#' FeatureExtraction format. This is useful for updating existing workflows.
-#'
-#' @param costResults Results from `calculateCostOfCare()`.
-#' @param costOfCareSettings Settings used in the analysis.
-#' @param cohortId Cohort ID analyzed.
-#' @param databaseId Database identifier.
-#'
-#' @return A `CovariateData` object.
-#' @export
-convertToFeatureExtractionFormat <- function(costResults,
-                                            costOfCareSettings,
-                                            cohortId,
-                                            databaseId = "Unknown") {
-  
-  cli::cli_alert_info("Converting cost analysis results to FeatureExtraction format...")
-  
-  result <- createCostCovariateData(
-    costResults = costResults,
-    costOfCareSettings = costOfCareSettings,
+    sql = "Cost analysis using CostUtilization package",
+    call = match.call(),
+    packageVersion = "CostUtilization",
+    analysisType = if (aggregated) "aggregated" else "person_level",
     cohortId = cohortId,
-    databaseId = databaseId
+    databaseId = databaseId,
+    costConceptId = costOfCareSettings$costConceptId,
+    currencyConceptId = costOfCareSettings$currencyConceptId,
+    timeWindow = list(
+      startOffsetDays = costOfCareSettings$startOffsetDays,
+      endOffsetDays = costOfCareSettings$endOffsetDays,
+      anchorCol = costOfCareSettings$anchorCol
+    ),
+    eventFilters = costOfCareSettings$eventFilters,
+    visitRestrictions = if (costOfCareSettings$hasVisitRestriction) {
+      costOfCareSettings$restrictVisitConceptIds
+    } else {
+      NULL
+    },
+    cpiAdjustment = costOfCareSettings$cpiAdjustment,
+    microCosting = costOfCareSettings$microCosting,
+    temporalCovariateSettings = temporalCovariateSettings,
+    createdOn = Sys.time()
   )
+}
+
+# ============================================================================
+# Utility Functions
+# ============================================================================
+
+#' Check if Object is CovariateData
+#' @param x Object to check
+#' @return Logical
+#' @export
+is.CovariateData <- function(x) {
+  inherits(x, "CovariateData")
+}
+
+#' Get Covariate Values for Specific People
+#' @param covariateData CovariateData object
+#' @param rowIds Vector of row IDs (person IDs) to extract
+#' @return Tibble with covariate values
+#' @export
+getCovariateValues <- function(covariateData, rowIds) {
+  checkmate::assertClass(covariateData, "CovariateData")
+  checkmate::assertIntegerish(rowIds, min.len = 1)
   
-  cli::cli_alert_success("Conversion completed successfully!")
+  covariateData$covariates |>
+    dplyr::filter(.data$rowId %in% !!rowIds) |>
+    dplyr::left_join(
+      covariateData$covariateRef |> dplyr::select(.data$covariateId, .data$covariateName),
+      by = "covariateId"
+    ) |>
+    dplyr::collect()
+}
+
+#' Convert CovariateData to Wide Format
+#' @param covariateData CovariateData object
+#' @return Tibble in wide format
+#' @export
+toWideFormat <- function(covariateData) {
+  checkmate::assertClass(covariateData, "CovariateData")
   
-  return(result)
+  # Get covariate names
+  covariateNames <- covariateData$covariateRef |>
+    dplyr::select(.data$covariateId, .data$covariateName) |>
+    dplyr::collect()
+  
+  # Convert to wide format
+  covariateData$covariates |>
+    dplyr::left_join(covariateNames, by = "covariateId") |>
+    dplyr::select(.data$rowId, .data$covariateName, .data$covariateValue) |>
+    tidyr::pivot_wider(
+      names_from = .data$covariateName,
+      values_from = .data$covariateValue,
+      values_fill = 0
+    ) |>
+    dplyr::collect()
 }
