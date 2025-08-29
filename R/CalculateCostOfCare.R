@@ -13,6 +13,7 @@
 #' @param cohortTable Name of the cohort table.
 #' @param cohortId Numeric cohort definition id to analyze.
 #' @param costOfCareSettings A settings object from `createCostOfCareSettings()`.
+#' @param aggregated	 Should aggregate statistics be computed instead of covariates per cohort entry? If aggregated is set to FALSE, the results returned will be based on each subject_id and cohort_start_date in your cohort table. If your cohort contains multiple entries for the same subject_id (due to different cohort_start_date values), you must carefully set the rowIdField so you can identify the patients properly.
 #' @param tempEmulationSchema Optional schema for temp table emulation (Oracle/Redshift/...).
 #' @param verbose Logical; print progress messages.
 #'
@@ -26,6 +27,7 @@ calculateCostOfCare <- function(
     cohortTable,
     cohortId,
     costOfCareSettings,
+    aggregated = TRUE,
     tempEmulationSchema = NULL,
     verbose = TRUE) {
   # --- Validation / connection management ---
@@ -35,14 +37,15 @@ calculateCostOfCare <- function(
   checkmate::assertCharacter(cohortDatabaseSchema, len = 1, add = errorMessages)
   checkmate::assertCharacter(cohortTable, len = 1, add = errorMessages)
   checkmate::assertIntegerish(cohortId, len = 1, any.missing = FALSE, add = errorMessages)
+  checkmate::assertFlag(aggregated, add = errorMessages)
   checkmate::assertFlag(verbose, add = errorMessages)
   checkmate::reportAssertions(errorMessages)
   
   if (is.null(connectionDetails) && is.null(connection)) {
-    stop("Provide either `connectionDetails` or an open `connection`.")
+    rlang::abort("Provide either `connectionDetails` or an open `connection`.")
   }
   if (!is.null(connectionDetails) && !is.null(connection)) {
-    stop("Provide exactly one of `connectionDetails` or `connection`, not both.")
+    rlang::abort("Provide exactly one of `connectionDetails` or `connection`, not both.")
   }
   
   if (!is.null(connectionDetails)) {
@@ -57,7 +60,7 @@ calculateCostOfCare <- function(
   startTime <- Sys.time()
   targetDialect <- DatabaseConnector::dbms(connection)
   
-  # Unique prefix for this run (temp/staging tables)
+  
   sessionPrefix <- purrr::chuck(SqlRender::translate('#', 'oracle'), 1)
   resultsTableName <- paste0(sessionPrefix, "_results")
   diagTableName <- paste0(sessionPrefix, "_diag")

@@ -6,3 +6,4 @@ combined_package_code.txt
 .vscode/
 testing_data/
 errorReportSql.txt
+inst/doc

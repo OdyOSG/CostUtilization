@@ -31,7 +31,7 @@ DB and cohort
 path <- tempdir()
 db_file <- getEunomiaDuckDb(pathToData = path)
 con <- DBI::dbConnect(duckdb::duckdb(db_file))
-transformCostToCdmV5dot5(con)
+con <- transformCostToCdmV5dot5(con)
 cohort <- read.csv(system.file("testdata","cohort.csv", package = "CostUtilization"))
 DBI::dbWriteTable(con, "cohort", cohort, overwrite = TRUE)
 ```

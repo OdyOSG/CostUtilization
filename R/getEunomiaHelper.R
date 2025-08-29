@@ -103,10 +103,9 @@ getEunomiaDuckDb <- function(
     table_path <- file.path(unzipLocation, paste0(tables[i], ".parquet"))
     DBI::dbExecute(con, glue::glue("CREATE TABLE {tables[i]} AS SELECT * FROM read_parquet('{table_path}');"))
   }
-  DBI::dbDisconnect(con, shutdown = TRUE)
   
-  
-  rlang::inform(glue::glue("Database created at {databaseFile}"))
+  logMessage(glue::glue("Database created at {databaseFile}"), verbose = TRUE)
+
   
   return(databaseFile)
 }

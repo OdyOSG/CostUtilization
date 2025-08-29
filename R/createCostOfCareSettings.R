@@ -188,7 +188,7 @@ createCostOfCareSettings <- function(
       costConceptId = as.integer(costConceptId),
       currencyConceptId = as.integer(currencyConceptId),
       additionalCostConceptIds = if (is.null(additionalCostConceptIds)) NULL else as.integer(additionalCostConceptIds),
-      cpiAdjustment = isTRUE(cpiAdjustment),
+      cpiAdjustment = cpiAdjustment,
       cpiFilePath = cpiFilePath
     ),
     class = "CostOfCareSettings"

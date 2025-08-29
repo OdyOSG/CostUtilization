@@ -17,12 +17,10 @@ cleanupTempTables <- function(connection, schema = NULL, ...) {
   }
   
   dropWithIfExists <- function(conn, qident) {
-    sql <- DBI::SQL(glue::glue("DROP TABLE IF EXISTS {qident};"))
-    DBI::dbExecute(conn, sql)
+    DBI::dbExecute(conn, DBI::SQL(glue::glue("DROP TABLE IF EXISTS {qident};")))
   }
   dropWithoutIfExists <- function(conn, qident) {
-    sql <- DBI::SQL(glue::glue("DROP TABLE {qident};"))
-    DBI::dbExecute(conn, sql)
+    DBI::dbExecute(conn, DBI::SQL(glue::glue("DROP TABLE {qident};")))
   }
   
   purrr::walk(tables, ~{
@@ -160,29 +158,6 @@ executeSqlStatements <- function(connection, sqlStatements, verbose = TRUE, quie
   invisible(NULL)
 }
 
-#' Format time duration for display
-#'
-#' @description
-#' Formats a time duration in seconds to a human-readable string.
-#'
-#' @param seconds Numeric duration in seconds
-#'
-#' @return Character string with formatted duration
-#' @noRd
-formatDuration <- function(seconds) {
-  if (seconds < 60) {
-    return(sprintf("%.1f seconds", seconds))
-  } else if (seconds < 3600) {
-    minutes <- seconds / 60
-    return(sprintf("%.1f minutes", minutes))
-  } else {
-    hours <- seconds / 3600
-    return(sprintf("%.1f hours", hours))
-  }
-}
-
-
-
 # Helpers (simple, focused)
 .int_flag <- function(x) as.integer(isTRUE(x))
 
@@ -217,7 +192,7 @@ insertTableDBI <- function(connection,
                            camelCaseToSnakeCase = FALSE) {
 
   # Optionally rename columns
-  if (isTRUE(camelCaseToSnakeCase)) {
+  if (camelCaseToSnakeCase) {
     names(data) <- SqlRender::camelCaseToSnakeCase(names(data))
   }
   
