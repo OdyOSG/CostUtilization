@@ -58,7 +58,6 @@ calculateCostOfCare <- function(
   
   # --- Setup ---
   startTime <- Sys.time()
-  targetDialect <- DatabaseConnector::dbms(connection)
   
   
   sessionPrefix <- purrr::chuck(SqlRender::translate('#', 'oracle'), 1)
@@ -188,6 +187,7 @@ calculateCostOfCare <- function(
     costConceptId = as.integer(costOfCareSettings$costConceptId),
     currencyConceptId = as.integer(costOfCareSettings$currencyConceptId),
     
+    aggregated = aggregated,
     # primary filter id (index in eventFilters) if named
     primaryFilterId = {
       pefn <- costOfCareSettings$primaryEventFilterName %||% NULL
@@ -201,32 +201,18 @@ calculateCostOfCare <- function(
       }
     }
   )
-  executeSqlPlan(
-    connection          = connection,
-    params              = params,
-    targetDialect       = targetDialect,
-    tempEmulationSchema = tempEmulationSchema,
-    verbose             = verbose
-  )
+
   
   # --- Fetch & return results ---
   logMessage("Fetching results from database...", verbose, "INFO")
-  resultsFqn <- if (!is.null(tempEmulationSchema)) paste(tempEmulationSchema, resultsTableName, sep = ".") else resultsTableName
-  diagFqn <- if (!is.null(tempEmulationSchema)) paste(tempEmulationSchema, diagTableName, sep = ".") else diagTableName
   
-  resultsSql <- sprintf("SELECT * FROM %s;", resultsFqn)
-  diagnosticsSql <- sprintf("SELECT * FROM %s ORDER BY step_name;", diagFqn)
   
-  results <- DBI::dbGetQuery(connection, resultsSql) |>
-    dplyr::as_tibble() |> dplyr::rename_all(SqlRender::snakeCaseToCamelCase)
-  diagnostics <- DBI::dbGetQuery(connection, diagnosticsSql) |>
-    dplyr::as_tibble() |> dplyr::rename_all(SqlRender::snakeCaseToCamelCase)
   
+
+
   logMessage(
     sprintf("Analysis complete in %0.1fs.", as.numeric(difftime(Sys.time(), startTime, units = "secs"))),
     verbose = verbose,
     level = "SUCCESS"
   )
-  
-  list(results = results, diagnostics = diagnostics)
 }

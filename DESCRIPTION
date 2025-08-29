@@ -16,6 +16,7 @@ License: Apache License (>= 2.0)
 URL: https://github.com/OHDSI/CostUtilization
 BugReports: https://github.com/OHDSI/CostUtilization/issues
 Imports: 
+    Andromeda (>= 1.1.1),
     checkmate,
     cli,
     DatabaseConnector (>= 5.0.0),

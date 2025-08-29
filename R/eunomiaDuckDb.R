@@ -86,7 +86,6 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
     df
   }
   
-  # Apply to each person (rowwise pmap over the 5 needed columns)
   payer_plans_df_long <- person_obs_periods |>
     dplyr::select(
       .data$person_id,

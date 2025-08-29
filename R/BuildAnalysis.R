@@ -78,6 +78,8 @@ prepareSqlRenderParams <- function(
     anchor_on_end          = .int_flag(params$anchorOnEnd),
     time_a                 = as.integer(params$timeA %||% 0L),
     time_b                 = as.integer(params$timeB %||% 365L),
+    
+    aggregated             = aggregated,
 
     # costing & filters
     cost_concept_id        = as.integer(params$costConceptId),
