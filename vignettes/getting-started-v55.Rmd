@@ -1,0 +1,866 @@
+---
+title: "Getting Started with CostUtilization and CDM v5.5"
+author: "CostUtilization Development Team"
+date: "`r Sys.Date()`"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 3
+vignette: >
+  %\VignetteIndexEntry{Getting Started with CostUtilization and CDM v5.5}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  warning = FALSE,
+  message = FALSE,
+  eval = FALSE
+)
+```
+
+# Introduction
+
+The `CostUtilization` package provides a comprehensive framework for analyzing healthcare costs and resource utilization using OMOP Common Data Model (CDM) databases. **This version is specifically designed for CDM v5.5** with enhanced support for the new long-format COST table structure.
+
+## What's New in CDM v5.5
+
+### Enhanced Cost Table Structure
+
+CDM v5.5 introduces a **long-format COST table** that provides better traceability and analytical flexibility compared to the previous wide format:
+
+**Previous (Wide Format)**:
+```
+cost_id | person_id | total_charge | paid_by_payer | paid_by_patient
+   1    |    123    |    1000.00   |    800.00     |     200.00
+```
+
+**CDM v5.5 (Long Format)**:
+```
+cost_id | person_id | cost_concept_id | cost_source_value | cost | effective_date
+   1    |    123    |      31973      |  "total_charge"   | 1000 | 2023-01-15
+   2    |    123    |      31980      |  "paid_by_payer"  | 800  | 2023-01-15  
+   3    |    123    |      31981      | "paid_by_patient" | 200  | 2023-01-15
+```
+
+### New Temporal Fields
+
+- `effective_date`: When the cost was incurred (required)
+- `billed_date`: When the cost was billed  
+- `paid_date`: When the cost was actually paid
+- `incurred_date`: When the cost was incurred (alternative to effective_date)
+- `cost_event_field_concept_id`: Links cost to specific clinical event fields
+
+### Enhanced Visit Detail Support
+
+The package now fully supports `VISIT_DETAIL` for micro-costing analysis, allowing you to:
+
+- Analyze costs at the line-item level within visits
+- Link costs to specific procedures, measurements, or other clinical events
+- Perform granular health economic outcomes research (HEOR)
+
+## Installation
+
+```{r install, eval=FALSE}
+# Install from GitHub (devv5 branch)
+remotes::install_github("OHDSI/CostUtilization", ref = "devv5")
+```
+
+## Key Features
+
+- **CDM v5.5 Compatibility**: Full support for the new long-format COST table
+- **Flexible Time Windows**: Analyze costs across user-defined time windows
+- **Granular Event Selection**: Calculate costs based on domains or specific concept sets
+- **Advanced Cost Filtering**: Restrict analyses to specific cost types and currencies
+- **Multiple Aggregation Levels**: Generate per-patient metrics (PPPM, PPPY, etc.)
+- **Modern R Implementation**: Settings-based API with tidyverse integration
+- **Multi-Cohort Support**: Compare costs across multiple patient populations
+- **Robust Error Handling**: Comprehensive validation and diagnostic reporting
+
+# Basic Usage
+
+## Setting Up Your Environment
+
+```{r libraries}
+library(CostUtilization)
+library(dplyr)
+library(DBI)
+library(duckdb)
+```
+
+## Quick Start with Eunomia
+
+The easiest way to get started is using the synthetic Eunomia dataset:
+
+```{r eunomia-setup}
+# Create Eunomia DuckDB database
+databaseFile <- getEunomiaDuckDb()
+connection <- DBI::dbConnect(duckdb::duckdb(databaseFile))
+
+# Transform to CDM v5.5 format (includes synthetic cost data injection)
+connection <- transformCostToCdmV5dot5(connection)
+```
+
+## Basic Cost Analysis
+
+### 1. Create Analysis Settings
+
+```{r basic-settings}
+# Create basic cost analysis settings
+costSettings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date",     # Anchor on cohort start date
+  startOffsetDays = -365L,             # 1 year before index
+  endOffsetDays = 0L,                  # Up to index date
+  costConceptId = 31973L               # Total charge (see concept table below)
+)
+
+# View settings
+print(costSettings)
+```
+
+### 2. Execute the Analysis
+
+```{r basic-analysis}
+# Run the cost analysis
+results <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main", 
+  cohortTable = "cohort",
+  cohortId = 1,
+  costOfCareSettings = costSettings,
+  verbose = TRUE
+)
+
+# View results structure
+str(results)
+```
+
+### 3. Examine Results
+
+```{r examine-results}
+# Main results
+print(results$results)
+
+# Diagnostic information
+print(results$diagnostics)
+
+# Key metrics
+results$results |>
+  select(
+    total_person_years,
+    total_cost,
+    cost_pppm,           # Per-person-per-month
+    cost_pppy,           # Per-person-per-year
+    n_persons_with_cost
+  )
+```
+
+## Understanding Cost Concepts
+
+The package supports all standard OMOP cost concepts:
+
+```{r cost-concepts}
+# Standard CDM v5.5 cost concepts
+cost_concepts <- tibble::tribble(
+  ~concept_id, ~description,           ~source_value,                ~use_case,
+  31973L,      "Total charge",         "total_charge",              "Billed amount",
+  31985L,      "Total cost",           "total_cost",                "Actual cost to provider", 
+  31980L,      "Paid by payer",        "paid_by_payer",             "Insurance payment",
+  31981L,      "Paid by patient",      "paid_by_patient",           "Out-of-pocket total",
+  31974L,      "Patient copay",        "paid_patient_copay",        "Fixed copayment",
+  31975L,      "Patient coinsurance",  "paid_patient_coinsurance",  "Percentage coinsurance", 
+  31976L,      "Patient deductible",   "paid_patient_deductible",   "Deductible amount",
+  31979L,      "Amount allowed",       "amount_allowed",            "Contracted rate",
+  31977L,      "Paid by coordination", "paid_by_coordination",      "Secondary payer",
+  31978L,      "Revenue center cost",  "revenue_center_cost",       "Department cost"
+)
+
+print(cost_concepts)
+```
+
+## Multi-Cost Analysis
+
+Analyze multiple cost types simultaneously using modern R patterns:
+
+```{r multi-cost}
+# Analyze multiple cost types
+cost_types <- tibble(
+  cost_type = c("total_charge", "total_cost", "paid_by_payer", "paid_by_patient"),
+  concept_id = c(31973L, 31985L, 31980L, 31981L)
+)
+
+# Use purrr to run multiple analyses
+multi_results <- cost_types |>
+  purrr::pmap_dfr(function(cost_type, concept_id) {
+    settings <- createCostOfCareSettings(
+      anchorCol = "cohort_start_date",
+      startOffsetDays = -365L,
+      endOffsetDays = 365L,
+      costConceptId = concept_id
+    )
+    
+    calculateCostOfCare(
+      connection = connection,
+      cdmDatabaseSchema = "main",
+      cohortDatabaseSchema = "main",
+      cohortTable = "cohort", 
+      cohortId = 1,
+      costOfCareSettings = settings
+    )$results |>
+      mutate(cost_type = cost_type)
+  })
+
+# View comparative results
+multi_results |>
+  select(cost_type, total_cost, cost_pppm, cost_pppy) |>
+  arrange(desc(total_cost))
+```
+
+# Time Window Analysis
+
+Analyze costs across different time periods relative to an index event:
+
+```{r time-windows}
+# Define multiple time windows
+time_windows <- tibble::tribble(
+  ~period,        ~start_days, ~end_days,    ~description,
+  "Pre-index",    -365L,       -1L,          "1 year before index",
+  "Index",        0L,          0L,           "Index date only", 
+  "Post-30",      1L,          30L,          "30 days post-index",
+  "Post-90",      31L,         90L,          "31-90 days post-index",
+  "Post-365",     91L,         365L,         "91-365 days post-index",
+  "Full-2yr",     -365L,       365L,         "2-year total window"
+)
+
+# Analyze each window
+window_results <- time_windows |>
+  purrr::pmap_dfr(function(period, start_days, end_days, description) {
+    settings <- createCostOfCareSettings(
+      anchorCol = "cohort_start_date",
+      startOffsetDays = start_days,
+      endOffsetDays = end_days,
+      costConceptId = 31973L
+    )
+    
+    calculateCostOfCare(
+      connection = connection,
+      cdmDatabaseSchema = "main",
+      cohortDatabaseSchema = "main",
+      cohortTable = "cohort",
+      cohortId = 1, 
+      costOfCareSettings = settings
+    )$results |>
+      mutate(
+        period = period,
+        description = description,
+        window_days = end_days - start_days + 1
+      )
+  })
+
+# View results by period with normalized daily costs
+window_results |>
+  mutate(cost_per_day = total_cost / window_days) |>
+  select(period, description, total_cost, cost_pppm, cost_per_day, n_persons_with_cost) |>
+  arrange(match(period, time_windows$period))
+```
+
+## Seasonal and Quarterly Analysis
+
+```{r seasonal-analysis}
+# Define quarterly windows for seasonal analysis
+quarters <- tibble::tribble(
+  ~quarter,  ~start_days, ~end_days,
+  "Q1",      0L,          89L,      # Jan-Mar (90 days)
+  "Q2",      90L,         179L,     # Apr-Jun (90 days)  
+  "Q3",      180L,        269L,     # Jul-Sep (90 days)
+  "Q4",      270L,        364L      # Oct-Dec (95 days)
+)
+
+quarterly_results <- quarters |>
+  purrr::pmap_dfr(function(quarter, start_days, end_days) {
+    settings <- createCostOfCareSettings(
+      anchorCol = "cohort_start_date",
+      startOffsetDays = start_days,
+      endOffsetDays = end_days,
+      costConceptId = 31973L
+    )
+    
+    calculateCostOfCare(
+      connection = connection,
+      cdmDatabaseSchema = "main",
+      cohortDatabaseSchema = "main",
+      cohortTable = "cohort",
+      cohortId = 1,
+      costOfCareSettings = settings
+    )$results |>
+      mutate(quarter = quarter)
+  })
+
+print(quarterly_results)
+```
+
+# Event-Based Cost Filtering
+
+Filter costs to specific clinical events or domains:
+
+```{r event-filtering}
+# Define event filters for diabetes-related costs
+diabetes_filters <- list(
+  list(
+    name = "Diabetes Diagnoses",
+    domain = "Condition",
+    conceptIds = c(201820L, 201826L, 443238L)  # Type 2 diabetes concepts
+  ),
+  list(
+    name = "Diabetes Medications", 
+    domain = "Drug",
+    conceptIds = c(1503297L, 1502826L, 1502855L)  # Metformin, insulin, etc.
+  ),
+  list(
+    name = "Diabetes Labs",
+    domain = "Measurement", 
+    conceptIds = c(3004501L, 3003309L)  # HbA1c, glucose
+  ),
+  list(
+    name = "Diabetes Procedures",
+    domain = "Procedure",
+    conceptIds = c(4051466L, 4263914L)  # Diabetes management procedures
+  )
+)
+
+# Create settings with event filters
+event_settings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date",
+  startOffsetDays = -365L,
+  endOffsetDays = 365L,
+  eventFilters = diabetes_filters,
+  nFilters = 1L,  # Require at least 1 filter to match
+  costConceptId = 31973L
+)
+
+# Run filtered analysis
+filtered_results <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "cohort",
+  cohortId = 1,
+  costOfCareSettings = event_settings
+)
+
+print(filtered_results$results)
+```
+
+## Advanced Event Filtering
+
+```{r advanced-filtering}
+# Multiple filter combinations
+filter_combinations <- list(
+  list(
+    name = "Diabetes Only",
+    filters = diabetes_filters[1],  # Diagnoses only
+    n_required = 1L
+  ),
+  list(
+    name = "Diabetes + Meds",
+    filters = diabetes_filters[1:2],  # Diagnoses + medications
+    n_required = 2L  # Require both
+  ),
+  list(
+    name = "Any Diabetes Care",
+    filters = diabetes_filters,  # All filters
+    n_required = 1L  # Any one will match
+  )
+)
+
+# Analyze each combination
+combo_results <- filter_combinations |>
+  purrr::map_dfr(function(combo) {
+    settings <- createCostOfCareSettings(
+      anchorCol = "cohort_start_date",
+      startOffsetDays = -365L,
+      endOffsetDays = 365L,
+      eventFilters = combo$filters,
+      nFilters = combo$n_required,
+      costConceptId = 31973L
+    )
+    
+    calculateCostOfCare(
+      connection = connection,
+      cdmDatabaseSchema = "main",
+      cohortDatabaseSchema = "main",
+      cohortTable = "cohort",
+      cohortId = 1,
+      costOfCareSettings = settings
+    )$results |>
+      mutate(filter_name = combo$name)
+  })
+
+print(combo_results)
+```
+
+# Visit Restrictions and Care Settings
+
+## Basic Visit Type Restrictions
+
+```{r visit-restriction}
+# Common visit type concept IDs
+visit_types <- tibble::tribble(
+  ~visit_type,        ~concept_id, ~description,
+  "Inpatient",        9201L,       "Inpatient visit", 
+  "Outpatient",       9202L,       "Outpatient visit",
+  "Emergency",        9203L,       "Emergency room visit",
+  "Long_term_care",   42898160L,   "Long-term care visit",
+  "Home_health",      581379L,     "Home health visit",
+  "Telehealth",       581458L,     "Telehealth visit"
+)
+
+# Analyze costs by visit type
+visit_results <- visit_types |>
+  purrr::pmap_dfr(function(visit_type, concept_id, description) {
+    settings <- createCostOfCareSettings(
+      anchorCol = "cohort_start_date",
+      startOffsetDays = -365L,
+      endOffsetDays = 365L,
+      restrictVisitConceptIds = c(concept_id),
+      costConceptId = 31973L
+    )
+    
+    result <- tryCatch({
+      calculateCostOfCare(
+        connection = connection,
+        cdmDatabaseSchema = "main", 
+        cohortDatabaseSchema = "main",
+        cohortTable = "cohort",
+        cohortId = 1,
+        costOfCareSettings = settings
+      )$results |>
+        mutate(
+          visit_type = visit_type,
+          description = description
+        )
+    }, error = function(e) {
+      # Handle cases where visit type has no data
+      tibble(
+        visit_type = visit_type,
+        description = description,
+        total_cost = 0,
+        cost_pppm = 0,
+        cost_pppy = 0,
+        n_persons_with_cost = 0
+      )
+    })
+    
+    return(result)
+  })
+
+# View results by visit type
+visit_results |>
+  select(visit_type, description, total_cost, cost_pppm, n_persons_with_cost) |>
+  arrange(desc(total_cost))
+```
+
+## Care Setting Combinations
+
+```{r care-settings}
+# Analyze combinations of care settings
+care_combos <- list(
+  list(
+    name = "Acute Care",
+    concepts = c(9201L, 9203L),  # Inpatient + Emergency
+    description = "Hospital-based acute care"
+  ),
+  list(
+    name = "Ambulatory Care", 
+    concepts = c(9202L, 581458L),  # Outpatient + Telehealth
+    description = "Non-hospital ambulatory care"
+  ),
+  list(
+    name = "Post-Acute Care",
+    concepts = c(42898160L, 581379L),  # Long-term + Home health
+    description = "Post-acute care settings"
+  )
+)
+
+care_results <- care_combos |>
+  purrr::map_dfr(function(combo) {
+    settings <- createCostOfCareSettings(
+      anchorCol = "cohort_start_date",
+      startOffsetDays = -365L,
+      endOffsetDays = 365L,
+      restrictVisitConceptIds = combo$concepts,
+      costConceptId = 31973L
+    )
+    
+    tryCatch({
+      calculateCostOfCare(
+        connection = connection,
+        cdmDatabaseSchema = "main",
+        cohortDatabaseSchema = "main",
+        cohortTable = "cohort",
+        cohortId = 1,
+        costOfCareSettings = settings
+      )$results |>
+        mutate(
+          care_setting = combo$name,
+          description = combo$description
+        )
+    }, error = function(e) {
+      tibble(
+        care_setting = combo$name,
+        description = combo$description,
+        total_cost = 0,
+        cost_pppm = 0,
+        n_persons_with_cost = 0
+      )
+    })
+  })
+
+print(care_results)
+```
+
+# Multi-Cohort Analysis
+
+Compare costs across different patient populations:
+
+```{r multi-cohort}
+# Assume we have multiple cohorts in our cohort table
+# Let's create a comprehensive multi-cohort analysis
+
+# Define cohorts to analyze
+cohorts_to_analyze <- tibble::tribble(
+  ~cohort_id, ~cohort_name,           ~description,
+  1L,         "Primary Cohort",       "Main study population",
+  2L,         "Control Cohort",       "Control/comparison group", 
+  3L,         "High-Risk Cohort",     "High-risk subgroup",
+  4L,         "Low-Risk Cohort",      "Low-risk subgroup"
+)
+
+# Multi-cohort cost analysis function
+analyze_cohort_costs <- function(cohort_id, cohort_name, description) {
+  # Base settings
+  base_settings <- createCostOfCareSettings(
+    anchorCol = "cohort_start_date",
+    startOffsetDays = -365L,
+    endOffsetDays = 365L,
+    costConceptId = 31973L
+  )
+  
+  tryCatch({
+    result <- calculateCostOfCare(
+      connection = connection,
+      cdmDatabaseSchema = "main",
+      cohortDatabaseSchema = "main",
+      cohortTable = "cohort",
+      cohortId = cohort_id,
+      costOfCareSettings = base_settings
+    )
+    
+    # Return enhanced results
+    result$results |>
+      mutate(
+        cohort_id = cohort_id,
+        cohort_name = cohort_name,
+        description = description,
+        analysis_date = Sys.Date()
+      )
+  }, error = function(e) {
+    # Handle missing cohorts gracefully
+    message(sprintf("Cohort %d (%s) not found or has no data: %s", 
+                   cohort_id, cohort_name, e$message))
+    return(NULL)
+  })
+}
+
+# Execute multi-cohort analysis
+multi_cohort_results <- cohorts_to_analyze |>
+  purrr::pmap(analyze_cohort_costs) |>
+  purrr::compact() |>  # Remove NULL results
+  purrr::list_rbind()
+
+# View comparative results
+if (nrow(multi_cohort_results) > 0) {
+  multi_cohort_results |>
+    select(cohort_name, total_cost, cost_pppm, cost_pppy, 
+           n_persons_with_cost, total_person_years) |>
+    arrange(desc(cost_pppy))
+} else {
+  message("No valid cohort results found. Using simulated data for demonstration.")
+  
+  # Simulated multi-cohort results for demonstration
+  simulated_results <- tibble(
+    cohort_name = c("Primary Cohort", "Control Cohort", "High-Risk Cohort"),
+    total_cost = c(125000, 89000, 185000),
+    cost_pppm = c(520, 385, 890),
+    cost_pppy = c(6240, 4620, 10680),
+    n_persons_with_cost = c(45, 52, 28),
+    total_person_years = c(20.0, 19.3, 17.3)
+  )
+  
+  print(simulated_results)
+}
+```
+
+## Cohort Comparison Metrics
+
+```{r cohort-comparison}
+# Calculate comparative metrics between cohorts
+if (exists("multi_cohort_results") && nrow(multi_cohort_results) > 1) {
+  
+  # Create comparison metrics
+  comparison_metrics <- multi_cohort_results |>
+    arrange(cohort_name) |>
+    mutate(
+      # Compare to first cohort (baseline)
+      baseline_cost_pppy = first(cost_pppy),
+      cost_ratio = cost_pppy / baseline_cost_pppy,
+      cost_difference = cost_pppy - baseline_cost_pppy,
+      pct_difference = round(100 * (cost_pppy - baseline_cost_pppy) / baseline_cost_pppy, 1)
+    ) |>
+    select(cohort_name, cost_pppy, baseline_cost_pppy, 
+           cost_ratio, cost_difference, pct_difference)
+  
+  print(comparison_metrics)
+  
+  # Statistical comparisons (simplified)
+  cost_summary <- multi_cohort_results |>
+    summarise(
+      n_cohorts = n(),
+      min_cost_pppy = min(cost_pppy, na.rm = TRUE),
+      max_cost_pppy = max(cost_pppy, na.rm = TRUE),
+      mean_cost_pppy = mean(cost_pppy, na.rm = TRUE),
+      median_cost_pppy = median(cost_pppy, na.rm = TRUE),
+      cost_range = max_cost_pppy - min_cost_pppy
+    )
+  
+  print(cost_summary)
+}
+```
+
+# Micro-Costing with Visit Details
+
+For granular line-item analysis, use micro-costing with visit details:
+
+```{r micro-costing}
+# Create settings for micro-costing
+micro_settings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date",
+  startOffsetDays = -90L,
+  endOffsetDays = 90L,
+  eventFilters = diabetes_filters,
+  primaryEventFilterName = "Diabetes Diagnoses",  # Primary filter for micro-costing
+  microCosting = TRUE,  # Enable micro-costing
+  costConceptId = 31973L,
+  includeCostTable = TRUE  # Include detailed cost records
+)
+
+# Run micro-costing analysis
+micro_results <- tryCatch({
+  calculateCostOfCare(
+    connection = connection,
+    cdmDatabaseSchema = "main",
+    cohortDatabaseSchema = "main", 
+    cohortTable = "cohort",
+    cohortId = 1,
+    costOfCareSettings = micro_settings
+  )
+}, error = function(e) {
+  message("Micro-costing failed: ", e$message)
+  return(NULL)
+})
+
+# Micro-costing provides line-item level detail
+if (!is.null(micro_results)) {
+  print("Micro-costing Results:")
+  print(micro_results$results)
+  
+  print("Micro-costing Diagnostics:")
+  print(micro_results$diagnostics)
+  
+  # If detailed cost records are available
+  if ("cost_records" %in% names(micro_results)) {
+    print("Sample Cost Records:")
+    print(head(micro_results$cost_records))
+  }
+} else {
+  message("Micro-costing analysis not available with current data.")
+}
+```
+
+# Error Handling and Diagnostics
+
+## Comprehensive Error Handling
+
+```{r error-handling}
+# Function to safely execute cost analysis with comprehensive error handling
+safe_cost_analysis <- function(cohort_id, settings, description = "") {
+  
+  result <- list(
+    success = FALSE,
+    data = NULL,
+    error = NULL,
+    warnings = character(0),
+    execution_time = NULL
+  )
+  
+  start_time <- Sys.time()
+  
+  tryCatch({
+    # Validate inputs
+    if (is.null(cohort_id) || !is.numeric(cohort_id)) {
+      stop("Invalid cohort_id: must be numeric")
+    }
+    
+    if (is.null(settings)) {
+      stop("Settings cannot be NULL")
+    }
+    
+    # Execute analysis with warnings captured
+    withCallingHandlers({
+      analysis_result <- calculateCostOfCare(
+        connection = connection,
+        cdmDatabaseSchema = "main",
+        cohortDatabaseSchema = "main",
+        cohortTable = "cohort",
+        cohortId = cohort_id,
+        costOfCareSettings = settings,
+        verbose = TRUE
+      )
+      
+      result$success <- TRUE
+      result$data <- analysis_result
+      
+    }, warning = function(w) {
+      result$warnings <<- c(result$warnings, w$message)
+      invokeRestart("muffleWarning")
+    })
+    
+  }, error = function(e) {
+    result$error <- e$message
+    message(sprintf("Analysis failed for cohort %d%s: %s", 
+                   cohort_id, 
+                   if(description != "") paste0(" (", description, ")") else "",
+                   e$message))
+  }, finally = {
+    result$execution_time <- difftime(Sys.time(), start_time, units = "secs")
+  })
+  
+  return(result)
+}
+
+# Example usage with error handling
+test_settings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date",
+  startOffsetDays = -365L,
+  endOffsetDays = 365L,
+  costConceptId = 31973L
+)
+
+safe_result <- safe_cost_analysis(
+  cohort_id = 1L, 
+  settings = test_settings,
+  description = "Basic cost analysis"
+)
+
+# Check results
+if (safe_result$success) {
+  message("Analysis completed successfully in ", 
+          round(safe_result$execution_time, 2), " seconds")
+  
+  if (length(safe_result$warnings) > 0) {
+    message("Warnings encountered:")
+    for (w in safe_result$warnings) {
+      message("  - ", w)
+    }
+  }
+  
+  print(safe_result$data$results)
+} else {
+  message("Analysis failed: ", safe_result$error)
+}
+```
+
+## Diagnostic Deep Dive
+
+```{r diagnostics-deep-dive}
+# Function to analyze diagnostics in detail
+analyze_diagnostics <- function(diagnostics) {
+  if (is.null(diagnostics) || nrow(diagnostics) == 0) {
+    message("No diagnostic information available")
+    return(NULL)
+  }
+  
+  # Calculate attrition metrics
+  attrition <- diagnostics |>
+    arrange(step_name) |>
+    mutate(
+      step_number = row_number(),
+      persons_lost = lag(n_persons, default = first(n_persons)) - n_persons,
+      pct_remaining = round(100 * n_persons / first(n_persons), 1),
+      pct_lost_this_step = round(100 * persons_lost / lag(n_persons, default = first(n_persons)), 1)
+    )
+  
+  # Identify major attrition points
+  major_losses <- attrition |>
+    filter(pct_lost_this_step > 10) |>
+    select(step_name, persons_lost, pct_lost_this_step)
+  
+  list(
+    attrition_summary = attrition,
+    major_losses = major_losses,
+    final_retention_rate = last(attrition$pct_remaining),
+    total_persons_lost = first(attrition$n_persons) - last(attrition$n_persons)
+  )
+}
+
+# Analyze diagnostics from previous results
+if (safe_result$success && !is.null(safe_result$data$diagnostics)) {
+  diagnostic_analysis <- analyze_diagnostics(safe_result$data$diagnostics)
+  
+  message("Diagnostic Analysis Summary:")
+  message(sprintf("Final retention rate: %.1f%%", diagnostic_analysis$final_retention_rate))
+  message(sprintf("Total persons lost: %d", diagnostic_analysis$total_persons_lost))
+  
+  if (nrow(diagnostic_analysis$major_losses) > 0) {
+    message("\nMajor attrition points:")
+    print(diagnostic_analysis$major_losses)
+  }
+  
+  message("\nComplete attrition flow:")
+  print(diagnostic_analysis$attrition_summary)
+}
+```
+
+## Data Quality Checks
+
+```{r data-quality}
+# Function to perform data quality checks
+perform_data_quality_checks <- function(connection, schema = "main") {
+  
+  quality_checks <- list()
+  
+  tryCatch({
+    # Check 1: Cost table exists and has data
+    cost_check <- DBI::dbGetQuery(connection, 
+      sprintf("SELECT COUNT(*) as n_records FROM %s.cost", schema))
+    quality_checks$cost_table_records <- cost_check$n_records[1]
+    
+    # Check 2: Cost concepts are present
+    concept_check <- DBI::dbGetQuery(connection, sprintf("
+      SELECT c.concept_id, c.concept_name, COUNT(co.cost_id) as usage_count
+      FROM %s.concept c
+      LEFT JOIN %s.cost co ON c.concept_id = co.cost_concept_id  
+      WHERE c.concept_id IN (31973, 31985, 31980, 31981, 31974, 31975, 31976, 31979)
+      GROUP BY c.concept_id, c.concept_name
+      ORDER BY c.concept_id", schema, schema))
+    quality_checks$cost_concepts <- concept_check
+    
+    # Check 3: Date coverage
+    date_check <- DBI::dbGetQuery(connection, sprintf("
+      SELECT 
+        MIN(effective_date) as min_date,
+        MAX(effective_date) as max

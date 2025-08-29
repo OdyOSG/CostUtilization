@@ -558,4 +558,5 @@ convertToFeatureExtractionFormat <- function(costResults,
   cli::cli_alert_success("Conversion completed successfully!")
   
   return(result)
+
 }
