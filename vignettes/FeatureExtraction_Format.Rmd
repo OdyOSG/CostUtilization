@@ -1,0 +1,602 @@
+---
+title: "FeatureExtraction Format Integration"
+author: "CostUtilization Package"
+date: "`r Sys.Date()`"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 3
+vignette: >
+  %\VignetteIndexEntry{FeatureExtraction Format Integration}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE  # Set to FALSE to avoid running during package build
+)
+```
+
+# Introduction
+
+The CostUtilization package provides seamless integration with the FeatureExtraction package and broader OHDSI ecosystem through standardized `CovariateData` objects. This vignette demonstrates how to convert cost analysis results into a format compatible with CohortMethod, PatientLevelPrediction, and other OHDSI tools.
+
+## Key Benefits
+
+- **Standardized Format**: Compatible with FeatureExtraction package conventions
+- **Automatic Detection**: Handles both aggregated and person-level results
+- **Rich Metadata**: Comprehensive analysis provenance and settings
+- **OHDSI Integration**: Direct use in comparative effectiveness and prediction studies
+- **Systematic IDs**: Unique, conflict-free covariate identifiers
+
+# Getting Started
+
+## Installation
+
+```{r install, eval=FALSE}
+# Install from GitHub
+remotes::install_github("OHDSI/CostUtilization", ref = "devv5")
+
+# Load required packages
+library(CostUtilization)
+library(dplyr)
+```
+
+## Basic Workflow
+
+The typical workflow involves three steps:
+
+1. **Run cost analysis** using `calculateCostOfCare()`
+2. **Convert results** using `createCostCovariateData()`
+3. **Use in OHDSI tools** for downstream analysis
+
+```{r basic-workflow}
+library(CostUtilization)
+
+# Step 1: Run cost analysis
+settings <- createCostOfCareSettings(
+  costConceptId = 31973L,  # Total charge
+  startOffsetDays = 0L,
+  endOffsetDays = 365L
+)
+
+results <- calculateCostOfCare(
+  connectionDetails = connectionDetails,
+  cdmDatabaseSchema = "cdm",
+  cohortDatabaseSchema = "results", 
+  cohortTable = "cohort",
+  cohortId = 1,
+  costOfCareSettings = settings
+)
+
+# Step 2: Convert to FeatureExtraction format
+covariateData <- createCostCovariateData(
+  costResults = results,
+  costOfCareSettings = settings,
+  cohortId = 1,
+  databaseId = "MyDatabase"
+)
+
+# Step 3: View summary
+summary(covariateData)
+```
+
+# Result Format Detection
+
+The package automatically detects whether your results are in aggregated or person-level format by examining the column structure.
+
+## Aggregated Format
+
+Results with population-level summary statistics:
+
+```{r aggregated-example}
+# Example aggregated results structure:
+# metric_type     metric_name           metric_value
+# visit_level     total_person_days     985999
+# visit_level     total_cost            47367.5
+# visit_level     cost_pppm             1.46
+# visit_level     n_persons_with_cost   18
+
+# These are converted to population-level covariates
+covariateData <- createCostCovariateData(
+  costResults = aggregatedResults,
+  costOfCareSettings = settings,
+  cohortId = 1,
+  databaseId = "MyDatabase"
+)
+
+# View the covariates
+covariateData$covariates %>% collect()
+```
+
+## Person-Level Format
+
+Results with individual person costs:
+
+```{r person-level-example}
+# Example person-level results structure:
+# person_id    cost      adjusted_cost
+# 1001         1250.75   1375.83
+# 1002         890.25    979.28
+# 1003         2100.50   2310.55
+
+# These are converted to person-level covariates
+covariateData <- createCostCovariateData(
+  costResults = personLevelResults,
+  costOfCareSettings = settings,
+  cohortId = 1,
+  databaseId = "MyDatabase"
+)
+
+# Each person gets separate covariate entries
+covariateData$covariates %>% collect()
+```
+
+# Covariate ID System
+
+The package generates systematic covariate IDs using the formula:
+
+```
+covariateId = analysisId * 1000 + typeOffset + metricOffset
+```
+
+## Type Offsets
+
+- **100**: Visit-level analysis
+- **200**: Line-level (micro-costing) analysis
+- **300**: Person-level analysis
+
+## Example ID Generation
+
+```{r covariate-ids}
+# Analysis ID 1000, visit-level analysis
+# Results in covariate IDs:
+# 1001101  # Total cost (100 + 1)
+# 1001102  # Adjusted cost (100 + 2)  
+# 1001103  # Cost PPPM (100 + 3)
+# 1001105  # Persons with cost (100 + 5)
+
+# Analysis ID 2000, line-level analysis  
+# Results in covariate IDs:
+# 2002201  # Line-level total cost (200 + 1)
+# 2002202  # Line-level adjusted cost (200 + 2)
+
+# View actual covariate IDs
+covariateData$covariateRef %>% 
+  select(covariateId, covariateName) %>%
+  collect()
+```
+
+# Advanced Features
+
+## CPI Adjustment
+
+Include inflation-adjusted costs in your analysis:
+
+```{r cpi-adjustment}
+# Create CPI adjustment file
+cpi_data <- data.frame(
+  year = 2018:2022,
+  adj_factor = c(1.0, 1.02, 1.05, 1.08, 1.12)
+)
+cpi_file <- tempfile(fileext = ".csv")
+write.csv(cpi_data, cpi_file, row.names = FALSE)
+
+# Settings with CPI adjustment
+settings <- createCostOfCareSettings(
+  costConceptId = 31985L,  # Total cost
+  cpiAdjustment = TRUE,
+  cpiFilePath = cpi_file
+)
+
+# Run analysis and convert
+results <- calculateCostOfCare(...)
+covariateData <- createCostCovariateData(
+  costResults = results,
+  costOfCareSettings = settings,
+  cohortId = 1,
+  databaseId = "MyDatabase"
+)
+
+# Check metadata for CPI adjustment flag
+attr(covariateData, "metaData")$cpiAdjustment
+```
+
+## Event Filtering
+
+Focus on specific clinical domains:
+
+```{r event-filtering}
+# Define diabetes-related event filters
+diabetesFilters <- list(
+  list(
+    name = "Diabetes Diagnoses",
+    domain = "Condition",
+    conceptIds = c(201820L, 201826L, 443238L)
+  ),
+  list(
+    name = "Diabetes Medications",
+    domain = "Drug",
+    conceptIds = c(1503297L, 1502826L, 1502855L)
+  )
+)
+
+# Settings with event filters
+settings <- createCostOfCareSettings(
+  costConceptId = 31980L,  # Paid by payer
+  eventFilters = diabetesFilters
+)
+
+# Analysis name will reflect filtering
+covariateData <- createCostCovariateData(...)
+analysisRef <- covariateData$analysisRef %>% collect()
+print(analysisRef$analysisName)
+# "Cost Analysis - Paid by Payer (Event-Filtered)"
+```
+
+## Micro-Costing
+
+Perform line-level cost analysis:
+
+```{r micro-costing}
+# Define procedure filter for micro-costing
+procedureFilters <- list(
+  list(
+    name = "Surgical Procedures",
+    domain = "Procedure",
+    conceptIds = c(4301351L, 4022421L, 4273629L)
+  )
+)
+
+# Micro-costing settings
+settings <- createCostOfCareSettings(
+  costConceptId = 31973L,  # Total charge
+  eventFilters = procedureFilters,
+  microCosting = TRUE,
+  primaryEventFilterName = "Surgical Procedures"
+)
+
+# Covariate IDs will use 200-series (line-level)
+covariateData <- createCostCovariateData(...)
+covariateData$covariateRef %>% 
+  select(covariateId, covariateName) %>%
+  collect()
+```
+
+# Multiple Cost Concepts
+
+Analyze different cost types systematically:
+
+```{r multiple-concepts}
+library(purrr)
+
+# Define cost concepts to analyze
+costTypes <- tibble(
+  costType = c("Total Charge", "Total Cost", "Paid by Payer", "Paid by Patient"),
+  conceptId = c(31973L, 31985L, 31980L, 31981L),
+  analysisId = c(1001L, 1002L, 1003L, 1004L)
+)
+
+# Analyze each cost concept
+allCovariateData <- pmap(costTypes, function(costType, conceptId, analysisId) {
+  settings <- createCostOfCareSettings(
+    costConceptId = conceptId,
+    startOffsetDays = 0L,
+    endOffsetDays = 365L
+  )
+  
+  results <- calculateCostOfCare(
+    connectionDetails = connectionDetails,
+    cdmDatabaseSchema = "cdm",
+    cohortDatabaseSchema = "results",
+    cohortTable = "cohort",
+    cohortId = 1,
+    costOfCareSettings = settings
+  )
+  
+  covariateData <- createCostCovariateData(
+    costResults = results,
+    costOfCareSettings = settings,
+    cohortId = 1,
+    databaseId = "MyDatabase",
+    analysisId = analysisId  # Unique ID for each analysis
+  )
+  
+  return(covariateData)
+})
+
+# Combine results for comprehensive cost analysis
+```
+
+# OHDSI Ecosystem Integration
+
+## CohortMethod Integration
+
+Use cost covariates in comparative effectiveness research:
+
+```{r cohortmethod-integration, eval=FALSE}
+library(CohortMethod)
+
+# Create cost covariates
+costCovariateData <- createCostCovariateData(
+  costResults = results,
+  costOfCareSettings = settings,
+  cohortId = 1,
+  databaseId = "MyDatabase"
+)
+
+# Define CohortMethod analysis
+cmAnalysisList <- createCmAnalysisList(
+  targetComparatorOutcomesList = tcoslist,
+  analysisIdList = analysisList
+)
+
+# Run analysis with cost covariates
+results <- runCmAnalyses(
+  connectionDetails = connectionDetails,
+  cdmDatabaseSchema = "cdm",
+  exposureDatabaseSchema = "results",
+  exposureTable = "cohort",
+  outcomeDatabaseSchema = "results", 
+  outcomeTable = "cohort",
+  cmAnalysisList = cmAnalysisList,
+  covariateSettings = costCovariateData  # Direct integration
+)
+```
+
+## PatientLevelPrediction Integration
+
+Use cost covariates for outcome prediction:
+
+```{r plp-integration, eval=FALSE}
+library(PatientLevelPrediction)
+
+# Create person-level cost covariates
+costCovariateData <- createCostCovariateData(
+  costResults = personLevelResults,
+  costOfCareSettings = settings,
+  cohortId = 1,
+  databaseId = "MyDatabase"
+)
+
+# Create study population with cost covariates
+plpData <- createStudyPopulation(
+  plpData = plpData,
+  outcomeId = outcomeId,
+  covariateSettings = costCovariateData
+)
+
+# Train prediction model
+model <- runPlp(
+  plpData = plpData,
+  modelSettings = setLassoLogisticRegression(),
+  testSplit = "time",
+  testFraction = 0.25
+)
+```
+
+## Multi-Database Studies
+
+Ensure consistent format across databases:
+
+```{r multi-database}
+# Define databases
+databases <- c("CCAE", "MDCR", "OPTUM")
+
+# Run consistent analysis across all databases
+allResults <- map(databases, function(db) {
+  connectionDetails <- getConnectionDetails(db)
+  
+  results <- calculateCostOfCare(
+    connectionDetails = connectionDetails,
+    cdmDatabaseSchema = "cdm",
+    cohortDatabaseSchema = "results",
+    cohortTable = "cohort", 
+    cohortId = 1,
+    costOfCareSettings = settings
+  )
+  
+  covariateData <- createCostCovariateData(
+    costResults = results,
+    costOfCareSettings = settings,
+    cohortId = 1,
+    databaseId = db,        # Database-specific ID
+    analysisId = 1000L      # Consistent across sites
+  )
+  
+  return(covariateData)
+})
+
+# Results have consistent format for meta-analysis
+```
+
+# Data Structure Reference
+
+## CovariateData Components
+
+The `CovariateData` object contains several standardized tables:
+
+### covariates
+```{r covariates-structure}
+# Structure:
+# rowId          BIGINT     # Person ID or cohort ID
+# covariateId    BIGINT     # Systematic covariate ID  
+# covariateValue DECIMAL    # Cost or utilization value
+
+covariateData$covariates %>% collect()
+```
+
+### covariateRef
+```{r covariateref-structure}
+# Structure:
+# covariateId   BIGINT     # Links to covariates table
+# covariateName VARCHAR    # Descriptive name with time window
+# analysisId    BIGINT     # Analysis identifier
+# conceptId     BIGINT     # OMOP cost concept ID
+
+covariateData$covariateRef %>% collect()
+```
+
+### analysisRef
+```{r analysisref-structure}
+# Structure:
+# analysisId    BIGINT     # Analysis identifier
+# analysisName  VARCHAR    # Descriptive analysis name
+# domainId      VARCHAR    # Always "Cost"
+# startDay      BIGINT     # Time window start
+# endDay        BIGINT     # Time window end
+# isBinary      VARCHAR    # "N" for continuous values
+# missingMeansZero VARCHAR # "Y" for cost analyses
+
+covariateData$analysisRef %>% collect()
+```
+
+### metaData
+```{r metadata-structure}
+# Comprehensive metadata as attributes
+metaData <- attr(covariateData, "metaData")
+
+# Key components:
+# - analysisId, cohortId, databaseId
+# - costConceptId, currencyConceptId
+# - cpiAdjustment, microCosting flags
+# - Time window (startOffsetDays, endOffsetDays)
+# - Event filtering information
+# - Package version and creation time
+
+str(metaData)
+```
+
+# S3 Methods
+
+## Summary Method
+
+Get a comprehensive overview of your `CovariateData`:
+
+```{r summary-method}
+summary(covariateData)
+
+# Output includes:
+# - Analysis information (ID, cohort, database)
+# - Cost analysis settings
+# - Data summary (covariates, people, values)
+# - Creation information
+```
+
+## Print Method
+
+Quick object information:
+
+```{r print-method}
+print(covariateData)
+
+# Output includes:
+# - Object type and identifiers
+# - Table information with row counts
+```
+
+# Best Practices
+
+## 1. Use Systematic Analysis IDs
+
+```{r systematic-ids}
+# Good: Systematic numbering
+baseAnalysisId <- 1000L
+costConcepts <- c(31973L, 31985L, 31980L, 31981L)
+analysisIds <- baseAnalysisId + seq_along(costConcepts)
+
+# Bad: Random or duplicate IDs
+analysisIds <- c(1, 5, 100, 1)  # Conflicts possible
+```
+
+## 2. Descriptive Database IDs
+
+```{r descriptive-ids}
+# Good: Clear, specific identifiers
+databaseId <- "CCAE_2019_Q4"
+databaseId <- "MDCR_2020_Full"
+
+# Bad: Generic identifiers  
+databaseId <- "DB1"
+databaseId <- "Database"
+```
+
+## 3. Preserve Metadata
+
+```{r preserve-metadata}
+# Always save metadata for reproducibility
+metaData <- attr(covariateData, "metaData")
+saveRDS(metaData, "analysis_metadata.rds")
+
+# Include in study documentation
+writeLines(
+  paste("Analysis created:", metaData$creationTime),
+  "analysis_log.txt"
+)
+```
+
+## 4. Memory Management
+
+```{r memory-management}
+# Properly close Andromeda objects
+on.exit(Andromeda::close(covariateData), add = TRUE)
+
+# Process large datasets in chunks
+largeCovariates <- covariateData$covariates %>%
+  filter(covariateValue > 0) %>%  # Filter before collecting
+  collect()
+```
+
+# Troubleshooting
+
+## Common Issues
+
+### Unrecognized Result Format
+```{r troubleshoot-format, error=TRUE}
+# Error: Unable to detect valid result format
+
+# Solution: Check column names
+names(results$results)
+# Should have either:
+# - Aggregated: metric_type, metric_name, metric_value
+# - Person-level: person_id, cost
+```
+
+### Missing Dependencies
+```{r troubleshoot-deps, error=TRUE}
+# Error: could not find function "str_replace_all"
+
+# Solution: Install required packages
+install.packages(c("stringr", "tidyr"))
+```
+
+### Covariate ID Conflicts
+```{r troubleshoot-ids}
+# Warning: Duplicate covariate IDs detected
+
+# Solution: Use unique analysis IDs
+analysisId1 <- 1000L  # First analysis
+analysisId2 <- 2000L  # Second analysis (not 1000L)
+```
+
+# Conclusion
+
+The FeatureExtraction format integration provides a powerful bridge between cost analysis and the broader OHDSI ecosystem. Key takeaways:
+
+- **Automatic Detection**: Works seamlessly with both aggregated and person-level results
+- **Systematic IDs**: Prevents conflicts and enables consistent analysis
+- **Rich Metadata**: Supports reproducible research and study documentation
+- **OHDSI Integration**: Direct compatibility with CohortMethod, PatientLevelPrediction, and other tools
+- **Scalable**: Handles large datasets efficiently with Andromeda backend
+
+For more examples and advanced usage patterns, see:
+- `inst/examples/featureExtraction_demo.R` - Comprehensive demo script
+- `inst/doc/FeatureExtraction_Integration.md` - Detailed integration guide
+- Package help files - Function-specific documentation
+
+---
+
+*This integration enables cost analysis results to be seamlessly used across the OHDSI ecosystem, supporting reproducible research and multi-database studies.*
