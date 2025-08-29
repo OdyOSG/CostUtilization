@@ -37,8 +37,7 @@
 #' covariateData <- createCostCovariateData(
 #'   costResults = results,
 #'   costOfCareSettings = settings,
-#'   cohortId = 1,
-#'   databaseId = "MyDatabase"
+#'   cohortId = 1
 #' )
 #' 
 #' # Use with FeatureExtraction functions
@@ -51,8 +50,7 @@ createCostCovariateData <- function(costResults,
                                    analysisId = 1L) {
   
   # Validate inputs
-  checkmate::assertList(costResults, names = "named")
-  checkmate::assertNames(names(costResults), must.include = c("results", "diagnostics"))
+  checkmate::assertClass(costResults, "Andromeda")
   checkmate::assertClass(costOfCareSettings, "CostOfCareSettings")
   checkmate::assertIntegerish(cohortId, len = 1)
   checkmate::assertCharacter(databaseId, len = 1)
@@ -558,5 +556,4 @@ convertToFeatureExtractionFormat <- function(costResults,
   cli::cli_alert_success("Conversion completed successfully!")
   
   return(result)
-
 }
