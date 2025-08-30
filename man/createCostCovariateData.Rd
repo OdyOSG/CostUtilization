@@ -2,66 +2,44 @@
 % Please edit documentation in R/resultsFormat.R
 \name{createCostCovariateData}
 \alias{createCostCovariateData}
-\title{Create FeatureExtraction CovariateData from Cost Analysis Results}
+\title{Create Cost Covariate Data in FeatureExtraction Format}
 \usage{
 createCostCovariateData(
   costResults,
   costOfCareSettings,
   cohortId,
   databaseId,
-  analysisId = 1000L,
-  aggregated = NULL,
-  temporalCovariateSettings = NULL
+  analysisId = 1000L
 )
 }
 \arguments{
-\item{costResults}{List containing \code{results} and \code{diagnostics} from \code{calculateCostOfCare()}.
-The \code{results} can be either:
+\item{costResults}{An Andromeda object returned from \code{calculateCostOfCare()}.
+Can contain either:
 \itemize{
-\item \strong{Aggregated}: Andromeda table with columns \code{metric_type}, \code{metric_name}, \code{metric_value}
-\item \strong{Non-aggregated}: Andromeda table with columns \code{person_id}, \code{cost}, \code{adjusted_cost} (optional)
+\item \strong{Aggregated format}: \code{metric_type}, \code{metric_name}, \code{metric_value} columns
+\item \strong{Person-level format}: \code{person_id}, \code{cost}, \code{adjusted_cost} (optional) columns
 }}
 
-\item{costOfCareSettings}{Settings object from \code{createCostOfCareSettings()}.}
+\item{costOfCareSettings}{A \code{CostOfCareSettings} object used in the analysis.}
 
 \item{cohortId}{Integer cohort ID for the analysis.}
 
-\item{databaseId}{Character database identifier.}
+\item{databaseId}{Character database identifier for metadata.}
 
-\item{analysisId}{Integer analysis ID (default: 1000).}
-
-\item{aggregated}{Logical indicating if results are aggregated (default: auto-detect).}
-
-\item{temporalCovariateSettings}{Optional temporal covariate settings for time-based analysis.}
+\item{analysisId}{Integer analysis ID for systematic covariate numbering. Default: 1000L.}
 }
 \value{
-A \code{CovariateData} object compatible with FeatureExtraction package.
+A \code{CovariateData} object (Andromeda-backed) with components:
+\itemize{
+\item \code{covariates}: Person-level cost/utilization metrics (\code{rowId}, \code{covariateId}, \code{covariateValue})
+\item \code{covariateRef}: Reference table describing each covariate
+\item \code{analysisRef}: Analysis-level metadata and parameters
+\item \code{timeRef}: Time window reference
+\item \code{metaData}: Comprehensive analysis metadata (in the object attribute)
+}
 }
 \description{
-Converts cost analysis results from \code{calculateCostOfCare()} into standardized
-FeatureExtraction \code{CovariateData} format. Handles both aggregated and non-aggregated
-results from Andromeda objects returned by the database query.
-}
-\examples{
-\dontrun{
-# Basic usage with aggregated results
-settings <- createCostOfCareSettings(costConceptId = 31973L)
-results <- calculateCostOfCare(...)
-
-covariateData <- createCostCovariateData(
-  costResults = results,
-  costOfCareSettings = settings,
-  cohortId = 1,
-  databaseId = "MyDatabase"
-)
-
-# Usage with non-aggregated person-level results
-covariateData <- createCostCovariateData(
-  costResults = results,
-  costOfCareSettings = settings,
-  cohortId = 1,
-  databaseId = "MyDatabase",
-  aggregated = FALSE
-)
-}
+Converts cost analysis results from \code{calculateCostOfCare()} into a standardized
+\code{CovariateData} object compatible with the FeatureExtraction package and broader
+OHDSI ecosystem. Handles both aggregated and person-level result formats automatically.
 }

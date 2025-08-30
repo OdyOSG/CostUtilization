@@ -1,6 +1,4 @@
 .fetchResults <- function(params, connection, tempEmulationSchema, verbose) {
-  # step 1 - fulfill analysis
-  
   executeSqlPlan(
     connection          = connection,
     params              = params,

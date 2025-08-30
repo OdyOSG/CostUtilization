@@ -1,491 +1,556 @@
 library(testthat)
-library(DBI)
-library(duckdb)
 library(dplyr)
+library(Andromeda)
 
 #===============================================================================
-# Test Suite for resultsFormat.R - FeatureExtraction Format Functions
+# Test Suite for resultsFormat.R - FeatureExtraction Integration
 #===============================================================================
 
-describe("FeatureExtraction Format Functions", {
+describe("createCostCovariateData", {
   
-  # --- Test Environment Setup ---
-  # Create a temporary DuckDB file for the Eunomia dataset
-  databaseFile <- getEunomiaDuckDb(pathToData = 'testing_data')
-  con <- DBI::dbConnect(duckdb::duckdb(databaseFile))
-  
-  # Run the transformation
-  con <- transformCostToCdmV5dot5(con)
-  
-  # Create a simple cohort for testing
-  cohort_data <- read.csv(system.file(
-    'testdata', 
-    'cohort.csv',
-    package = 'CostUtilization'))
-  
-  DBI::dbWriteTable(con, "cohort", cohort_data, overwrite = TRUE)
-  
-  # Run a basic cost analysis to get test data
-  settings <- createCostOfCareSettings(
-    costConceptId = 31973L,
-    startOffsetDays = 0L,
-    endOffsetDays = 365L
-  )
-  
-  costResults <- calculateCostOfCare(
-    connection = con,
-    cdmDatabaseSchema = "main",
-    cohortDatabaseSchema = "main",
-    cohortTable = "cohort",
-    cohortId = 1,
-    costOfCareSettings = settings,
-    verbose = FALSE
-  )
-  
-  # Ensure the connection is closed and the temp file is deleted when tests are done
-  on.exit({
-    DBI::dbDisconnect(con, shutdown = TRUE)
-    unlink(databaseFile)
-  }, add = TRUE)
-  
-  #-----------------------------------------------------------------------------
-  # Tests for createCostCovariateData()
-  #-----------------------------------------------------------------------------
-  
-  describe("createCostCovariateData", {
-    
-    it("should create a valid CovariateData object with basic settings", {
-      covariateData <- createCostCovariateData(
-        costResults = costResults,
-        costOfCareSettings = settings,
-        cohortId = 1,
-        databaseId = "TestDB",
-        analysisId = 1L
-      )
-      
-      # Check class and structure
-      expect_s3_class(covariateData, "CovariateData")
-      expect_s3_class(covariateData, "Andromeda")
-      
-      # Check required tables exist
-      expect_true("covariates" %in% names(covariateData))
-      expect_true("covariateRef" %in% names(covariateData))
-      expect_true("analysisRef" %in% names(covariateData))
-      
-      # Check metadata
-      metaData <- attr(covariateData, "metaData")
-      expect_type(metaData, "list")
-      expect_equal(metaData$databaseId, "TestDB")
-      expect_equal(metaData$analysisId, 1L)
-      expect_equal(metaData$packageName, "CostUtilization")
-    })
-    
-    it("should handle CPI-adjusted results correctly", {
-      # Create settings with CPI adjustment
-      dummy_cpi_file <- tempfile(fileext = ".csv")
-      on.exit(unlink(dummy_cpi_file), add = TRUE)
-      write.csv(data.frame(year = 1980:2025, adj_factor = 1.5), dummy_cpi_file, row.names = FALSE)
-      
-      cpiSettings <- createCostOfCareSettings(
-        costConceptId = 31973L,
-        cpiAdjustment = TRUE,
-        cpiFilePath = dummy_cpi_file
-      )
-      
-      cpiResults <- calculateCostOfCare(
-        connection = con,
-        cdmDatabaseSchema = "main",
-        cohortDatabaseSchema = "main",
-        cohortTable = "cohort",
-        cohortId = 1,
-        costOfCareSettings = cpiSettings,
-        verbose = FALSE
-      )
-      
-      covariateData <- createCostCovariateData(
-        costResults = cpiResults,
-        costOfCareSettings = cpiSettings,
-        cohortId = 1
-      )
-      
-      # Check that CPI-adjusted covariates are included
-      covariateRef <- dplyr::collect(covariateData$covariateRef)
-      expect_true(any(grepl("CPI Adjusted", covariateRef$covariateName)))
-    })
-    
-    it("should handle micro-costing results correctly", {
-      # Create settings for micro-costing
-      event_filters <- list(
-        list(name = "Procedures", domain = "Procedure", conceptIds = c(40489223, 4187094))
-      )
-      microSettings <- createCostOfCareSettings(
-        eventFilters = event_filters,
-        microCosting = TRUE,
-        primaryEventFilterName = "Procedures"
-      )
-      
-      microResults <- calculateCostOfCare(
-        connection = con,
-        cdmDatabaseSchema = "main",
-        cohortDatabaseSchema = "main",
-        cohortTable = "cohort",
-        cohortId = 1,
-        costOfCareSettings = microSettings,
-        verbose = FALSE
-      )
-      
-      covariateData <- createCostCovariateData(
-        costResults = microResults,
-        costOfCareSettings = microSettings,
-        cohortId = 1
-      )
-      
-      # Check analysis reference reflects micro-costing
-      analysisRef <- dplyr::collect(covariateData$analysisRef)
-      expect_true(grepl("Line Level", analysisRef$analysisName))
-      
-      # Check metadata
-      metaData <- attr(covariateData, "metaData")
-      expect_equal(metaData$metricType, "line_level")
-    })
-    
-    it("should create time reference for non-standard time windows", {
-      # Create settings with custom time window
-      customSettings <- createCostOfCareSettings(
-        startOffsetDays = -180L,
-        endOffsetDays = 180L
-      )
-      
-      customResults <- calculateCostOfCare(
-        connection = con,
-        cdmDatabaseSchema = "main",
-        cohortDatabaseSchema = "main",
-        cohortTable = "cohort",
-        cohortId = 1,
-        costOfCareSettings = customSettings,
-        verbose = FALSE
-      )
-      
-      covariateData <- createCostCovariateData(
-        costResults = customResults,
-        costOfCareSettings = customSettings,
-        cohortId = 1
-      )
-      
-      # Check time reference exists
-      expect_true("timeRef" %in% names(covariateData))
-      
-      timeRef <- dplyr::collect(covariateData$timeRef)
-      expect_equal(timeRef$startDay, -180L)
-      expect_equal(timeRef$endDay, 180L)
-    })
-    
-    it("should validate input parameters correctly", {
-      # Test missing results
-      expect_error(
-        createCostCovariateData(
-          costResults = list(),
-          costOfCareSettings = settings,
-          cohortId = 1
-        ),
-        "must.include"
-      )
-      
-      # Test wrong settings class
-      expect_error(
-        createCostCovariateData(
-          costResults = costResults,
-          costOfCareSettings = list(),
-          cohortId = 1
-        ),
-        "CostOfCareSettings"
-      )
-      
-      # Test invalid cohortId
-      expect_error(
-        createCostCovariateData(
-          costResults = costResults,
-          costOfCareSettings = settings,
-          cohortId = "invalid"
-        )
-      )
-    })
-  })
-  
-  #-----------------------------------------------------------------------------
-  # Tests for convertToFeatureExtractionFormat()
-  #-----------------------------------------------------------------------------
-  
-  describe("convertToFeatureExtractionFormat", {
-    
-    it("should convert results successfully with informative messages", {
-      # Capture messages
-      expect_message(
-        covariateData <- convertToFeatureExtractionFormat(
-          costResults = costResults,
-          costOfCareSettings = settings,
-          cohortId = 1,
-          databaseId = "TestConversion"
-        ),
-        "Converting cost analysis results"
-      )
-      
-      expect_message(
-        convertToFeatureExtractionFormat(
-          costResults = costResults,
-          costOfCareSettings = settings,
-          cohortId = 1
-        ),
-        "Conversion completed successfully"
-      )
-      
-      # Check result is valid CovariateData
-      expect_s3_class(covariateData, "CovariateData")
-      
-      metaData <- attr(covariateData, "metaData")
-      expect_equal(metaData$databaseId, "TestConversion")
-    })
-  })
-  
-  #-----------------------------------------------------------------------------
-  # Tests for Summary and Print Methods
-  #-----------------------------------------------------------------------------
-  
-  describe("CovariateData Methods", {
-    
-    covariateData <- createCostCovariateData(
-      costResults = costResults,
-      costOfCareSettings = settings,
-      cohortId = 1,
-      databaseId = "TestMethods"
+  # Helper function to create mock aggregated results
+  .createMockAggregatedResults <- function() {
+    results <- dplyr::tibble(
+      metric_type = c("visit_level", "visit_level", "visit_level", "visit_level", "visit_level"),
+      metric_name = c("total_person_days", "total_cost", "cost_pppm", "n_persons_with_cost", "distinct_visits"),
+      metric_value = c(985999, 47367.5, 1.46, 18, 18)
+    )
+
+    andromeda_obj <- Andromeda::andromeda(
+      results = results
     )
     
-    it("should provide informative summary", {
-      # Capture output
-      output <- capture.output(summary(covariateData))
-      
-      # Check key information is present
-      expect_true(any(grepl("Cost Covariate Data Summary", output)))
-      expect_true(any(grepl("Database ID: TestMethods", output)))
-      expect_true(any(grepl("Analysis Parameters:", output)))
-      expect_true(any(grepl("Number of Covariates:", output)))
-      expect_true(any(grepl("Available Covariates:", output)))
-    })
+    return(andromeda_obj)
+  }
+  
+  # Helper function to create mock person-level results
+  .createMockPersonLevelResults <- function() {
+    results <- dplyr::tibble(
+      person_id = c(1001L, 1002L, 1003L, 1004L, 1005L),
+      cost = c(1250.75, 890.25, 2100.50, 450.00, 1800.25),
+      adjusted_cost = c(1375.83, 979.28, 2310.55, 495.00, 1980.28)
+    )
+
+    andromeda_obj <- Andromeda::andromeda(
+      results = results
+    )
     
-    it("should print correctly", {
-      # Print should call summary
-      output <- capture.output(print(covariateData))
-      expect_true(any(grepl("Cost Covariate Data Summary", output)))
-    })
+    return(andromeda_obj)
+  }
+  
+  # Helper function to create mock settings
+  .createMockSettings <- function(cpiAdjustment = FALSE, microCosting = FALSE, hasEventFilters = FALSE) {
+    settings <- list(
+      costConceptId = 31973L,
+      currencyConceptId = 44818668L,
+      anchorCol = "cohort_start_date",
+      startOffsetDays = 0L,
+      endOffsetDays = 365L,
+      cpiAdjustment = cpiAdjustment,
+      microCosting = microCosting,
+      hasEventFilters = hasEventFilters,
+      hasVisitRestriction = FALSE,
+      nFilters = if (hasEventFilters) 1L else 0L,
+      eventFilters = if (hasEventFilters) list(list(name = "Test Filter", domain = "Drug", conceptIds = c(1234L))) else NULL
+    )
+    class(settings) <- "CostOfCareSettings"
+    return(settings)
+  }
+  
+  #-----------------------------------------------------------------------------
+  # Format Detection Tests
+  #-----------------------------------------------------------------------------
+  
+  it("should correctly detect aggregated result format", {
+    mockResults <- .createMockAggregatedResults()
+    mockSettings <- .createMockSettings()
     
-    it("should handle objects without metadata gracefully", {
-      # Create object without metadata
-      testData <- Andromeda::andromeda()
-      testData$covariateRef <- dplyr::tibble(
-        covariateId = 1001L,
-        covariateName = "Test Covariate",
-        analysisId = 1L,
-        conceptId = 0L
-      )
-      class(testData) <- c("CovariateData", class(testData))
-      
-      # Should not error
-      expect_no_error(summary(testData))
-    })
+    # Test internal function directly
+    format <- CostUtilization:::.detectResultFormat(mockResults)
+    expect_equal(format, "aggregated")
     
-    it("should reject non-CovariateData objects", {
-      expect_error(
-        summary.CovariateData(list()),
-        "must be of class 'CovariateData'"
-      )
-    })
+    Andromeda::close(mockResults)
+  })
+  
+  it("should correctly detect person-level result format", {
+    mockResults <- .createMockPersonLevelResults()
+    mockSettings <- .createMockSettings()
+    
+    # Test internal function directly
+    format <- CostUtilization:::.detectResultFormat(mockResults)
+    expect_equal(format, "person_level")
+    
+    Andromeda::close(mockResults)
   })
   
   #-----------------------------------------------------------------------------
-  # Tests for Internal Helper Functions
+  # Aggregated Results Conversion Tests
   #-----------------------------------------------------------------------------
   
-  describe("Internal Helper Functions", {
+  it("should convert aggregated results to CovariateData format", {
+    mockResults <- .createMockAggregatedResults()
+    mockSettings <- .createMockSettings()
     
-    it("should create analysis reference correctly", {
-      analysisRef <- createAnalysisRef(settings, 1L)
-      
-      expect_s3_class(analysisRef, "tbl_df")
-      expect_equal(nrow(analysisRef), 1)
-      expect_equal(analysisRef$analysisId, 1L)
-      expect_equal(analysisRef$domainId, "Cost")
-      expect_equal(analysisRef$isBinary, "N")
-      expect_equal(analysisRef$missingMeansZero, "Y")
-      expect_true(grepl("Total Charge", analysisRef$description))
-    })
+    covariateData <- createCostCovariateData(
+      costResults = mockResults,
+      costOfCareSettings = mockSettings,
+      cohortId = 1L,
+      databaseId = "TestDB",
+      analysisId = 1000L
+    )
     
-    it("should create covariate reference correctly", {
-      analysisRef <- createAnalysisRef(settings, 1L)
-      covariateRef <- createCovariateRef(costResults$results, analysisRef, settings)
-      
-      expect_s3_class(covariateRef, "tbl_df")
-      expect_gt(nrow(covariateRef), 0)
-      expect_true(all(c("covariateId", "covariateName", "analysisId", "conceptId") %in% names(covariateRef)))
-      
-      # Check covariate IDs are properly generated
-      expect_true(all(covariateRef$covariateId >= 1000L))
-      expect_equal(unique(covariateRef$analysisId), 1L)
-    })
+    # Check object structure
+    expect_s3_class(covariateData, "CovariateData")
+    expect_s3_class(covariateData, "Andromeda")
     
-    it("should extract covariate values correctly", {
-      # Test with mock results
-      mockResults <- dplyr::tibble(
-        totalCost = 1000.50,
-        totalAdjustedCost = 1200.75,
-        costPppm = 83.375,
-        distinctVisits = 5L,
-        eventsPer1000Py = 250.0
-      )
-      
-      # Test various extractions
-      expect_equal(extractCovariateValue(mockResults, "Total Cost", 1001L), 1000.50)
-      expect_equal(extractCovariateValue(mockResults, "Total Cost (CPI Adjusted)", 1002L), 1200.75)
-      expect_equal(extractCovariateValue(mockResults, "Cost Per Person Per Month", 1003L), 83.375)
-      expect_equal(extractCovariateValue(mockResults, "Number of Visits", 1010L), 5)
-      expect_equal(extractCovariateValue(mockResults, "Events Per 1000 Person-Years", 1012L), 250.0)
-      
-      # Test fallback
-      expect_equal(extractCovariateValue(mockResults, "Unknown Metric", 9999L), 0)
-    })
+    # Check required tables exist
+    expect_true("covariates" %in% names(covariateData))
+    expect_true("covariateRef" %in% names(covariateData))
+    expect_true("analysisRef" %in% names(covariateData))
     
-    it("should create metadata correctly", {
-      metaData <- createMetaData(settings, costResults, "TestDB", 1L)
-      
-      expect_type(metaData, "list")
-      expect_equal(metaData$databaseId, "TestDB")
-      expect_equal(metaData$analysisId, 1L)
-      expect_equal(metaData$packageName, "CostUtilization")
-      expect_true("call" %in% names(metaData))
-      expect_true("executionTime" %in% names(metaData))
-      expect_equal(metaData$isBinary, FALSE)
-      expect_equal(metaData$isAggregated, TRUE)
-    })
+    # Check covariates structure
+    covariates <- covariateData$covariates %>% dplyr::collect()
+    expect_true(all(c("rowId", "covariateId", "covariateValue") %in% names(covariates)))
+    expect_gt(nrow(covariates), 0)
+    
+    # Check covariate IDs are systematic
+    expect_true(all(covariates$covariateId >= 1000000)) # analysisId * 1000 + offset
+    
+    # Check metadata
+    metaData <- attr(covariateData, "metaData")
+    expect_equal(metaData$analysisId, 1000L)
+    expect_equal(metaData$cohortId, 1L)
+    expect_equal(metaData$databaseId, "TestDB")
+    expect_equal(metaData$resultFormat, "aggregated")
+    
+    Andromeda::close(mockResults)
+    Andromeda::close(covariateData)
+  })
+  
+  it("should handle aggregated results with CPI adjustment metadata", {
+    mockResults <- .createMockAggregatedResults()
+    mockSettings <- .createMockSettings(cpiAdjustment = TRUE)
+    
+    covariateData <- createCostCovariateData(
+      costResults = mockResults,
+      costOfCareSettings = mockSettings,
+      cohortId = 1L,
+      databaseId = "TestDB"
+    )
+    
+    # Check CPI adjustment is recorded in metadata
+    metaData <- attr(covariateData, "metaData")
+    expect_true(metaData$cpiAdjustment)
+    
+    Andromeda::close(mockResults)
+  })
+  
+  #-----------------------------------------------------------------------------
+  # Person-Level Results Conversion Tests
+  #-----------------------------------------------------------------------------
+  
+  it("should convert person-level results to CovariateData format", {
+    mockResults <- .createMockPersonLevelResults()
+    mockSettings <- .createMockSettings()
+    
+    covariateData <- createCostCovariateData(
+      costResults = mockResults,
+      costOfCareSettings = mockSettings,
+      cohortId = 1L,
+      databaseId = "TestDB",
+      analysisId = 2000L
+    )
+    
+    # Check object structure
+    expect_s3_class(covariateData, "CovariateData")
+    expect_s3_class(covariateData, "Andromeda")
+    
+    # Check covariates structure
+    covariates <- covariateData$covariates %>% dplyr::collect()
+    expect_true(all(c("rowId", "covariateId", "covariateValue") %in% names(covariates)))
+    
+    # Should have entries for both cost and adjusted_cost
+    expect_gte(nrow(covariates), 10) # 5 people * 2 cost types
+    
+    # Check person IDs are preserved as rowIds
+    expect_true(all(covariates$rowId %in% c(1001L, 1002L, 1003L, 1004L, 1005L)))
+    
+    # Check covariate IDs are systematic (2000 * 1000 + 300 + offset)
+    expect_true(all(covariates$covariateId >= 2000000))
+    
+    # Check metadata
+    metaData <- attr(covariateData, "metaData")
+    expect_equal(metaData$resultFormat, "person_level")
+    
+    Andromeda::close(mockResults)
+    Andromeda::close(covariateData)
+  })
+  
+  it("should handle person-level results without adjusted_cost column", {
+    # Create results with only cost column
+    results <- dplyr::tibble(
+      person_id = c(1001L, 1002L, 1003L),
+      cost = c(1250.75, 890.25, 2100.50)
+    )
+    
+    diagnostics <- dplyr::tibble(
+      step_name = c("01_cohort_persons"),
+      n_persons = c(3),
+      n_events = c(3)
+    )
+    
+    mockResults <- Andromeda::andromeda(
+      results = results,
+      diagnostics = diagnostics
+    )
+    
+    mockSettings <- .createMockSettings()
+    
+    covariateData <- createCostCovariateData(
+      costResults = mockResults,
+      costOfCareSettings = mockSettings,
+      cohortId = 1L,
+      databaseId = "TestDB"
+    )
+    
+    # Should still work with only cost column
+    covariates <- covariateData$covariates %>% dplyr::collect()
+    expect_gte(nrow(covariates), 3) # At least 3 people with cost values
+    
+    Andromeda::close(mockResults)
+    Andromeda::close(covariateData)
+  })
+  
+  #-----------------------------------------------------------------------------
+  # Covariate Reference Tests
+  #-----------------------------------------------------------------------------
+  
+  it("should create proper covariate references", {
+    mockResults <- .createMockAggregatedResults()
+    mockSettings <- .createMockSettings()
+    
+    covariateData <- createCostCovariateData(
+      costResults = mockResults,
+      costOfCareSettings = mockSettings,
+      cohortId = 1L,
+      databaseId = "TestDB"
+    )
+    
+    covariateRef <- covariateData$covariateRef %>% dplyr::collect()
+    
+    # Check structure
+    expect_true(all(c("covariateId", "covariateName", "analysisId", "conceptId") %in% names(covariateRef)))
+    
+    # Check covariate names are descriptive
+    expect_true(all(stringr::str_detect(covariateRef$covariateName, "Total Charge")))
+    expect_true(any(stringr::str_detect(covariateRef$covariateName, "\\(0 to 365 days\\)")))
+    
+    # Check concept ID is preserved
+    expect_true(all(covariateRef$conceptId == 31973L))
+    
+    Andromeda::close(mockResults)
+    Andromeda::close(covariateData)
+  })
+  
+  #-----------------------------------------------------------------------------
+  # Analysis Reference Tests
+  #-----------------------------------------------------------------------------
+  
+  it("should create proper analysis references", {
+    mockResults <- .createMockAggregatedResults()
+    mockSettings <- .createMockSettings(microCosting = TRUE, hasEventFilters = TRUE)
+    
+    covariateData <- createCostCovariateData(
+      costResults = mockResults,
+      costOfCareSettings = mockSettings,
+      cohortId = 1L,
+      databaseId = "TestDB",
+      analysisId = 1500L
+    )
+    
+    analysisRef <- covariateData$analysisRef %>% dplyr::collect()
+    
+    # Check structure
+    expect_true(all(c("analysisId", "analysisName", "domainId", "startDay", "endDay") %in% names(analysisRef)))
+    
+    # Check values
+    expect_equal(analysisRef$analysisId, 1500L)
+    expect_equal(analysisRef$domainId, "Cost")
+    expect_equal(analysisRef$startDay, 0L)
+    expect_equal(analysisRef$endDay, 365L)
+    
+    # Check analysis name includes modifiers
+    expect_true(stringr::str_detect(analysisRef$analysisName, "Line-Level"))
+    expect_true(stringr::str_detect(analysisRef$analysisName, "Event-Filtered"))
+    
+    Andromeda::close(mockResults)
+    Andromeda::close(covariateData)
+  })
+  
+  #-----------------------------------------------------------------------------
+  # Metadata Tests
+  #-----------------------------------------------------------------------------
+  
+  it("should create comprehensive metadata", {
+    mockResults <- .createMockPersonLevelResults()
+    mockSettings <- .createMockSettings(cpiAdjustment = TRUE, hasEventFilters = TRUE)
+    
+    covariateData <- createCostCovariateData(
+      costResults = mockResults,
+      costOfCareSettings = mockSettings,
+      cohortId = 123L,
+      databaseId = "MyDatabase",
+      analysisId = 5000L
+    )
+    
+    metaData <- attr(covariateData, "metaData")
+    
+    # Check core metadata
+    expect_equal(metaData$analysisId, 5000L)
+    expect_equal(metaData$cohortId, 123L)
+    expect_equal(metaData$databaseId, "MyDatabase")
+    expect_equal(metaData$resultFormat, "person_level")
+    
+    # Check cost settings
+    expect_equal(metaData$costConceptId, 31973L)
+    expect_equal(metaData$currencyConceptId, 44818668L)
+    expect_true(metaData$cpiAdjustment)
+    expect_true(metaData$hasEventFilters)
+    expect_equal(metaData$nFilters, 1L)
+    
+    # Check time window
+    expect_equal(metaData$startOffsetDays, 0L)
+    expect_equal(metaData$endOffsetDays, 365L)
+    
+    # Check package info
+    expect_true(!is.null(metaData$packageVersion))
+    expect_true(!is.null(metaData$creationTime))
+    
+    Andromeda::close(mockResults)
+    Andromeda::close(covariateData)
+  })
+  
+  #-----------------------------------------------------------------------------
+  # S3 Methods Tests
+  #-----------------------------------------------------------------------------
+  
+  it("should have working summary method", {
+    mockResults <- .createMockAggregatedResults()
+    mockSettings <- .createMockSettings()
+    
+    covariateData <- createCostCovariateData(
+      costResults = mockResults,
+      costOfCareSettings = mockSettings,
+      cohortId = 1L,
+      databaseId = "TestDB"
+    )
+    
+    # Test summary method doesn't error
+    expect_output(summary(covariateData), "CovariateData Summary")
+    expect_output(summary(covariateData), "Analysis Information")
+    expect_output(summary(covariateData), "Cost Analysis Settings")
+    expect_output(summary(covariateData), "Data Summary")
+    
+    Andromeda::close(mockResults)
+    Andromeda::close(covariateData)
+  })
+  
+  it("should have working print method", {
+    mockResults <- .createMockPersonLevelResults()
+    mockSettings <- .createMockSettings()
+    
+    covariateData <- createCostCovariateData(
+      costResults = mockResults,
+      costOfCareSettings = mockSettings,
+      cohortId = 1L,
+      databaseId = "TestDB"
+    )
+    
+    # Test print method doesn't error
+    expect_output(print(covariateData), "CovariateData object")
+    expect_output(print(covariateData), "Tables:")
+    
+    Andromeda::close(mockResults)
+    Andromeda::close(covariateData)
+  })
+  
+  #-----------------------------------------------------------------------------
+  # Convenience Function Tests
+  #-----------------------------------------------------------------------------
+  
+  it("should work with convenience function", {
+    mockResults <- .createMockAggregatedResults()
+    mockSettings <- .createMockSettings()
+    
+    covariateData <- convertToFeatureExtractionFormat(
+      costResults = mockResults,
+      costOfCareSettings = mockSettings,
+      cohortId = 1L,
+      databaseId = "TestDB"
+    )
+    
+    expect_s3_class(covariateData, "CovariateData")
+    
+    metaData <- attr(covariateData, "metaData")
+    expect_equal(metaData$databaseId, "TestDB")
+    expect_equal(metaData$analysisId, 1000L) # Default value
+    
+    Andromeda::close(mockResults)
+    Andromeda::close(covariateData)
+  })
+  
+  #-----------------------------------------------------------------------------
+  # Error Handling Tests
+  #-----------------------------------------------------------------------------
+  
+  it("should error with invalid input types", {
+    mockSettings <- .createMockSettings()
+    
+    # Test with non-Andromeda object
+    expect_error(
+      createCostCovariateData(
+        costResults = list(results = data.frame()),
+        costOfCareSettings = mockSettings,
+        cohortId = 1L,
+        databaseId = "TestDB"
+      ),
+      "Andromeda"
+    )
+    
+    # Test with invalid settings
+    mockResults <- .createMockAggregatedResults()
+    expect_error(
+      createCostCovariateData(
+        costResults = mockResults,
+        costOfCareSettings = list(),
+        cohortId = 1L,
+        databaseId = "TestDB"
+      ),
+      "CostOfCareSettings"
+    )
+    
+    Andromeda::close(mockResults)
+  })
+  
+  it("should error with unrecognizable result format", {
+    # Create results with unexpected column structure
+    results <- dplyr::tibble(
+      unexpected_col1 = c(1, 2, 3),
+      unexpected_col2 = c("a", "b", "c")
+    )
+    
+    mockResults <- Andromeda::andromeda(results = results)
+    mockSettings <- .createMockSettings()
+    
+    expect_error(
+      createCostCovariateData(
+        costResults = mockResults,
+        costOfCareSettings = mockSettings,
+        cohortId = 1L,
+        databaseId = "TestDB"
+      ),
+      "Unable to detect valid result format"
+    )
+    
+    Andromeda::close(mockResults)
   })
   
   #-----------------------------------------------------------------------------
   # Integration Tests
   #-----------------------------------------------------------------------------
   
-  describe("Integration Tests", {
+  it("should handle different cost concept IDs correctly", {
+    mockResults <- .createMockAggregatedResults()
     
-    it("should work end-to-end with different cost concepts", {
-      # Test with different cost concepts
-      costConcepts <- c(31973L, 31985L, 31980L, 31981L)
-      conceptNames <- c("Total Charge", "Total Cost", "Paid by Payer", "Paid by Patient")
-      
-      for (i in seq_along(costConcepts)) {
-        testSettings <- createCostOfCareSettings(costConceptId = costConcepts[i])
-        
-        testResults <- calculateCostOfCare(
-          connection = con,
-          cdmDatabaseSchema = "main",
-          cohortDatabaseSchema = "main",
-          cohortTable = "cohort",
-          cohortId = 1,
-          costOfCareSettings = testSettings,
-          verbose = FALSE
-        )
-        
-        covariateData <- createCostCovariateData(
-          costResults = testResults,
-          costOfCareSettings = testSettings,
-          cohortId = 1,
-          analysisId = i
-        )
-        
-        # Check analysis reference reflects correct cost concept
-        analysisRef <- dplyr::collect(covariateData$analysisRef)
-        expect_true(grepl(conceptNames[i], analysisRef$description))
-        
-        # Check covariate reference has appropriate names
-        covariateRef <- dplyr::collect(covariateData$covariateRef)
-        expect_gt(nrow(covariateRef), 0)
-      }
-    })
+    # Test different cost concepts
+    costConcepts <- c(31973L, 31985L, 31980L, 31981L)
     
-    it("should handle complex event filtering scenarios", {
-      # Create complex event filters
-      complexFilters <- list(
-        list(name = "Diabetes Conditions", domain = "Condition", conceptIds = c(201820L, 443238L)),
-        list(name = "Diabetes Drugs", domain = "Drug", conceptIds = c(1503297L, 1502826L)),
-        list(name = "Lab Tests", domain = "Measurement", conceptIds = c(3004501L, 3003309L))
-      )
-      
-      complexSettings <- createCostOfCareSettings(
-        eventFilters = complexFilters,
-        costConceptId = 31973L
-      )
-      
-      complexResults <- calculateCostOfCare(
-        connection = con,
-        cdmDatabaseSchema = "main",
-        cohortDatabaseSchema = "main",
-        cohortTable = "cohort",
-        cohortId = 1,
-        costOfCareSettings = complexSettings,
-        verbose = FALSE
-      )
+    for (conceptId in costConcepts) {
+      mockSettings <- .createMockSettings()
+      mockSettings$costConceptId <- conceptId
       
       covariateData <- createCostCovariateData(
-        costResults = complexResults,
-        costOfCareSettings = complexSettings,
-        cohortId = 1
+        costResults = mockResults,
+        costOfCareSettings = mockSettings,
+        cohortId = 1L,
+        databaseId = "TestDB"
       )
       
-      # Check analysis reference reflects filtering
-      analysisRef <- dplyr::collect(covariateData$analysisRef)
-      expect_true(grepl("Filtered by domains", analysisRef$description))
-      expect_true(grepl("Condition, Drug, Measurement", analysisRef$description))
+      # Check concept ID is preserved
+      covariateRef <- covariateData$covariateRef %>% dplyr::collect()
+      expect_true(all(covariateRef$conceptId == conceptId))
       
-      # Check metadata reflects event filtering
-      metaData <- attr(covariateData, "metaData")
-      expect_true(metaData$call$hasEventFilters)
+      # Check covariate names reflect cost type
+      if (conceptId == 31985L) {
+        expect_true(any(stringr::str_detect(covariateRef$covariateName, "Total Cost")))
+      } else if (conceptId == 31980L) {
+        expect_true(any(stringr::str_detect(covariateRef$covariateName, "Paid by Payer")))
+      }
+      
+      Andromeda::close(covariateData)
+    }
+    
+    Andromeda::close(mockResults)
+  })
+  
+  it("should handle large datasets efficiently", {
+    # Create larger mock dataset
+    n_people <- 1000
+    results <- dplyr::tibble(
+      person_id = 1:n_people,
+      cost = runif(n_people, 100, 5000),
+      adjusted_cost = cost * 1.1
+    )
+    
+    diagnostics <- dplyr::tibble(
+      step_name = "test",
+      n_persons = n_people,
+      n_events = n_people
+    )
+    
+    mockResults <- Andromeda::andromeda(
+      results = results,
+      diagnostics = diagnostics
+    )
+    
+    mockSettings <- .createMockSettings()
+    
+    # Should handle large dataset without error
+    expect_no_error({
+      covariateData <- createCostCovariateData(
+        costResults = mockResults,
+        costOfCareSettings = mockSettings,
+        cohortId = 1L,
+        databaseId = "TestDB"
+      )
     })
-  })
-})
-
-#===============================================================================
-# Performance and Memory Tests
-#===============================================================================
-
-describe("Performance and Memory", {
-  
-  it("should handle large result sets efficiently", {
-    # This is a basic test - in practice, you'd want more comprehensive performance testing
-    settings <- createCostOfCareSettings()
     
-    # Time the conversion
-    start_time <- Sys.time()
+    # Check results
+    covariates <- covariateData$covariates %>% dplyr::collect()
+    expect_gte(nrow(covariates), n_people) # At least one covariate per person
     
-    covariateData <- createCostCovariateData(
-      costResults = costResults,
-      costOfCareSettings = settings,
-      cohortId = 1
-    )
-    
-    end_time <- Sys.time()
-    conversion_time <- as.numeric(difftime(end_time, start_time, units = "secs"))
-    
-    # Should complete reasonably quickly (adjust threshold as needed)
-    expect_lt(conversion_time, 5.0)
-    
-    # Check Andromeda object is properly structured
-    expect_true(Andromeda::isValidAndromeda(covariateData))
+    Andromeda::close(mockResults)
+    Andromeda::close(covariateData)
   })
   
-  it("should properly clean up Andromeda objects", {
+  #-----------------------------------------------------------------------------
+  # Memory Management Tests
+  #-----------------------------------------------------------------------------
+  
+  it("should properly manage Andromeda objects", {
+    mockResults <- .createMockPersonLevelResults()
+    mockSettings <- .createMockSettings()
+    
     covariateData <- createCostCovariateData(
-      costResults = costResults,
-      costOfCareSettings = settings,
-      cohortId = 1
+      costResults = mockResults,
+      costOfCareSettings = mockSettings,
+      cohortId = 1L,
+      databaseId = "TestDB"
     )
     
-    # Should be able to close without errors
+    # Should be able to close objects without error
+    expect_no_error(Andromeda::close(mockResults))
     expect_no_error(Andromeda::close(covariateData))
   })
+  
 })

@@ -183,7 +183,7 @@ createCostOfCareSettings <- function(
       hasEventFilters = !is.null(eventFilters),
       eventFilters = eventFilters,
       nFilters = as.integer(nFilters),
-      microCosting = isTRUE(microCosting),
+      microCosting = microCosting,
       primaryEventFilterName = primaryEventFilterName,
       costConceptId = as.integer(costConceptId),
       currencyConceptId = as.integer(currencyConceptId),

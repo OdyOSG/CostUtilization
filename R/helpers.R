@@ -213,3 +213,15 @@ insertTableDBI <- function(connection,
   
   invisible(TRUE)
 }
+
+to_title_case_base <- function(x) {
+  # force lower case
+  x <- tolower(x)
+  # split on spaces
+  words <- strsplit(x, "\\s+")[[1]]
+  # uppercase first letter, append rest
+  words <- paste0(toupper(substring(words, 1, 1)),
+                  substring(words, 2))
+  # rejoin
+  paste(words, collapse = " ")
+}
