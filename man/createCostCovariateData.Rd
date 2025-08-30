@@ -13,33 +13,55 @@ createCostCovariateData(
 )
 }
 \arguments{
-\item{costResults}{An Andromeda object returned from \code{calculateCostOfCare()}.
-Can contain either:
-\itemize{
-\item \strong{Aggregated format}: \code{metric_type}, \code{metric_name}, \code{metric_value} columns
-\item \strong{Person-level format}: \code{person_id}, \code{cost}, \code{adjusted_cost} (optional) columns
-}}
+\item{costResults}{An \code{Andromeda} object returned from \code{\link[=calculateCostOfCare]{calculateCostOfCare()}}.
+Must contain a \code{results} table in either aggregated or person-level format.}
 
-\item{costOfCareSettings}{A \code{CostOfCareSettings} object used in the analysis.}
+\item{costOfCareSettings}{A \code{CostOfCareSettings} object specifying the analysis
+parameters (time window, concept IDs, costing approach, etc).}
 
-\item{cohortId}{Integer cohort ID for the analysis.}
+\item{cohortId}{Integer. Cohort ID used for covariate construction.}
 
-\item{databaseId}{Character database identifier for metadata.}
+\item{databaseId}{Character. Identifier of the source database for metadata tracking.}
 
-\item{analysisId}{Integer analysis ID for systematic covariate numbering. Default: 1000L.}
+\item{analysisId}{Integer. Analysis ID used to generate systematic covariate IDs.
+Default is \code{1000L}. Covariate IDs are constructed as \code{analysisId * 1000 + offset}.}
 }
 \value{
-A \code{CovariateData} object (Andromeda-backed) with components:
+A \code{CovariateData} object (backed by an \code{Andromeda} database) with the following tables:
 \itemize{
-\item \code{covariates}: Person-level cost/utilization metrics (\code{rowId}, \code{covariateId}, \code{covariateValue})
-\item \code{covariateRef}: Reference table describing each covariate
-\item \code{analysisRef}: Analysis-level metadata and parameters
-\item \code{timeRef}: Time window reference
-\item \code{metaData}: Comprehensive analysis metadata (in the object attribute)
+\item \strong{covariates}: person-level or cohort-level cost metrics
+(\code{rowId}, \code{covariateId}, \code{covariateValue})
+\item \strong{covariateRef}: mapping of covariate IDs to names and concepts
+\item \strong{analysisRef}: analysis-level metadata (ID, name, domain, time window)
+\item \strong{timeRef}: time-window reference (always length 1 for cost analyses)
 }
+
+Metadata about the analysis is stored in \code{attr(covariateData, "metaData")}.
 }
 \description{
-Converts cost analysis results from \code{calculateCostOfCare()} into a standardized
-\code{CovariateData} object compatible with the FeatureExtraction package and broader
-OHDSI ecosystem. Handles both aggregated and person-level result formats automatically.
+Converts results from \code{calculateCostOfCare()} into a standardized
+\href{https://ohdsi.github.io/FeatureExtraction/reference/CovariateData-class.html}{\code{CovariateData}}
+object compatible with the \strong{FeatureExtraction} package and the OHDSI ecosystem.
+Both \strong{aggregated} and \strong{person-level} result formats are automatically supported:
+\itemize{
+\item \strong{Aggregated format}: one row per metric across the full cohort, with columns
+\code{metric_type}, \code{metric_name}, \code{metric_value}.
+\item \strong{Person-level format}: one row per person, with at least \code{person_id} and \code{cost},
+and optionally \code{adjusted_cost}.
+}
+}
+\examples{
+\dontrun{
+results <- calculateCostOfCare(cohort, costOfCareSettings)
+covData <- createCostCovariateData(
+  costResults = results,
+  costOfCareSettings = costOfCareSettings,
+  cohortId = 1L,
+  databaseId = "CDM_DB"
+)
+
+# Use FeatureExtraction utilities:
+FeatureExtraction::summarizeCovariates(covData)
+}
+
 }

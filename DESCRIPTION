@@ -19,16 +19,15 @@ Imports:
     Andromeda (>= 1.1.1),
     checkmate,
     cli,
-    DatabaseConnector (>= 5.0.0),
     DBI,
     dplyr,
     glue,
     purrr,
+    SqlRender,
     rlang,
-    utils
+    tidyr
 Suggests:
     covr,
-    SqlRender,
     duckdb,
     testthat (>= 3.0.0),
     withr,

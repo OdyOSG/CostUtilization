@@ -175,14 +175,6 @@ WHERE vo.visit_end_date   >= aw.start_date
   JOIN @event_concepts_table ec
     ON ec.concept_id = ob.observation_concept_id
    AND ec.domain_scope IN ('All','Observation')
-   
-   
-    UNION ALL
-  SELECT ec.filter_id, ec.filter_name, ob.person_id, ob.visit_occurrence_id, ob.visit_detail_id
-  FROM @cdm_database_schema.device_exposure de
-  JOIN @event_concepts_table ec
-    ON ec.concept_id = de.device_concept_id
-   AND ec.domain_scope IN ('All','Device')
   ;
 
   DROP TABLE IF EXISTS #event_visits;
@@ -372,6 +364,7 @@ CREATE TABLE #numerators (
     SUM(cost),
     SUM(adjusted_cost),
     COUNT(DISTINCT person_id),
+    COUNT(DISTINCT visit_occurrence_id),
     COUNT(DISTINCT visit_occurrence_id)
   FROM #visit_level_cost;
 };
@@ -539,4 +532,3 @@ DROP TABLE IF EXISTS #numerators;
 -- Final diagnostic
 INSERT INTO @diag_table (step_name, n_persons, n_events)
 VALUES ('99_completed', NULL, NULL);
-

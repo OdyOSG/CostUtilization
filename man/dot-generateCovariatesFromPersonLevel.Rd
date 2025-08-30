@@ -2,21 +2,10 @@
 % Please edit documentation in R/resultsFormat.R
 \name{.generateCovariatesFromPersonLevel}
 \alias{.generateCovariatesFromPersonLevel}
-\title{Generate Covariates from Person-Level Results}
+\title{BUG FIX: This function was refactored to be robust and correct.}
 \usage{
 .generateCovariatesFromPersonLevel(resultsData, covariateMapping, cohortId)
 }
-\arguments{
-\item{resultsData}{Person-level results tibble}
-
-\item{covariateMapping}{Covariate mapping tibble}
-
-\item{cohortId}{Cohort ID (kept for symmetry; not used directly here)}
-}
-\value{
-Tibble of covariates
-}
 \description{
-Generate Covariates from Person-Level Results
+BUG FIX: This function was refactored to be robust and correct.
 }
-\keyword{internal}

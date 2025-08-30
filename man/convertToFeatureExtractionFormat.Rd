@@ -2,7 +2,7 @@
 % Please edit documentation in R/resultsFormat.R
 \name{convertToFeatureExtractionFormat}
 \alias{convertToFeatureExtractionFormat}
-\title{Convenience Function for FeatureExtraction Format Conversion}
+\title{Convenience Conversion to FeatureExtraction Format}
 \usage{
 convertToFeatureExtractionFormat(
   costResults,
@@ -13,25 +13,36 @@ convertToFeatureExtractionFormat(
 )
 }
 \arguments{
-\item{costResults}{An Andromeda object returned from \code{calculateCostOfCare()}.
-Can contain either:
-\itemize{
-\item \strong{Aggregated format}: \code{metric_type}, \code{metric_name}, \code{metric_value} columns
-\item \strong{Person-level format}: \code{person_id}, \code{cost}, \code{adjusted_cost} (optional) columns
-}}
+\item{costResults}{An \code{Andromeda} object returned from \code{\link[=calculateCostOfCare]{calculateCostOfCare()}}.
+Must contain a \code{results} table in either aggregated or person-level format.}
 
-\item{costOfCareSettings}{A \code{CostOfCareSettings} object used in the analysis.}
+\item{costOfCareSettings}{A \code{CostOfCareSettings} object specifying the analysis
+parameters (time window, concept IDs, costing approach, etc).}
 
-\item{cohortId}{Integer cohort ID for the analysis.}
+\item{cohortId}{Integer. Cohort ID used for covariate construction.}
 
-\item{databaseId}{Character database identifier for metadata.}
+\item{databaseId}{Character. Identifier of the source database for metadata tracking.}
 
-\item{analysisId}{Integer analysis ID for systematic covariate numbering. Default: 1000L.}
+\item{analysisId}{Integer. Analysis ID used to generate systematic covariate IDs.
+Default is \code{1000L}. Covariate IDs are constructed as \code{analysisId * 1000 + offset}.}
 }
 \value{
-A \code{CovariateData} object compatible with FeatureExtraction package.
+A \code{CovariateData} object with the same structure as returned by
+\code{\link[=createCostCovariateData]{createCostCovariateData()}}.
 }
 \description{
-A simplified wrapper around \code{createCostCovariateData()} for quick conversion
-of cost analysis results to FeatureExtraction format.
+A wrapper around \code{\link[=createCostCovariateData]{createCostCovariateData()}} for quick conversion of
+cost-of-care analysis results into a FeatureExtraction-compatible
+\code{CovariateData} object.
+Defaults \code{databaseId} to \code{"Unknown"} and \code{analysisId} to \code{1000L}.
+}
+\examples{
+\dontrun{
+covData <- convertToFeatureExtractionFormat(
+  costResults = results,
+  costOfCareSettings = costOfCareSettings,
+  cohortId = 1L
+)
+}
+
 }
