@@ -1,14 +1,14 @@
 -- ============================================================================
 -- Healthcare Cost Analysis Query (Consolidated, CDM v5.5 compliant)
 /* 0) Initialize diagnostics table */
-DROP TABLE IF EXISTS @diag_table;
-CREATE TABLE @diag_table (
+DROP TABLE IF EXISTS @cohort_database_schema.@diag_table;
+CREATE TABLE @cohort_database_schema.@diag_table (
   step_name      VARCHAR(255),
   n_persons      BIGINT,
   n_events       BIGINT
 );
 
-INSERT INTO @diag_table (step_name, n_persons, n_events)
+INSERT INTO @cohort_database_schema.@diag_table (step_name, n_persons, n_events)
 SELECT
   '00_initial_cohort',
   COUNT(DISTINCT subject_id),
@@ -95,7 +95,7 @@ FROM #analysis_window_clean
 GROUP BY person_id;
 
 -- Log diagnostics (same 3 columns as the table)
-INSERT INTO @diag_table (step_name, n_persons, n_events)
+INSERT INTO @cohort_database_schema.@diag_table (step_name, n_persons, n_events)
 VALUES
   ('01_person_subset', (SELECT COUNT(DISTINCT person_id) FROM #cohort_person), NULL),
   ('02_valid_window',  (SELECT COUNT(DISTINCT person_id) FROM #analysis_window_clean), NULL);
@@ -222,7 +222,7 @@ WHERE vo.visit_end_date   >= aw.start_date
 };
 
 -- Diagnostics
-INSERT INTO @diag_table (step_name, n_persons, n_events)
+INSERT INTO @cohort_database_schema.@diag_table (step_name, n_persons, n_events)
 SELECT
   '03_with_qualifying_visits',
   COUNT(DISTINCT person_id),
@@ -301,11 +301,11 @@ WHERE (@cost_concept_id       IS NULL OR c.cost_concept_id      = @cost_concept_
 
 {@aggregated} ? {
 {@micro_costing} ? {
-  INSERT INTO @diag_table (step_name, n_persons, n_events)
+  INSERT INTO @cohort_database_schema.@diag_table (step_name, n_persons, n_events)
   SELECT '04_with_cost', COUNT(DISTINCT person_id), COUNT(DISTINCT visit_detail_id)
   FROM #line_level_cost;
 } : {
-  INSERT INTO @diag_table (step_name, n_persons, n_events)
+  INSERT INTO @cohort_database_schema.@diag_table (step_name, n_persons, n_events)
   SELECT '04_with_cost', COUNT(DISTINCT person_id), COUNT(DISTINCT visit_occurrence_id)
   FROM #visit_level_cost;
 };
@@ -530,5 +530,5 @@ DROP TABLE IF EXISTS #denominator;
 DROP TABLE IF EXISTS #numerators;
 }
 -- Final diagnostic
-INSERT INTO @diag_table (step_name, n_persons, n_events)
+INSERT INTO @cohort_database_schema.@diag_table (step_name, n_persons, n_events)
 VALUES ('99_completed', NULL, NULL);
