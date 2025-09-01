@@ -1,90 +1,84 @@
-# CostUtilization <img src="man/figures/logo.png" align="right" height="92" alt="" />
+# CostUtilization <img src="man/figures/logo.png" align="right" height="92" alt="CostUtilization Logo" />
 
-[![Build Status](https://github.com/OHDSI/CostUtilization/workflows/R-CMD-check/badge.svg)](https://github.com/OHDSI/CostUtilization/actions?query=workflow%3AR-CMD-check+branch%3Adevv5)
-[![codecov.io](https://codecov.io/github/OHDSI/CostUtilization/coverage.svg?branch=devv5)](https://app.codecov.io/github/OHDSI/CostUtilization?branch=devv5)
+[![Build Status](https://github.com/OHDSI/CostUtilization/workflows/R-CMD-check/badge.svg)](https://github.com/OHDSI/CostUtilization/actions?query=workflow%3AR-CMD-check+branch%3Amain)
+[![codecov.io](https://codecov.io/github/OHDSI/CostUtilization/coverage.svg?branch=main)](https://app.codecov.io/github/OHDSI/CostUtilization?branch=main)
 
 ---
 
 ## Introduction
 
-The `CostUtilization` R package provides a standardized framework for generating cost and healthcare resource utilization features for patient cohorts within OMOP Common Data Model (CDM) databases. **This version is specifically designed for CDM v5.5** with full support for the new long-format COST table structure.
+The `CostUtilization` R package provides a standardized framework for generating cost and healthcare resource utilization features for patient cohorts within OMOP Common Data Model (CDM) databases. **This package is specifically designed for CDM v5.5 and later**, fully supporting the new normalized, long-format `COST` table structure.
 
 ### Key Features
 
-- **CDM v5.5 Compatibility**: Full support for the new long-format COST table with enhanced temporal precision
-- **Flexible Time Windows**: Analyze costs across multiple, user-defined time windows relative to cohort index dates
-- **Granular Event Selection**: Calculate costs based on broad CDM domains or specific concept sets
-- **Advanced Cost Filtering**: Restrict analyses to specific cost types (charges, payments, etc.) and currencies
-- **Multiple Aggregation Levels**: Generate per-patient metrics aggregated to daily, monthly, quarterly, or yearly rates
-- **Modern R Implementation**: Settings-based API with tidyverse integration (`dplyr`, `purrr`, `rlang`)
-
----
-
-## What's New in CDM v5.5
-
-### Enhanced Cost Table Structure
-
-CDM v5.5 introduces a **long-format COST table** that provides better traceability and analytical flexibility:
-
-**Previous (Wide Format)**:
-```
-cost_id | person_id | total_charge | paid_by_payer | paid_by_patient
-   1    |    123    |    1000.00   |    800.00     |     200.00
-```
-
-**CDM v5.5 (Long Format)**:
-```
-cost_id | person_id | cost_concept_id | cost_source_value | cost | effective_date
-   1    |    123    |      31973      |  "total_charge"   | 1000 | 2023-01-15
-   2    |    123    |      31980      |  "paid_by_payer"  | 800  | 2023-01-15  
-   3    |    123    |      31981      | "paid_by_patient" | 200  | 2023-01-15
-```
-
-### New Temporal Fields
-
-- `effective_date`: When the cost was incurred (required)
-- `billed_date`: When the cost was billed
-- `paid_date`: When the cost was actually paid
-- `cost_event_field_concept_id`: Links cost to specific clinical event fields
+* **CDM v5.5+ Compatibility**: Leverages the long-format `COST` table for enhanced temporal precision and analytical flexibility.
+* **Flexible Analysis Windows**: Defines analysis periods relative to cohort start or end dates with simple offsets (e.g., 365 days before to 365 days after).
+* **Granular Costing**: Calculates costs based on broad CDM domains (e.g., 'Drug', 'Procedure') or specific, user-defined concept sets.
+* **Advanced Filtering**: Restricts analyses to specific visit types, cost concepts (e.g., 'total charge', 'paid by payer'), and currencies.
+* **Multiple Costing Levels**: Supports both standard visit-level (`visit_occurrence`) costing and detailed line-level (`visit_detail`) micro-costing.
+* **Seamless OHDSI Integration**: The primary output is a `CovariateData` object, which is fully compatible with other OHDSI tools like `FeatureExtraction` and `PatientLevelPrediction`.
 
 ---
 
 ## Installation
 
-To install the latest development version from GitHub:
+To install the latest stable version from GitHub:
 
 ```r
 # install.packages("remotes")
-remotes::install_github("OHDSI/CostUtilization", ref = "devv5")
+remotes::install_github("OHDSI/CostUtilization")
+```
+
+To install the development version:
+
+```r
+remotes::install_github("OHDSI/CostUtilization")
 ```
 
 ---
 
-## Quick Start
+## Quick Start: A Complete Workflow
 
-### Basic Example with Eunomia
+This example demonstrates a full analysis workflow using the included Eunomia test dataset.
 
 ```r
 library(CostUtilization)
 library(dplyr)
+library(DBI)
 
-# Get connection to Eunomia test database
-connectionDetails <- Eunomia::getEunomiaConnectionDetails()
+# 1. Set up a local test database
+# This helper function downloads and creates a local DuckDB with the Eunomia dataset.
+dbFile <- getEunomiaDuckDb(pathToData = tempdir())
+con <- DBI::dbConnect(duckdb::duckdb(dbFile))
 
-# Transform cost data to CDM v5.5 format (includes synthetic data injection)
-transformCostToCdmV5dot5(connectionDetails)
+# 2. Prepare the data
+# This function injects synthetic cost data and transforms it to the CDM v5.5 long format.
+transformCostToCdmV5dot5(con)
 
-# Create analysis settings using the new API
+# 3. Create a cohort for analysis
+DBI::dbExecute(con, "
+  CREATE TABLE main.cohort AS
+  SELECT
+    1 AS cohort_definition_id,
+    p.person_id AS subject_id,
+    op.observation_period_start_date AS cohort_start_date,
+    op.observation_period_end_date AS cohort_end_date
+  FROM main.person p
+  JOIN main.observation_period op ON p.person_id = op.person_id
+  LIMIT 200;
+")
+
+# 4. Define analysis settings
+# We will analyze total charges in the 365 days following cohort entry.
 costSettings <- createCostOfCareSettings(
-  anchorCol = "cohort_start_date",
-  startOffsetDays = -365L,  # 1 year before
-  endOffsetDays = 0L,       # up to index date
-  costConceptId = 31973L    # Total charge
+  startOffsetDays = 0L,
+  endOffsetDays = 365L,
+  costConceptId = 31973L # 31973 = Total Charge
 )
 
-# Execute the analysis
-results <- calculateCostOfCare(
-  connectionDetails = connectionDetails,
+# 5. Execute the analysis
+analysisResults <- calculateCostOfCare(
+  connection = con,
   cdmDatabaseSchema = "main",
   cohortDatabaseSchema = "main",
   cohortTable = "cohort",
@@ -92,176 +86,102 @@ results <- calculateCostOfCare(
   costOfCareSettings = costSettings
 )
 
-# View results
-print(results$results)
-print(results$diagnostics)
+# 6. Review the results
+# The output is a list containing results and diagnostics.
+print(analysisResults$results)
+print(analysisResults$diagnostics)
+
+# 7. Clean up
+DBI::dbDisconnect(con, shutdown = TRUE)
+unlink(dbFile)
 ```
 
-### Advanced Event Filtering
+---
+
+## Advanced Usage
+
+### Event-Filtered Micro-Costing
+
+Calculate costs for specific line-level events (`visit_detail`) that meet certain criteria. Here, we calculate costs for visits that include a diabetes diagnosis and focus on the costs of specific diabetes medications within those visits.
 
 ```r
-# Define event filters for diabetes-related costs
+# Define event filters
 diabetesFilters <- list(
   list(
     name = "Diabetes Diagnoses",
     domain = "Condition", 
-    conceptIds = c(201820L, 201826L, 443238L)
+    conceptIds = c(201820L, 443238L) # Type 1 and Type 2 Diabetes Mellitus
   ),
   list(
     name = "Diabetes Medications",
     domain = "Drug",
-    conceptIds = c(1503297L, 1502826L, 1502855L)
-  ),
-  list(
-    name = "Diabetes Labs",
-    domain = "Measurement",
-    conceptIds = c(3004501L, 3003309L)
+    conceptIds = c(1503297L, 1502826L) # Metformin, Insulin
   )
 )
 
-# Create settings with event filters
-eventSettings <- createCostOfCareSettings(
-  anchorCol = "cohort_start_date",
+# Create settings with event filters and micro-costing enabled
+microSettings <- createCostOfCareSettings(
   startOffsetDays = -365L,
   endOffsetDays = 365L,
   eventFilters = diabetesFilters,
-  costConceptId = 31973L
+  microCosting = TRUE,
+  primaryEventFilterName = "Diabetes Medications", # Cost only these line items
+  costConceptId = 31985L # 31985 = Total Cost
 )
 
-# Run filtered analysis
-filteredResults <- calculateCostOfCare(
-  connectionDetails = connectionDetails,
-  cdmDatabaseSchema = "main", 
-  cohortDatabaseSchema = "main",
-  cohortTable = "cohort",
-  cohortId = 1,
-  costOfCareSettings = eventSettings
-)
+# Rerun analysis with these settings...
 ```
 
-### Multi-Cohort Analysis with Modern R
+### Integration with the OHDSI Ecosystem
+
+Convert your analysis results into a standard `CovariateData` object for use in other OHDSI packages.
 
 ```r
-# Analyze multiple cost types using purrr
-costTypes <- tibble(
-  costType = c("total_charge", "total_cost", "paid_by_payer", "paid_by_patient"),
-  conceptId = c(31973L, 31985L, 31980L, 31981L)
+# Use the results from our first analysis
+covariateData <- createCostCovariateData(
+  costResults = analysisResults,
+  costOfCareSettings = costSettings,
+  cohortId = 1L,
+  databaseId = "Eunomia"
 )
 
-results <- costTypes |>
-  pmap_dfr(function(costType, conceptId) {
-    settings <- createCostOfCareSettings(
-      anchorCol = "cohort_start_date",
-      startOffsetDays = 0L,
-      endOffsetDays = 365L,
-      costConceptId = conceptId
-    )
-    
-    calculateCostOfCare(
-      connectionDetails = connectionDetails,
-      cdmDatabaseSchema = "main",
-      cohortDatabaseSchema = "main", 
-      cohortTable = "cohort",
-      cohortId = 1,
-      costOfCareSettings = settings
-    )$results |>
-    mutate(costType = costType)
-  })
-
-# Visualize results
-library(ggplot2)
-results |>
-  ggplot(aes(x = costType, y = total_cost, fill = costType)) +
-  geom_bar(stat = "identity") +
-  labs(title = "Healthcare Costs by Payment Type (CDM v5.5)")
+# The object is ready for use with FeatureExtraction
+print(covariateData)
+summary(covariateData)
 ```
 
 ---
 
-## Documentation
+## Core Functions
 
-- **[Package Manual](https://ohdsi.github.io/CostUtilization/)**
-- **Vignettes:**
-  - [Getting Started with CDM v5.5](vignettes/getting-started-v55.html)
-  - [Setting Up Eunomia with CDM v5.5](vignettes/eunomia-setup-v55.html)
-  - [Advanced Cost Analysis](vignettes/advanced-cost-analysis-v55.html)
-  - [CPI Adjustment](vignettes/cpi-adjustment.html)
-
----
-
-## Key Functions
-
-### Data Setup
-- `injectCostData()`: Create synthetic cost data for testing
-- `transformCostToCdmV5dot5()`: Transform wide-format tables to CDM v5.5 long format
-
-### Analysis Configuration  
-- `createCostOfCareSettings()`: Create validated settings objects with comprehensive options
-
-### Cost Analysis
-- `calculateCostOfCare()`: Perform cost and utilization analysis with detailed diagnostics
-
----
-
-## CDM v5.5 Cost Concepts
-
-The package supports all standard OMOP cost concepts:
-
-| Concept ID | Description | Source Value |
-|------------|-------------|--------------|
-| 31973 | Total charge | "total_charge" |
-| 31985 | Total cost | "total_cost" |
-| 31980 | Paid by payer | "paid_by_payer" |
-| 31981 | Paid by patient | "paid_by_patient" |
-| 31974 | Patient copay | "paid_patient_copay" |
-| 31975 | Patient coinsurance | "paid_patient_coinsurance" |
-| 31976 | Patient deductible | "paid_patient_deductible" |
-| 31979 | Amount allowed | "amount_allowed" |
+* `getEunomiaDuckDb()`: Creates a local DuckDB copy of the Eunomia dataset for testing and examples.
+* `transformCostToCdmV5dot5()`: Injects synthetic data and transforms a wide `cost` table to the required long format.
+* `createCostOfCareSettings()`: Creates a validated settings object to define all analysis parameters.
+* `calculateCostOfCare()`: Executes the main cost and utilization analysis.
+* `createCostCovariateData()`: Converts analysis results into a `FeatureExtraction` compatible `CovariateData` object.
+* `calculateLos()`: A utility function to calculate the length of stay for visits in a cohort.
 
 ---
 
 ## Migration from Earlier Versions
 
-### Updating Existing Code
-
-**Old approach (direct parameters):**
-```r
-# ❌ Old way - direct parameters
-results <- calculateCostOfCare(
-  connection = connection,
-  anchorCol = "cohort_start_date",
-  startOffsetDays = 0,
-  endOffsetDays = 365
-)
-```
+To update code from previous versions of this package, adopt the settings-based approach.
 
 **New approach (settings object):**
+
 ```r
-# ✅ New way - settings object
+# ✅ Recommended
 settings <- createCostOfCareSettings(
   anchorCol = "cohort_start_date", 
   startOffsetDays = 0L,
   endOffsetDays = 365L,
-  costConceptId = 31973L
+  costConceptId = 31973L # Specify cost concept in settings
 )
 
 results <- calculateCostOfCare(
   connection = connection,
-  costOfCareSettings = settings
-)
-```
-
-### Transforming Existing Data
-
-If you have wide-format cost data, use the transformation function:
-
-```r
-# Transform existing wide-format cost table to CDM v5.5
-transformCostToCdmV5dot5(
-  connectionDetails = connectionDetails,
-  cdmDatabaseSchema = "your_schema",
-  sourceCostTable = "cost",
-  createIndexes = TRUE
+  costOfCareSettings = settings,
+  # Other parameters remain the same...
 )
 ```
 
@@ -269,49 +189,22 @@ transformCostToCdmV5dot5(
 
 ## Technology
 
-- **R** (version 4.1.0 or higher)
-- **DatabaseConnector** for database connectivity
-- **Tidyverse** packages (`dplyr`, `purrr`, `rlang`) for modern R workflows
-- **SqlRender** for database-agnostic SQL generation
-- **Java 8+** (for DatabaseConnector)
-
----
-
-## System Requirements
-
-- R (version 4.1.0 or higher)
-- Java 8 or higher (for DatabaseConnector)
-- Access to an OMOP CDM v5.5+ database
-- COST table in long format (use `transformCostToCdmV5dot5()` if needed)
+* **R** (version 4.1.0 or higher)
+* **DatabaseConnector** & **DBI** for database connectivity
+* **Tidyverse** packages (`dplyr`, `purrr`, `rlang`, `tidyr`) for modern R workflows
+* **SqlRender** for generating database-agnostic SQL
+* **Andromeda** for handling large data objects efficiently
+* **checkmate** for robust input validation
 
 ---
 
 ## Getting Help
 
-- **Bug Reports**: [GitHub Issues](https://github.com/OHDSI/CostUtilization/issues)
-- **Questions**: [OHDSI Forums](https://forums.ohdsi.org/)
-- **Community**: [OHDSI MS Teams](https://www.ohdsi.org/web/wiki/doku.php?id=documentation:collaboration:ms_teams)
-
----
-
-## Contributing
-
-We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details.
+* **Bug Reports**: [GitHub Issues](https://github.com/OHDSI/CostUtilization/issues)
+* **Questions & Community**: [OHDSI Forums](https://forums.ohdsi.org/) and [OHDSI Teams](https://www.ohdsi.org/web/wiki/doku.php?id=documentation:collaboration:ms_teams)
 
 ---
 
 ## License
 
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
-
----
-
-## Acknowledgments
-
-- **OHDSI Collaborative** for the OMOP Common Data Model
-- **Eunomia** for providing synthetic test data
-- **Contributors** who have helped develop and test this package
-
----
-
-*This package is part of the [OHDSI](https://ohdsi.org/) ecosystem of tools for observational health data analysis.*
+This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.
