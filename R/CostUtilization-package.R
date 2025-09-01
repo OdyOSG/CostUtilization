@@ -11,6 +11,7 @@
 ## usethis namespace: start
 #' @import dplyr
 #' @importFrom rlang %||%
+#' @importFrom rlang .data
 #' @importFrom methods setClass setMethod show
 #' @importClassesFrom Andromeda Andromeda
 ## usethis namespace: end
