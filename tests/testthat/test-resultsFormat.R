@@ -1,8 +1,7 @@
-# File: tests/testthat/test-resultsFormat.R
-
 library(testthat)
 library(dplyr)
 library(Andromeda)
+rlang::is_installed("stringr")
 library(stringr)
 
 #===============================================================================

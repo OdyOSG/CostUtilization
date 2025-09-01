@@ -30,3 +30,4 @@
 ^combined_package_code\.txt$
 ^README\.md$
 ^testing_data
+errorReportSql.txt

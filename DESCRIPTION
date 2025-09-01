@@ -25,14 +25,17 @@ Imports:
     purrr,
     SqlRender,
     rlang,
-    tidyr
+    tidyr,
+    methods,
+    DatabaseConnector
 Suggests:
     covr,
     duckdb,
     testthat (>= 3.0.0),
     withr,
     knitr,
-    rmarkdown
+    rmarkdown,
+    stringr
 VignetteBuilder: 
     knitr
 Config/testthat/edition: 3

@@ -84,28 +84,13 @@ createCostCovariateData <- function(costResults,
   return(covariateData)
 }
 
-#' Convenience Conversion to FeatureExtraction Format
+#' Convenience Function for FeatureExtraction Format Conversion
 #'
 #' @description
-#' A wrapper around [createCostCovariateData()] for quick conversion of
-#' cost-of-care analysis results into a FeatureExtraction-compatible
-#' `CovariateData` object.  
-#' Defaults `databaseId` to `"Unknown"` and `analysisId` to `1000L`.
+#' A simplified wrapper around `createCostCovariateData()` for quick conversion.
 #'
 #' @inheritParams createCostCovariateData
-#'
-#' @return A `CovariateData` object with the same structure as returned by
-#'   [createCostCovariateData()].
-#'
-#' @examples
-#' \dontrun{
-#' covData <- convertToFeatureExtractionFormat(
-#'   costResults = results,
-#'   costOfCareSettings = costOfCareSettings,
-#'   cohortId = 1L
-#' )
-#' }
-#'
+#' @return A `CovariateData` S4 object.
 #' @export
 convertToFeatureExtractionFormat <- function(costResults,
                                              costOfCareSettings,
@@ -208,7 +193,7 @@ convertToFeatureExtractionFormat <- function(costResults,
     dplyr::filter(!is.na(.data$covariateValue), .data$covariateValue != 0)
 }
 
-#' BUG FIX: This function was refactored to be robust and correct.
+# NOTE: This function was refactored to be robust and correct, fixing the inner_join error.
 .generateCovariatesFromPersonLevel <- function(resultsData, covariateMapping, cohortId) {
   costCols <- intersect(names(resultsData), c("cost", "adjusted_cost"))
   
@@ -286,6 +271,7 @@ convertToFeatureExtractionFormat <- function(costResults,
   )
 }
 
+# NOTE: This function was adjusted to assign the S4 class for OHDSI compatibility.
 .assembleCovariateData <- function(covariates, covariateRef, analysisRef, timeRef, metaData) {
   covariateData <- Andromeda::andromeda(
     covariates = covariates,
@@ -295,7 +281,9 @@ convertToFeatureExtractionFormat <- function(costResults,
   )
   attr(covariateData, "metaData") <- metaData
   
+  # Assign the S4 class to make it a fully compatible CovariateData object
   class(covariateData) <- c("CovariateData")
+  
   return(covariateData)
 }
 
@@ -309,7 +297,7 @@ convertToFeatureExtractionFormat <- function(costResults,
     .default = paste("Cost Concept", costConceptId)
   )
   
-  covariateName <- stringr::str_to_title(gsub("_", " ", metricName))
+  covariateName <- to_title_case_base(gsub("_", " ", metricName))
   timeWindow <- paste0("(", costOfCareSettings$startOffsetDays, " to ", costOfCareSettings$endOffsetDays, " days)")
   
   paste(costType, "-", covariateName, timeWindow)

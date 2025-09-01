@@ -4,7 +4,7 @@
 #' Reads the SQL template, renders it with parameters, translates to the target
 #' dialect, and executes the statements.
 #'
-#' @param connection A DatabaseConnector connection object.
+#' @param connection A DatabaseConnector or DBI connection object.
 #' @param params Named list of parameters for SQL rendering (can be camelCase or snake_case).
 #' @param targetDialect The SQL dialect to translate to.
 #' @param tempEmulationSchema Schema for temp table emulation (if needed).

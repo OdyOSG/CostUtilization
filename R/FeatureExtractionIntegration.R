@@ -56,7 +56,7 @@ loadCovariateData <- function(file) {
 setMethod("show", "CovariateData", function(object) {
   cli::cat_line(pillar::style_subtle("# CostUtilization CovariateData object"))
   cli::cat_line("")
-
+  
   metaData <- attr(object, "metaData")
   if (!is.null(metaData)) {
     cli::cat_bullet("Analysis ID: ", crayon::cyan(metaData$analysisId))
@@ -66,7 +66,7 @@ setMethod("show", "CovariateData", function(object) {
   }
   cli::cat_line("")
   cli::cat_line(pillar::style_subtle("Inherits from Andromeda:"))
-
+  
   # Temporarily remove CovariateData class to call Andromeda's show method
   class(object) <- "Andromeda"
   show(object)
@@ -80,17 +80,17 @@ setMethod("summary", "CovariateData", function(object) {
   if (!isCovariateData(object) || !Andromeda::isValidAndromeda(object)) {
     stop("Object is not a valid or open CovariateData object.")
   }
-
+  
   covariateValueCount <- 0
   if ("covariates" %in% names(object)) {
     covariateValueCount <- object$covariates %>% dplyr::count() %>% dplyr::pull()
   }
-
+  
   covariateCount <- 0
   if ("covariateRef" %in% names(object)) {
     covariateCount <- object$covariateRef %>% dplyr::count() %>% dplyr::pull()
   }
-
+  
   result <- list(
     metaData = attr(object, "metaData"),
     covariateCount = covariateCount,
@@ -103,13 +103,13 @@ setMethod("summary", "CovariateData", function(object) {
 #' @export
 print.summary.CovariateData <- function(x, ...) {
   cli::cli_h1("CovariateData Summary")
-
+  
   cli::cli_h2("Analysis Information")
   meta <- x$metaData
   cli::cat_bullet("Analysis ID: ", crayon::cyan(meta$analysisId))
   cli::cat_bullet("Cohort ID:   ", crayon::cyan(meta$cohortId))
   cli::cat_bullet("Format:      ", crayon::cyan(meta$resultFormat))
-
+  
   cli::cli_h2("Data Summary")
   cli::cat_bullet("Unique Covariates: ", crayon::green(format(x$covariateCount, big.mark = ",")))
   cli::cat_bullet("Covariate Values:  ", crayon::green(format(x$covariateValueCount, big.mark = ",")))
@@ -127,8 +127,7 @@ isCovariateData <- function(x) {
 #' Check if CovariateData is aggregated
 #' @description
 #' Checks if a `CovariateData` object contains aggregated summary statistics
-#' rather than person-level data. This implementation uses the `resultFormat`
-#' attribute in the metadata, which is more robust than checking for column names.
+#' rather than person-level data.
 #'
 #' @param x The `CovariateData` object to check.
 #' @return A logical value.
@@ -136,7 +135,7 @@ isCovariateData <- function(x) {
 isAggregatedCovariateData <- function(x) {
   if (!isCovariateData(x)) stop("Object must be of class 'CovariateData'")
   if (!Andromeda::isValidAndromeda(x)) stop("CovariateData object is closed")
-
+  
   metaData <- attr(x, "metaData")
   return(isTRUE(metaData$resultFormat == "aggregated"))
 }
@@ -152,6 +151,6 @@ isAggregatedCovariateData <- function(x) {
 isTemporalCovariateData <- function(x) {
   if (!isCovariateData(x)) stop("Object must be of class 'CovariateData'")
   if (!Andromeda::isValidAndromeda(x)) stop("CovariateData object is closed")
-
+  
   return("timeId" %in% names(x$covariates))
 }

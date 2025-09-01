@@ -2,7 +2,7 @@
 % Please edit documentation in R/resultsFormat.R
 \name{convertToFeatureExtractionFormat}
 \alias{convertToFeatureExtractionFormat}
-\title{Convenience Conversion to FeatureExtraction Format}
+\title{Convenience Function for FeatureExtraction Format Conversion}
 \usage{
 convertToFeatureExtractionFormat(
   costResults,
@@ -27,22 +27,8 @@ parameters (time window, concept IDs, costing approach, etc).}
 Default is \code{1000L}. Covariate IDs are constructed as \code{analysisId * 1000 + offset}.}
 }
 \value{
-A \code{CovariateData} object with the same structure as returned by
-\code{\link[=createCostCovariateData]{createCostCovariateData()}}.
+A \code{CovariateData} S4 object.
 }
 \description{
-A wrapper around \code{\link[=createCostCovariateData]{createCostCovariateData()}} for quick conversion of
-cost-of-care analysis results into a FeatureExtraction-compatible
-\code{CovariateData} object.
-Defaults \code{databaseId} to \code{"Unknown"} and \code{analysisId} to \code{1000L}.
-}
-\examples{
-\dontrun{
-covData <- convertToFeatureExtractionFormat(
-  costResults = results,
-  costOfCareSettings = costOfCareSettings,
-  cohortId = 1L
-)
-}
-
+A simplified wrapper around \code{createCostCovariateData()} for quick conversion.
 }

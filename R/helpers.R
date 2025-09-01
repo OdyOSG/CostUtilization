@@ -82,7 +82,7 @@ logMessage <- function(message, verbose = TRUE, level = "INFO") {
 #' @description
 #' Executes a vector of SQL statements with progress reporting.
 #'
-#' @param connection DatabaseConnector connection
+#' @param connection DatabaseConnector or DBI connection
 #' @param sqlStatements Character vector of SQL statements
 #' @param verbose Whether to show progress
 #'
