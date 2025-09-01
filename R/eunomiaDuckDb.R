@@ -74,12 +74,11 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
     
     assigned_plans <- sample(plan_options, n_segments, replace = TRUE)
     
-    df <- data.frame(
+    df <- dplyr::tibble(
       person_id = pid,
       plan_start_date = starts,
       plan_end_date = ends,
-      plan_name = assigned_plans,
-      stringsAsFactors = FALSE
+      plan_name = assigned_plans
     )
     df$plan_start_date <- as.Date(df$plan_start_date)
     df$plan_end_date   <- as.Date(df$plan_end_date)

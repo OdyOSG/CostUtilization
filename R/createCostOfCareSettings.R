@@ -68,45 +68,45 @@ createCostOfCareSettings <- function(
     cpiFilePath = NULL) {
   # --- Input Validation with checkmate ---
   errorMessages <- checkmate::makeAssertCollection()
-
+  
   # anchor column
   checkmate::assertChoice(
     anchorCol,
     choices = c("cohort_start_date", "cohort_end_date"),
     add = errorMessages
   )
-
+  
   # offsets
   checkmate::assertIntegerish(startOffsetDays, len = 1, any.missing = FALSE, add = errorMessages)
   checkmate::assertIntegerish(endOffsetDays, len = 1, any.missing = FALSE, add = errorMessages)
-
+  
   # costs/currency
   checkmate::assertIntegerish(costConceptId, len = 1, lower = 1, any.missing = FALSE, add = errorMessages)
   checkmate::assertIntegerish(currencyConceptId, len = 1, lower = 1, any.missing = FALSE, add = errorMessages)
-
+  
   # optional additional cost concepts
   if (!is.null(additionalCostConceptIds)) {
     checkmate::assertIntegerish(additionalCostConceptIds, lower = 1, any.missing = FALSE, unique = TRUE, add = errorMessages)
   }
-
+  
   # flags
   checkmate::assertFlag(microCosting, add = errorMessages)
   checkmate::assertFlag(cpiAdjustment, add = errorMessages)
-
+  
   # visit restrictions
   if (!is.null(restrictVisitConceptIds)) {
     checkmate::assertIntegerish(restrictVisitConceptIds, lower = 1, min.len = 1, unique = TRUE, any.missing = FALSE, add = errorMessages)
   }
-
+  
   # event filters (structural validation after assertions)
   if (!is.null(eventFilters)) {
     # placeholder; detailed structural validation below
     checkmate::assertList(eventFilters, add = errorMessages)
   }
-
+  
   # collect assertion failures (so far)
   checkmate::reportAssertions(errorMessages)
-
+  
   # semantic checks
   if (endOffsetDays <= startOffsetDays) {
     cli::cli_abort(c(
@@ -115,7 +115,7 @@ createCostOfCareSettings <- function(
       "i" = "The analysis window must have a positive duration."
     ))
   }
-
+  
   # event filters detailed validation
   if (!is.null(eventFilters)) {
     validateEventFilters(eventFilters)
@@ -124,7 +124,7 @@ createCostOfCareSettings <- function(
   } else {
     nFilters <- 0L
   }
-
+  
   # micro-costing constraints
   if (microCosting) {
     if (is.null(primaryEventFilterName) || !is.character(primaryEventFilterName) || length(primaryEventFilterName) != 1L || nchar(primaryEventFilterName) == 0L) {
@@ -149,7 +149,7 @@ createCostOfCareSettings <- function(
       ))
     }
   }
-
+  
   # CPI constraints
   if (isTRUE(cpiAdjustment)) {
     if (is.null(cpiFilePath) || !is.character(cpiFilePath) || length(cpiFilePath) != 1L || nchar(cpiFilePath) == 0L) {
@@ -166,12 +166,12 @@ createCostOfCareSettings <- function(
       ))
     }
   }
-
+  
   # helpful notices
   if (!is.null(restrictVisitConceptIds)) {
     cli::cli_inform(c("i" = "Analysis will be restricted to {length(restrictVisitConceptIds)} visit concept{?s}."))
   }
-
+  
   # --- Create Settings Object ---
   settings <- structure(
     list(
@@ -193,7 +193,7 @@ createCostOfCareSettings <- function(
     ),
     class = "CostOfCareSettings"
   )
-
+  
   return(settings)
 }
 
@@ -212,11 +212,11 @@ validateEventFilters <- function(eventFilters) {
       "i" = "Received {.cls {class(eventFilters)}}"
     ))
   }
-
+  
   # Check each filter
   purrr::walk(seq_along(eventFilters), ~ {
     filter <- eventFilters[[.x]]
-
+    
     if (!is.list(filter)) {
       cli::cli_abort(c(
         "Invalid event filter structure",
@@ -224,11 +224,11 @@ validateEventFilters <- function(eventFilters) {
         "i" = "Each filter must be a list with 'name', 'domain', and 'conceptIds'"
       ))
     }
-
+    
     # Check required fields
     requiredFields <- c("name", "domain", "conceptIds")
     missingFields <- setdiff(requiredFields, names(filter))
-
+    
     if (length(missingFields) > 0) {
       cli::cli_abort(c(
         "Missing required fields in event filter {.x}",
@@ -236,7 +236,7 @@ validateEventFilters <- function(eventFilters) {
         "i" = "Each filter must have: {.field {requiredFields}}"
       ))
     }
-
+    
     # Validate name
     if (!is.character(filter$name) || length(filter$name) != 1 || nchar(filter$name) == 0) {
       cli::cli_abort(c(
@@ -245,13 +245,13 @@ validateEventFilters <- function(eventFilters) {
         "i" = "Received: {.val {filter$name}}"
       ))
     }
-
+    
     # Validate domain
     validDomains <- c(
       "Drug", "Condition", "Procedure", "Observation",
       "Measurement", "Device", "Visit", "All"
     )
-
+    
     if (!filter$domain %in% validDomains) {
       cli::cli_abort(c(
         "Invalid domain in event filter {.x}",
@@ -259,7 +259,7 @@ validateEventFilters <- function(eventFilters) {
         "i" = "Valid domains: {.val {validDomains}}"
       ))
     }
-
+    
     # Validate concept IDs
     checkmate::assertIntegerish(
       filter$conceptIds,
@@ -269,11 +269,11 @@ validateEventFilters <- function(eventFilters) {
       .var.name = glue::glue("conceptIds in filter '{filter$name}'")
     )
   })
-
+  
   # Check for duplicate names
   filterNames <- purrr::map_chr(eventFilters, "name")
   duplicateNames <- filterNames[duplicated(filterNames)]
-
+  
   if (length(duplicateNames) > 0) {
     cli::cli_abort(c(
       "Duplicate filter names detected",
@@ -281,6 +281,6 @@ validateEventFilters <- function(eventFilters) {
       "i" = "Each event filter must have a unique name"
     ))
   }
-
+  
   invisible(TRUE)
 }

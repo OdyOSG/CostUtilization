@@ -127,7 +127,8 @@ isCovariateData <- function(x) {
 #' Check if CovariateData is aggregated
 #' @description
 #' Checks if a `CovariateData` object contains aggregated summary statistics
-#' rather than person-level data.
+#' rather than person-level data. This implementation uses the `resultFormat`
+#' attribute in the metadata, which is more robust than checking for column names.
 #'
 #' @param x The `CovariateData` object to check.
 #' @return A logical value.

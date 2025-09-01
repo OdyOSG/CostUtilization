@@ -50,6 +50,8 @@ createCostCovariateData <- function(costResults,
                                     cohortId,
                                     databaseId,
                                     analysisId = 1000L) {
+  rlang::is_installed("pillar")
+  rlang::is_installed("crayon")
   # Input validation
   errorMessages <- checkmate::makeAssertCollection()
   checkmate::assertClass(costResults, "Andromeda", add = errorMessages)
@@ -134,18 +136,88 @@ convertToFeatureExtractionFormat <- function(costResults,
   .assembleCovariateData(covariates, covariateRef, analysisRef, timeRef, metaData)
 }
 
-.convertPersonLevelResults <- function(costResults, costOfCareSettings, cohortId, databaseId, analysisId) {
+#' Convert Person-Level Results to CovariateData
+#'
+#' @description
+#' Internal helper function that transforms a person-level results tibble into a
+#' standardized `CovariateData` object. It uses tidy evaluation to flexibly
+#' handle user-specified cost columns.
+#'
+#' @param costResults An `Andromeda` object containing the `results` table.
+#' @param costCols A list of quosures representing the unquoted column names
+#'   to be converted into covariates.
+#' @param costOfCareSettings The `CostOfCareSettings` object for the analysis.
+#' @param cohortId The cohort ID for the analysis.
+#' @param databaseId The database identifier.
+#' @param analysisId The base analysis ID for covariates.
+#'
+#' @return A `CovariateData` object.
+#' @noRd
+.convertPersonLevelResults <- function(costResults,
+                                       costCols,
+                                       costOfCareSettings,
+                                       cohortId,
+                                       databaseId,
+                                       analysisId) {
+  # Step 1: Extract data and validate the specified columns
   resultsData <- dplyr::collect(costResults$results)
+  costColNames <- purrr::map_chr(costCols, rlang::as_name)
+  validCostColNames <- intersect(costColNames, names(resultsData))
   
-  covariateMapping <- .createPersonLevelCovariateMapping(resultsData, analysisId, costOfCareSettings)
-  covariates <- .generateCovariatesFromPersonLevel(resultsData, covariateMapping, cohortId)
+  # Step 2: Handle the edge case where no valid columns are found
+  if (rlang::is_empty(validCostColNames)) {
+    cli::cli_warn(c(
+      "No valid cost columns found to create covariates.",
+      "i" = "Specified columns: {.val {costColNames}}",
+      "i" = "Available columns: {.val {names(resultsData)}}",
+      "i" = "Returning an empty CovariateData object."
+    ))
+    
+    # Construct an empty but valid CovariateData object
+    emptyCovariates <- dplyr::tibble(rowId = integer(), covariateId = numeric(), covariateValue = numeric())
+    emptyCovariateRef <- dplyr::tibble(covariateId = numeric(), covariateName = character(), analysisId = integer(), conceptId = integer())
+    
+    return(
+      .assembleCovariateData(
+        covariates = emptyCovariates,
+        covariateRef = emptyCovariateRef,
+        analysisRef = .createAnalysisRef(analysisId, costOfCareSettings),
+        timeRef = .createTimeRef(costOfCareSettings),
+        metaData = .createMetaData(costOfCareSettings, cohortId, databaseId, analysisId, "person_level")
+      )
+    )
+  }
+  
+  # Step 3: Generate mapping and reference tables based on valid columns
+  covariateMapping <- .createPersonLevelCovariateMapping(
+    costColNames = validCostColNames,
+    analysisId = analysisId,
+    costOfCareSettings = costOfCareSettings
+  )
+  
   covariateRef <- .createCovariateRef(covariateMapping, costOfCareSettings)
   analysisRef <- .createAnalysisRef(analysisId, costOfCareSettings)
   timeRef <- .createTimeRef(costOfCareSettings)
   metaData <- .createMetaData(costOfCareSettings, cohortId, databaseId, analysisId, "person_level")
   
-  .assembleCovariateData(covariates, covariateRef, analysisRef, timeRef, metaData)
+  # Step 4: Generate the main 'covariates' table using the validated columns
+  covariates <- .generateCovariatesFromPersonLevel(
+    resultsData = resultsData,
+    covariateMapping = covariateMapping,
+    costColNames = validCostColNames # Pass the validated names
+  )
+  
+  # Step 5: Assemble all components into the final CovariateData object
+  .assembleCovariateData(
+    covariates = covariates,
+    covariateRef = covariateRef,
+    analysisRef = analysisRef,
+    timeRef = timeRef,
+    metaData = metaData
+  )
 }
+
+
 
 .createCovariateMapping <- function(resultsData, analysisId, costOfCareSettings) {
   resultsData |>
@@ -167,17 +239,34 @@ convertToFeatureExtractionFormat <- function(costResults,
     )
 }
 
-.createPersonLevelCovariateMapping <- function(resultsData, analysisId, costOfCareSettings) {
-  costCols <- intersect(names(resultsData), c("cost", "adjusted_cost"))
-  
-  purrr::map_dfr(seq_along(costCols), ~ {
-    costCol <- costCols[.x]
+#' Create Covariate Mapping for Person-Level Metrics
+#'
+#' @description
+#' Internal helper that generates a mapping tibble for person-level cost metrics.
+#' It creates unique covariate IDs and formatted names for each specified cost column.
+#'
+#' @param costColNames A character vector of valid column names from the results
+#'   data (e.g., `c("cost", "adjusted_cost")`).
+#' @param analysisId The base analysis ID for generating covariate IDs.
+#' @param costOfCareSettings The `CostOfCareSettings` object for the analysis.
+#'
+#' @return A tibble with columns: `metric_name`, `metric_offset`, `covariate_id`,
+#'   `covariate_name`, and `analysis_id`.
+#' @noRd
+.createPersonLevelCovariateMapping <- function(costColNames,
+                                               analysisId,
+                                               costOfCareSettings) {
+ 
+  purrr::imap_dfr(costColNames, ~ {
+    metricName <- .x
+    metricOffset <- .y
+    
     dplyr::tibble(
-      metric_name = costCol,
-      metric_offset = .x,
-      covariate_id = analysisId * 1000L + 300L + .x,
-      covariate_name = .formatCovariateName(costCol, costOfCareSettings),
-      analysis_id = analysisId
+      metric_name = metricName,
+      metric_offset = as.integer(metricOffset),
+      covariate_id = as.numeric(analysisId * 1000L + 300L + metricOffset),
+      covariate_name = .formatCovariateName(metricName, costOfCareSettings),
+      analysis_id = as.integer(analysisId)
     )
   })
 }
@@ -193,20 +282,25 @@ convertToFeatureExtractionFormat <- function(costResults,
     dplyr::filter(!is.na(.data$covariateValue), .data$covariateValue != 0)
 }
 
-# NOTE: This function was refactored to be robust and correct, fixing the inner_join error.
-.generateCovariatesFromPersonLevel <- function(resultsData, covariateMapping, cohortId) {
-  costCols <- intersect(names(resultsData), c("cost", "adjusted_cost"))
-  
-  # Safety check for robustness
-  if (length(costCols) == 0) {
-    cli::cli_warn("No 'cost' or 'adjusted_cost' columns found in person-level results.")
-    return(dplyr::tibble(rowId = integer(), covariateId = numeric(), covariateValue = numeric()))
-  }
-  
-  # The pivot_longer call robustly creates the 'metric_name' column for the join.
+#' Generate Person-Level Covariates from a Pivoted Data Frame
+#'
+#' @description
+#' Internal helper that takes person-level results, pivots them to a long format
+#' based on the specified cost columns, and joins with the covariate mapping to
+#' produce the final `covariates` table.
+#'
+#' @param resultsData A tibble of person-level results.
+#' @param covariateMapping A mapping tibble from `.createPersonLevelCovariateMapping`.
+#' @param costColNames A character vector of validated column names to pivot.
+#'
+#' @return A tibble in the format of the `covariates` table.
+#' @noRd
+.generateCovariatesFromPersonLevel <- function(resultsData,
+                                               covariateMapping,
+                                               costColNames) {
   resultsData |>
     tidyr::pivot_longer(
-      cols = dplyr::all_of(costCols),
+      cols = dplyr::any_of(costColNames), # Use any_of for safety
       names_to = "metric_name",
       values_to = "covariateValue"
     ) |>
@@ -270,10 +364,9 @@ convertToFeatureExtractionFormat <- function(costResults,
     creationTime = Sys.time()
   )
 }
-
-# NOTE: This function was adjusted to assign the S4 class for OHDSI compatibility.
 .assembleCovariateData <- function(covariates, covariateRef, analysisRef, timeRef, metaData) {
-  covariateData <- Andromeda::andromeda(
+ 
+   covariateData <- Andromeda::andromeda(
     covariates = covariates,
     covariateRef = covariateRef,
     analysisRef = analysisRef,
@@ -282,7 +375,7 @@ convertToFeatureExtractionFormat <- function(costResults,
   attr(covariateData, "metaData") <- metaData
   
   # Assign the S4 class to make it a fully compatible CovariateData object
-  class(covariateData) <- c("CovariateData")
+  class(covariateData) <- "CovariateData"
   
   return(covariateData)
 }
@@ -306,10 +399,8 @@ convertToFeatureExtractionFormat <- function(costResults,
 .createAnalysisName <- function(costOfCareSettings) {
   baseName <- "Cost Analysis"
   modifiers <- c()
-  if (isTRUE(costOfCareSettings$cpiAdjustment)) modifiers <- c(modifiers, "CPI-Adjusted")
-  if (isTRUE(costOfCareSettings$microCosting)) modifiers <- c(modifiers, "Line-Level")
-  
+  if (costOfCareSettings$cpiAdjustment) modifiers <- c(modifiers, "CPI-Adjusted")
+  if (costOfCareSettings$microCosting) modifiers <- c(modifiers, "Line-Level")
   modifierStr <- if (length(modifiers) > 0) paste0(" (", paste(modifiers, collapse = ", "), ")") else ""
-  
   paste0(baseName, modifierStr)
 }

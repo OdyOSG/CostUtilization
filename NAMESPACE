@@ -2,6 +2,7 @@
 
 S3method(print,summary.CovariateData)
 export(calculateCostOfCare)
+export(calculateLos)
 export(convertToFeatureExtractionFormat)
 export(createCostCovariateData)
 export(createCostOfCareSettings)

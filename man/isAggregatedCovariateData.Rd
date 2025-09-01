@@ -14,5 +14,6 @@ A logical value.
 }
 \description{
 Checks if a \code{CovariateData} object contains aggregated summary statistics
-rather than person-level data.
+rather than person-level data. This implementation uses the \code{resultFormat}
+attribute in the metadata, which is more robust than checking for column names.
 }

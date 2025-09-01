@@ -1,7 +1,7 @@
 cleanupTempTables <- function(connection, schema = NULL, ...) {
   # Basic validation
   if (!DBI::dbIsValid(connection)) {
-    abort("`connection` is not a valid DBI connection.")
+    rlang::abort("`connection` is not a valid DBI connection.")
   }
   tables <- rlang::list2(...)
   if (length(tables) == 0L) return(invisible(NULL))
@@ -224,4 +224,36 @@ to_title_case_base <- function(x) {
                   substring(words, 2))
   # rejoin
   paste(words, collapse = " ")
+}
+
+
+
+
+
+# R/helpers.R (add this function)
+
+#' Find the 1-based index of the primary event filter
+#'
+#' @description
+#' Internal helper to safely find the index of the primary event filter by its name
+#' within the list of event filters.
+#'
+#' @param settings A `CostOfCareSettings` object.
+#'
+#' @return An integer representing the 1-based index of the matching filter,
+#'   or `0L` if not found or if inputs are invalid.
+#' @noRd
+.findPrimaryFilterId <- function(settings) {
+  primaryFilterName <- settings$primaryEventFilterName
+  eventFilters <- settings$eventFilters
+  
+  # Guard clause: If there's no name to search for or no list to search in, return 0.
+  if (is.null(primaryFilterName) || rlang::is_empty(eventFilters)) {
+    return(0L)
+  }
+
+  purrr::detect_index(
+    eventFilters, ~ identical(.x$name, primaryFilterName),
+    .default = 0L
+  )
 }

@@ -60,7 +60,7 @@ calculateCostOfCare <- function(
   startTime <- Sys.time()
   
   
-  sessionPrefix <- purrr::chuck(SqlRender::translate('#', 'oracle'), 1)
+  sessionPrefix <- SqlRender::translate('#', 'oracle')[[1]]
   resultsTableName <- paste0(sessionPrefix, "_results")
   diagTableName <- paste0(sessionPrefix, "_diag")
   restrictVisitTableName <- NULL
@@ -68,8 +68,7 @@ calculateCostOfCare <- function(
   cpiAdjTableName <- NULL
   
   # Always attempt cleanup on exit
-  on.exit(
-    {
+  on.exit({
       logMessage("Cleaning up temporary tables...", verbose, "INFO")
       cleanupTempTables(
         connection          = connection,
@@ -80,9 +79,7 @@ calculateCostOfCare <- function(
         eventConceptsTableName,
         cpiAdjTableName
       )
-    },
-    add = TRUE
-  )
+    },  add = TRUE)
   
   # --- CPI Adjustment: prepare adjustment factors table (if enabled) ---
   if (costOfCareSettings$cpiAdjustment) {
@@ -135,8 +132,7 @@ calculateCostOfCare <- function(
   if (costOfCareSettings$hasEventFilters) {
     eventConceptsTableName <- paste0(sessionPrefix, "_evt_concepts")
     # Build a long table: one row per concept id per filter
-    eventConcepts <- 
-      purrr::map_dfr(
+    eventConcepts <- purrr::map_dfr(
         seq_along(costOfCareSettings$eventFilters), ~ dplyr::tibble(
           filter_id    = .x,
           filter_name  = costOfCareSettings$eventFilters[[.x]]$name,
@@ -156,7 +152,6 @@ calculateCostOfCare <- function(
     logMessage(sprintf("Uploaded %d event concept rows to #%s", nrow(eventConcepts), eventConceptsTableName), verbose, "DEBUG")
   }
   
-  # --- Assemble SQL parameters from settings (refactored; camelCase only) ---
   params <- list(
     # core
     cdmDatabaseSchema = cdmDatabaseSchema,
@@ -172,7 +167,7 @@ calculateCostOfCare <- function(
     cpiAdjTable = cpiAdjTableName,
     
     # window & anchor
-    anchorOnEnd = isTRUE(identical(costOfCareSettings$anchorCol, "cohort_end_date")),
+    anchorOnEnd = identical(costOfCareSettings$anchorCol, "cohort_end_date"),
     timeA = as.integer(costOfCareSettings$startOffsetDays %||% 0L),
     timeB = as.integer(costOfCareSettings$endOffsetDays %||% 365L),
     
@@ -189,17 +184,7 @@ calculateCostOfCare <- function(
     
     aggregated = aggregated,
     # primary filter id (index in eventFilters) if named
-    primaryFilterId = {
-      pefn <- costOfCareSettings$primaryEventFilterName %||% NULL
-      efs <- costOfCareSettings$eventFilters %||% NULL
-      if (!is.null(pefn) && !is.null(efs) && length(efs) > 0) {
-        names <- vapply(efs, function(f) f$name, character(1))
-        idx <- which(names == pefn)
-        if (length(idx) == 1L) as.integer(idx) else 0L
-      } else {
-        0L
-      }
-    }
+    primaryFilterId = .findPrimaryFilterId(costOfCareSettings)
   )
 
   
@@ -208,8 +193,6 @@ calculateCostOfCare <- function(
   
   .res <- .fetchResults(params, connection, tempEmulationSchema, verbose)
   
-
-
   logMessage(
     sprintf("Analysis complete in %0.1fs.", as.numeric(difftime(Sys.time(), startTime, units = "secs"))),
     verbose = verbose,

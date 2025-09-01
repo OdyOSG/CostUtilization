@@ -1,0 +1,238 @@
+---
+title: "Getting Started with CostUtilization"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting Started with CostUtilization}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5
+)
+```
+
+## Introduction
+
+The `CostUtilization` package provides a robust framework for analyzing healthcare costs and resource utilization within the OHDSI ecosystem. It is specifically designed to work with the OMOP Common Data Model (CDM) v5.5, which utilizes a normalized, long-format `COST` table.
+
+This vignette will guide you through a complete analysis workflow:
+
+1.  **Setup**: Creating a local, temporary database with synthetic data.
+2.  **Core Analysis**: Configuring and running a standard cost-of-care analysis.
+3.  **Advanced Features**: Using visit restrictions, event filters, and micro-costing.
+4.  **OHDSI Integration**: Converting results into the standard `CovariateData` format.
+5.  **Utility Functions**: Calculating Length of Stay (LOS).
+
+## 1. Setup: Creating a Test Environment
+
+To ensure this vignette is fully reproducible, we will first create a local DuckDB database using the synthetic Eunomia dataset. Our package includes helper functions to streamline this process.
+
+First, let's load the necessary libraries.
+```{r setup}
+library(CostUtilization)
+library(dplyr)
+library(DBI)
+
+# Create a temporary directory for our database files
+temp_dir <- tempfile("eunomia_")
+dir.create(temp_dir)
+```
+
+### Create the Database and Cohort
+
+The `getEunomiaDuckDb()` function downloads the dataset (if not already cached) and loads it into a DuckDB file. Then, `transformCostToCdmV5dot5()` prepares the database by creating the necessary `VISIT_DETAIL` records and pivoting the `COST` table to the modern long format.
+
+```{r create-db}
+# This function downloads and sets up the Eunomia CDM in a local DuckDB
+databaseFile <- getEunomiaDuckDb(pathToData = temp_dir)
+
+# Connect to the newly created database
+con <- DBI::dbConnect(duckdb::duckdb(databaseFile))
+
+# This helper function prepares the Eunomia data to simulate a modern CDM v5.5
+con <- transformCostToCdmV5dot5(con)
+
+# Create a simple cohort of all patients with at least one visit
+DBI::dbExecute(con, "
+  CREATE TABLE main.cohort AS
+  SELECT DISTINCT
+    1 AS cohort_definition_id,
+    person_id AS subject_id,
+    MIN(visit_start_date) AS cohort_start_date,
+    MAX(visit_end_date) AS cohort_end_date
+  FROM main.visit_occurrence
+  GROUP BY person_id
+  LIMIT 200
+")
+
+# Define schema variables for our analysis functions
+cdmDatabaseSchema <- "main"
+cohortDatabaseSchema <- "main"
+```
+
+## 2. Core Analysis Workflow
+
+The main workflow consists of creating a settings object, running the analysis, and inspecting the results.
+
+### Step 1: Create Analysis Settings
+
+All analysis parameters are defined in a `CostOfCareSettings` object. This ensures that analyses are reproducible and parameters are validated. For our first analysis, we will calculate costs in a 365-day window following the cohort start date.
+
+```{r create-settings}
+settings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date",
+  startOffsetDays = 0L,
+  endOffsetDays = 365L
+)
+```
+
+### Step 2: Run the Analysis & Inspect Results
+
+With our settings defined, we can run the analysis. The function returns a list containing two tibbles: `results` and `diagnostics`.
+
+```{r run-analysis}
+analysisResult <- calculateCostOfCare(
+  connection = con,
+  cdmDatabaseSchema = cdmDatabaseSchema,
+  cohortDatabaseSchema = cohortDatabaseSchema,
+  cohortTable = "cohort",
+  cohortId = 1,
+  costOfCareSettings = settings,
+  verbose = TRUE 
+)
+
+# The 'results' table contains the calculated metrics
+cli::cli_h3("Aggregated Results")
+glimpse(analysisResult$results)
+
+# The 'diagnostics' table shows patient attrition at each step
+cli::cli_h3("Diagnostics")
+print(analysisResult$diagnostics)
+```
+
+## 3. Advanced Features
+
+### Analysis with Visit Restrictions
+
+To restrict the analysis to specific visit types, modify the settings object.
+```{r visit-restriction}
+visitSettings <- createCostOfCareSettings(
+  restrictVisitConceptIds = c(9201, 9203) # Inpatient and Emergency Room Visits
+)
+
+restrictedResult <- calculateCostOfCare(
+  connection = con,
+  cdmDatabaseSchema = cdmDatabaseSchema,
+  cohortDatabaseSchema = cohortDatabaseSchema,
+  cohortTable = "cohort",
+  cohortId = 1,
+  costOfCareSettings = visitSettings,
+  verbose = T
+)
+
+cli::cli_h3("Restricted Visit Analysis Results")
+print(restrictedResult$results)
+```
+
+### Event-Based Cost Analysis
+
+Analyze costs associated with specific clinical events by defining `eventFilters`.
+```{r event-filters}
+diabetesFilters <- list(
+  list(name = "Diabetes Dx", domain = "Condition", conceptIds = c(201820, 443238)),
+  list(name = "Diabetes Rx", domain = "Drug", conceptIds = c(1503297, 1502826))
+)
+
+eventSettings <- createCostOfCareSettings(
+  startOffsetDays = -365, # 1 year before
+  endOffsetDays = 365,    # to 1 year after
+  eventFilters = diabetesFilters
+)
+
+filteredResult <- calculateCostOfCare(
+  connection = con,
+  cdmDatabaseSchema = cdmDatabaseSchema,
+  cohortDatabaseSchema = cohortDatabaseSchema,
+  cohortTable = "cohort",
+  cohortId = 1,
+  costOfCareSettings = eventSettings,
+  verbose = FALSE
+)
+
+cli::cli_h3("Diabetes-Related Cost Analysis Results")
+print(filteredResult$results)
+```
+
+### Micro-Costing Analysis
+
+For detailed analysis at the `visit_detail` level, enable `microCosting`.
+```{r micro-costing}
+microSettings <- createCostOfCareSettings(
+  endOffsetDays = 90,
+  microCosting = TRUE,
+  eventFilters = diabetesFilters,
+  primaryEventFilterName = "Diabetes Rx"
+)
+
+microResult <- calculateCostOfCare(
+  connection = con,
+  cdmDatabaseSchema = cdmDatabaseSchema,
+  cohortDatabaseSchema = cohortDatabaseSchema,
+  cohortTable = "cohort",
+  cohortId = 1,
+  costOfCareSettings = microSettings,
+  verbose = FALSE
+)
+
+cli::cli_h3("Micro-Costing Analysis Results")
+print(microResult$results)
+```
+
+## 4. OHDSI Integration: Creating CovariateData
+
+A key feature is formatting results into the standard `CovariateData` object used by packages like `FeatureExtraction` and `PatientLevelPrediction`.
+
+```{r create-covariates}
+covariateData <- createCostCovariateData(
+  costResults = analysisResult,
+  costOfCareSettings = settings,
+  cohortId = 1,
+  databaseId = "Eunomia_DuckDB"
+)
+
+# The output is a special S4 object that inherits from Andromeda
+print(covariateData)
+
+# We can use the summary method to inspect its contents
+summary(covariateData)
+```
+
+## 5. Utility Functions: Calculating Length of Stay
+
+The package also includes a utility for calculating Length of Stay (LOS).
+```{r calculate-los}
+losResults <- calculateLos(
+  connection = con,
+  cdmDatabaseSchema = cdmDatabaseSchema,
+  cohortDatabaseSchema = cohortDatabaseSchema,
+  cohortTable = "cohort",
+  cohortId = 1,
+  startOffsetDays = 0,
+  endOffsetDays = 365
+)
+
+head(losResults)
+```
+
+## Cleanup
+
+Finally, we disconnect from the database and remove the temporary files.
+```{r cleanup}
+DBI::dbDisconnect(con, shutdown = TRUE)
+unlink(temp_dir, recursive = TRUE)
+```
