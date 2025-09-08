@@ -40,7 +40,7 @@ if \code{connection} is not supplied (provide exactly one of the two).}
 \item{verbose}{Logical; print progress messages.}
 }
 \value{
-A list with two tibbles: \code{results} and \code{diagnostics}.
+results andromeda object
 }
 \description{
 Runs the cost-of-care analysis for a specified cohort using a validated

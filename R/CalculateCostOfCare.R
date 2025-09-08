@@ -17,7 +17,7 @@
 #' @param tempEmulationSchema Optional schema for temp table emulation (Oracle/Redshift/...).
 #' @param verbose Logical; print progress messages.
 #'
-#' @return A list with two tibbles: `results` and `diagnostics`.
+#' @return results andromeda object 
 #' @export
 calculateCostOfCare <- function(
     connection = NULL,
