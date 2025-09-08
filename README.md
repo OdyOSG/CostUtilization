@@ -89,7 +89,6 @@ analysisResults <- calculateCostOfCare(
 # 6. Review the results
 # The output is a list containing results and diagnostics.
 print(analysisResults$results)
-print(analysisResults$diagnostics)
 
 # 7. Clean up
 DBI::dbDisconnect(con, shutdown = TRUE)
@@ -125,7 +124,6 @@ microSettings <- createCostOfCareSettings(
   endOffsetDays = 365L,
   eventFilters = diabetesFilters,
   microCosting = TRUE,
-  primaryEventFilterName = "Diabetes Medications", # Cost only these line items
   costConceptId = 31985L # 31985 = Total Cost
 )
 
