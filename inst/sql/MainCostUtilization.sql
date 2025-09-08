@@ -145,38 +145,43 @@ WHERE vo.visit_end_date   >= aw.start_date
   SELECT ec.filter_id, ec.filter_name, de.person_id, de.visit_occurrence_id, de.visit_detail_id
   FROM @cdm_database_schema.drug_exposure de
   JOIN @event_concepts_table ec
-    ON ec.concept_id = de.drug_concept_id
+    -- MODIFIED: Handle NULL concept_id to mean all concepts in domain
+    ON (ec.concept_id = de.drug_concept_id OR ec.concept_id IS NULL)
    AND ec.domain_scope IN ('All','Drug')
 
   UNION ALL
   SELECT ec.filter_id, ec.filter_name, po.person_id, po.visit_occurrence_id, po.visit_detail_id
   FROM @cdm_database_schema.procedure_occurrence po
   JOIN @event_concepts_table ec
-    ON ec.concept_id = po.procedure_concept_id
+    -- MODIFIED: Handle NULL concept_id to mean all concepts in domain
+    ON (ec.concept_id = po.procedure_concept_id OR ec.concept_id IS NULL)
    AND ec.domain_scope IN ('All','Procedure')
 
   UNION ALL
   SELECT ec.filter_id, ec.filter_name, co.person_id, co.visit_occurrence_id, NULL
   FROM @cdm_database_schema.condition_occurrence co
   JOIN @event_concepts_table ec
-    ON ec.concept_id = co.condition_concept_id
+    -- MODIFIED: Handle NULL concept_id to mean all concepts in domain
+    ON (ec.concept_id = co.condition_concept_id OR ec.concept_id IS NULL)
    AND ec.domain_scope IN ('All','Condition')
 
   UNION ALL
   SELECT ec.filter_id, ec.filter_name, ms.person_id, ms.visit_occurrence_id, ms.visit_detail_id
   FROM @cdm_database_schema.measurement ms
   JOIN @event_concepts_table ec
-    ON ec.concept_id = ms.measurement_concept_id
+    -- MODIFIED: Handle NULL concept_id to mean all concepts in domain
+    ON (ec.concept_id = ms.measurement_concept_id OR ec.concept_id IS NULL)
    AND ec.domain_scope IN ('All','Measurement')
 
   UNION ALL
   SELECT ec.filter_id, ec.filter_name, ob.person_id, ob.visit_occurrence_id, ob.visit_detail_id
   FROM @cdm_database_schema.observation ob
   JOIN @event_concepts_table ec
-    ON ec.concept_id = ob.observation_concept_id
+    -- MODIFIED: Handle NULL concept_id to mean all concepts in domain
+    ON (ec.concept_id = ob.observation_concept_id OR ec.concept_id IS NULL)
    AND ec.domain_scope IN ('All','Observation')
   ;
-
+  
   DROP TABLE IF EXISTS #event_visits;
   CREATE TABLE #event_visits (
     person_id           BIGINT NOT NULL,

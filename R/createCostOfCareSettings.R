@@ -15,9 +15,7 @@
 #' @param eventFilters Optional list of event filters (see Details). Each filter defines a set of
 #'   concepts by OMOP domain; if provided, they can be used to constrain qualifying events/visits.
 #' @param microCosting Logical; if `TRUE`, performs line-level costing at the `visit_detail` level.
-#'   Requires `eventFilters` and `primaryEventFilterName`. Default: `FALSE`.
-#' @param primaryEventFilterName Character; when `microCosting = TRUE`, the name of the primary
-#'   event filter (one of the `eventFilters[[]]$name`) that identifies the line-level events to cost.
+#'   Requires `eventFilters`. Default: `FALSE`.
 #' @param costConceptId Integer; concept ID for the cost type. Default: `31973` (charged).
 #' @param currencyConceptId Integer; concept ID for the currency. Default: `44818668` (USD).
 #' @param additionalCostConceptIds Optional integer vector of additional cost concept IDs to include.
@@ -33,7 +31,7 @@
 #'   \item `name`: A unique character string for the filter.
 #'   \item `domain`: The OMOP domain (one of `"All"`, `"Drug"`, `"Condition"`, `"Procedure"`,
 #'         `"Observation"`, `"Measurement"`, `"Device"`, `"Visit"`).
-#'   \item `conceptIds`: An integer vector of concept IDs (length \eqn{\ge} 1).
+#'   \item `conceptIds`: An integer vector of concept IDs (length \eqn{\ge} 1) or NULL if all domain names required.
 #' }
 #'
 #' **CPI adjustment**
@@ -48,7 +46,7 @@
 #'   \item `anchorCol`, `startOffsetDays`, `endOffsetDays`
 #'   \item `hasVisitRestriction`, `restrictVisitConceptIds`
 #'   \item `hasEventFilters`, `eventFilters`, `nFilters`
-#'   \item `microCosting`, `primaryEventFilterName`
+#'   \item `microCosting`, 
 #'   \item `costConceptId`, `currencyConceptId`, `additionalCostConceptIds`
 #'   \item `cpiAdjustment`, `cpiFilePath`
 #' }
@@ -60,7 +58,6 @@ createCostOfCareSettings <- function(
     restrictVisitConceptIds = NULL,
     eventFilters = NULL,
     microCosting = FALSE,
-    primaryEventFilterName = NULL,
     costConceptId = 31973,
     currencyConceptId = 44818668,
     additionalCostConceptIds = NULL,
@@ -127,12 +124,6 @@ createCostOfCareSettings <- function(
   
   # micro-costing constraints
   if (microCosting) {
-    if (is.null(primaryEventFilterName) || !is.character(primaryEventFilterName) || length(primaryEventFilterName) != 1L || nchar(primaryEventFilterName) == 0L) {
-      cli::cli_abort(c(
-        "Micro-costing requires a primary event filter",
-        "x" = "primaryEventFilterName must be a non-empty character string"
-      ))
-    }
     if (is.null(eventFilters)) {
       cli::cli_abort(c(
         "Micro-costing requires event filters",
@@ -141,13 +132,6 @@ createCostOfCareSettings <- function(
       ))
     }
     filterNames <- vapply(eventFilters, function(f) f$name, character(1))
-    if (!primaryEventFilterName %in% filterNames) {
-      cli::cli_abort(c(
-        "Primary event filter not found",
-        "x" = "'{primaryEventFilterName}' is not in the event filters",
-        "i" = "Available filters: {.val {filterNames}}"
-      ))
-    }
   }
   
   # CPI constraints
@@ -184,7 +168,6 @@ createCostOfCareSettings <- function(
       eventFilters = eventFilters,
       nFilters = as.integer(nFilters),
       microCosting = microCosting,
-      primaryEventFilterName = primaryEventFilterName,
       costConceptId = as.integer(costConceptId),
       currencyConceptId = as.integer(currencyConceptId),
       additionalCostConceptIds = if (is.null(additionalCostConceptIds)) NULL else as.integer(additionalCostConceptIds),
@@ -266,7 +249,7 @@ validateEventFilters <- function(eventFilters) {
       lower = 1,
       min.len = 1,
       any.missing = FALSE,
-      .var.name = glue::glue("conceptIds in filter '{filter$name}'")
+      null.ok = TRUE
     )
   })
   

@@ -11,7 +11,6 @@ createCostOfCareSettings(
   restrictVisitConceptIds = NULL,
   eventFilters = NULL,
   microCosting = FALSE,
-  primaryEventFilterName = NULL,
   costConceptId = 31973,
   currencyConceptId = 44818668,
   additionalCostConceptIds = NULL,
@@ -36,10 +35,7 @@ If provided, only visits with these concept IDs are considered.}
 concepts by OMOP domain; if provided, they can be used to constrain qualifying events/visits.}
 
 \item{microCosting}{Logical; if \code{TRUE}, performs line-level costing at the \code{visit_detail} level.
-Requires \code{eventFilters} and \code{primaryEventFilterName}. Default: \code{FALSE}.}
-
-\item{primaryEventFilterName}{Character; when \code{microCosting = TRUE}, the name of the primary
-event filter (one of the \code{eventFilters[[]]$name}) that identifies the line-level events to cost.}
+Requires \code{eventFilters}. Default: \code{FALSE}.}
 
 \item{costConceptId}{Integer; concept ID for the cost type. Default: \code{31973} (charged).}
 
@@ -58,7 +54,7 @@ A \code{CostOfCareSettings} object (list with class) containing:
 \item \code{anchorCol}, \code{startOffsetDays}, \code{endOffsetDays}
 \item \code{hasVisitRestriction}, \code{restrictVisitConceptIds}
 \item \code{hasEventFilters}, \code{eventFilters}, \code{nFilters}
-\item \code{microCosting}, \code{primaryEventFilterName}
+\item \code{microCosting},
 \item \code{costConceptId}, \code{currencyConceptId}, \code{additionalCostConceptIds}
 \item \code{cpiAdjustment}, \code{cpiFilePath}
 }
@@ -75,7 +71,7 @@ The \code{eventFilters} argument must be a list of lists, where each inner list 
 \item \code{name}: A unique character string for the filter.
 \item \code{domain}: The OMOP domain (one of \code{"All"}, \code{"Drug"}, \code{"Condition"}, \code{"Procedure"},
 \code{"Observation"}, \code{"Measurement"}, \code{"Device"}, \code{"Visit"}).
-\item \code{conceptIds}: An integer vector of concept IDs (length \eqn{\ge} 1).
+\item \code{conceptIds}: An integer vector of concept IDs (length \eqn{\ge} 1) or NULL if all domain names required.
 }
 
 \strong{CPI adjustment}

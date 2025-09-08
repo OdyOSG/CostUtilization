@@ -109,8 +109,7 @@ describe("calculateCostOfCare", {
     )
     settings <- createCostOfCareSettings(
       eventFilters = event_filters,
-      microCosting = TRUE,
-      primaryEventFilterName = "Procedures"
+      microCosting = TRUE
     )
     
     analysis_result <- calculateCostOfCare(

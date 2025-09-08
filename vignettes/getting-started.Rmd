@@ -109,10 +109,6 @@ analysisResult <- calculateCostOfCare(
 # The 'results' table contains the calculated metrics
 cli::cli_h3("Aggregated Results")
 glimpse(analysisResult$results)
-
-# The 'diagnostics' table shows patient attrition at each step
-cli::cli_h3("Diagnostics")
-print(analysisResult$diagnostics)
 ```
 
 ## 3. Advanced Features
@@ -175,8 +171,7 @@ For detailed analysis at the `visit_detail` level, enable `microCosting`.
 microSettings <- createCostOfCareSettings(
   endOffsetDays = 90,
   microCosting = TRUE,
-  eventFilters = diabetesFilters,
-  primaryEventFilterName = "Diabetes Rx"
+  eventFilters = diabetesFilters
 )
 
 microResult <- calculateCostOfCare(

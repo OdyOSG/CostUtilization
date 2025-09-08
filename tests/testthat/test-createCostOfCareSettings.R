@@ -193,12 +193,10 @@ describe("createCostOfCareSettings - Enhanced CDM v5.5 Tests", {
     
     settings <- createCostOfCareSettings(
       eventFilters = micro_filters,
-      microCosting = TRUE,
-      primaryEventFilterName = "Target Procedures"
+      microCosting = TRUE
     )
     
     expect_true(settings$microCosting)
-    expect_equal(settings$primaryEventFilterName, "Target Procedures")
     expect_true(settings$hasEventFilters)
   })
   
@@ -216,16 +214,14 @@ describe("createCostOfCareSettings - Enhanced CDM v5.5 Tests", {
     expect_error(
       createCostOfCareSettings(
         microCosting = TRUE,
-        eventFilters = list(list(name = "Test", domain = "Drug", conceptIds = c(1L))),
-        primaryEventFilterName = "NonExistent"
+        eventFilters = list(list(name = "Test", domain = "Drug", conceptIds = c(1L)))
       )
     )
     
     # Micro-costing without event filters
     expect_error(
       createCostOfCareSettings(
-        microCosting = TRUE,
-        primaryEventFilterName = "Test"
+        microCosting = TRUE
       ),
       regexp = "requires event filters"
     )
@@ -398,7 +394,6 @@ describe("createCostOfCareSettings - Enhanced CDM v5.5 Tests", {
       restrictVisitConceptIds = c(9201L, 9202L),
       eventFilters = comprehensive_filters,
       microCosting = TRUE,
-      primaryEventFilterName = "Primary Events",
       costConceptId = CDM_V55_CONCEPTS$total_cost,
       currencyConceptId = CDM_V55_CONCEPTS$usd,
       additionalCostConceptIds = c(CDM_V55_CONCEPTS$paid_by_payer, CDM_V55_CONCEPTS$paid_by_patient),
@@ -416,7 +411,6 @@ describe("createCostOfCareSettings - Enhanced CDM v5.5 Tests", {
     expect_true(settings$hasEventFilters)
     expect_equal(settings$nFilters, 2L)
     expect_true(settings$microCosting)
-    expect_equal(settings$primaryEventFilterName, "Primary Events")
     expect_equal(settings$costConceptId, CDM_V55_CONCEPTS$total_cost)
     expect_equal(settings$currencyConceptId, CDM_V55_CONCEPTS$usd)
     expect_equal(length(settings$additionalCostConceptIds), 2)
