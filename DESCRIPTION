@@ -1,9 +1,9 @@
 Package: CostUtilization
-Title: What the Package Does (One Line, Title Case)
+Title: Provides a Framework for Executing Standardized Cost and Healthcare Utilization Analyses on the OMOP Common Data Model
 Version: 0.0.0.9000
 Authors@R: c(
-    person("Gowtham", "Rao", , "gowthamrao@gmail.com", role = c("aut", "cre")),
-    person("Observational Health Data Science and Informatics", role = "cph")
+    person("Gowtham", "Rao", , "rao@ohdsi.org", role = c("aut", "cre")),
+    person("Alexander", "Alexeyuk", , "alexander_aleksiayuk@epam.com", role = c("aut"))
   )
 Description: Provides a framework for executing standardized cost and
     healthcare utilization analyses on the OMOP Common Data Model. This
