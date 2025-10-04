@@ -19,7 +19,7 @@
 #'   anchor date (e.g., 365 for 365 days after).
 #' @param visitTable The visit-level table to use for the calculation. Must be
 #'   one of `"visit_occurrence"` or `"visit_detail"`.
-#' @param visitConceptIds An Integer vector of visit concept IDs 
+#' @param visitConceptIds An Integer vector of visit concept IDs
 #' @param censorOnCohortEndDate Logical. If `TRUE`, the length of stay for visits
 #'   that extend beyond the `cohort_end_date` will be censored at the
 #'   `cohort_end_date`. Default is `FALSE`.
@@ -41,12 +41,11 @@ calculateLos <- function(connection,
                          visitConceptIds = c(9201),
                          censorOnCohortEndDate = FALSE,
                          verbose = TRUE) {
-  
   # --- Validation ---
   anchorCol <- rlang::arg_match(anchorCol, values = c("cohort_start_date", "cohort_end_date"))
   visitTable <- rlang::arg_match(visitTable)
   errorMessages <- checkmate::makeAssertCollection()
-  
+
   checkmate::assertClass(connection, "DBIConnection", add = errorMessages)
   checkmate::assertCharacter(cdmDatabaseSchema, len = 1, any.missing = FALSE, add = errorMessages)
   checkmate::assertCharacter(cohortDatabaseSchema, len = 1, any.missing = FALSE, add = errorMessages)
@@ -58,19 +57,19 @@ calculateLos <- function(connection,
   checkmate::assertFlag(verbose, add = errorMessages)
 
   checkmate::assertIntegerish(visitConceptIds, min.len = 1, unique = TRUE, any.missing = FALSE, add = errorMessages)
-  
+
   checkmate::reportAssertions(errorMessages)
-  
+
   if (endOffsetDays < startOffsetDays) {
     cli::cli_abort("`endOffsetDays` ({endOffsetDays}) must be greater than or equal to `startOffsetDays` ({startOffsetDays}).")
   }
-  
+
   # --- SQL Execution ---
   if (verbose) {
     cli::cli_inform("Calculating Length of Stay for cohort ID {.val {cohortId}}...")
   }
-  
-  sql <- SqlRender::readSql(system.file("sql", "LoS.sql", package = "CostUtilization")) |> 
+
+  sql <- SqlRender::readSql(system.file("sql", "LoS.sql", package = "CostUtilization")) |>
     SqlRender::render(
       cdm_database_schema = cdmDatabaseSchema,
       cohort_database_schema = cohortDatabaseSchema,
@@ -83,16 +82,16 @@ calculateLos <- function(connection,
       time_b = endOffsetDays,
       use_cohort_end_date = as.integer(anchorCol == "cohort_end_date"),
       censor_on_cohort_end_date = as.integer(censorOnCohortEndDate),
-    ) |> 
+    ) |>
     SqlRender::translate(DatabaseConnector::dbms(connection))
-  
-  results <- DBI::dbGetQuery(connection, sql) |> 
-    dplyr::rename_all(SqlRender::snakeCaseToCamelCase) |> 
+
+  results <- DBI::dbGetQuery(connection, sql) |>
+    dplyr::rename_all(SqlRender::snakeCaseToCamelCase) |>
     dplyr::tibble()
-  
+
   if (verbose) {
     cli::cli_alert_success("Calculation complete. Found {nrow(results)} summary rows.")
   }
-  
+
   return(results)
 }

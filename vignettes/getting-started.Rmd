@@ -103,7 +103,7 @@ analysisResult <- calculateCostOfCare(
   cohortTable = "cohort",
   cohortId = 1,
   costOfCareSettings = settings,
-  verbose = TRUE 
+  verbose = TRUE
 )
 
 # The 'results' table contains the calculated metrics
@@ -146,7 +146,7 @@ diabetesFilters <- list(
 
 eventSettings <- createCostOfCareSettings(
   startOffsetDays = -365, # 1 year before
-  endOffsetDays = 365,    # to 1 year after
+  endOffsetDays = 365, # to 1 year after
   eventFilters = diabetesFilters
 )
 

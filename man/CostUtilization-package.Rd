@@ -20,11 +20,11 @@ Useful links:
 
 }
 \author{
-\strong{Maintainer}: Gowtham Rao \email{gowthamrao@gmail.com}
+\strong{Maintainer}: Gowtham Rao \email{rao@ohdsi.org}
 
-Other contributors:
+Authors:
 \itemize{
-  \item Observational Health Data Science and Informatics [copyright holder]
+  \item Alexander Alexeyuk \email{alexander_aleksiayuk@epam.com}
 }
 
 }

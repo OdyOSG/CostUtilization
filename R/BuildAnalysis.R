@@ -1,3 +1,18 @@
+# Copyright 2025 Observational Health Data Sciences and Informatics
+#
+# This file is part of CostUtilization
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 #' Execute SQL Plan for Cost Analysis
 #'
 #' @description
@@ -30,23 +45,23 @@ executeSqlPlan <- function(
 
   logMessage(sprintf("Translating SQL to %s dialect", targetDialect), verbose, "DEBUG")
 
-  sqlStatements <- do.call(SqlRender::render, c(list(sql = sql), renderParams)) |> 
+  sqlStatements <- do.call(SqlRender::render, c(list(sql = sql), renderParams)) |>
     SqlRender::translate(
       targetDialect = targetDialect,
       tempEmulationSchema = tempEmulationSchema
-  ) |> 
+    ) |>
     SqlRender::splitSql()
-  
-  logMessage(sprintf("Executing %d SQL statements", length(sqlStatements)), verbose, "INFO")
 
+  logMessage(sprintf("Executing %d SQL statements", length(sqlStatements)), verbose, "INFO")
+  fetchSql <- sqlStatements[[1]]
   executeSqlStatements(
     connection = connection,
-    sqlStatements = sqlStatements,
+    sqlStatements = sqlStatements[-c(1, 2)],
     verbose = verbose
   )
 
   logMessage("SQL plan execution completed", verbose, "INFO")
-  invisible(NULL)
+  return(fetchSql)
 }
 
 #' Prepare SQL Render Parameters
@@ -62,7 +77,7 @@ executeSqlPlan <- function(
 #' @noRd
 #'
 prepareSqlRenderParams <- function(
-    params, 
+    params,
     tempEmulationSchema) {
   # derive hasEventFilters if not explicitly set (keeps backward compatibility)
   has_event_filters <- params$hasEventFilters %||% (as.integer(params$nFilters %||% 0L) > 0L)
@@ -78,7 +93,6 @@ prepareSqlRenderParams <- function(
     anchor_on_end          = .int_flag(params$anchorOnEnd),
     time_a                 = as.integer(params$timeA %||% 0L),
     time_b                 = as.integer(params$timeB %||% 365L),
-    
     aggregated             = params$aggregated,
 
     # costing & filters
@@ -89,17 +103,11 @@ prepareSqlRenderParams <- function(
     has_event_filters      = .int_flag(has_event_filters),
     micro_costing          = params$microCosting,
     primary_filter_id      = as.integer(params$primaryFilterId %||% 0L),
-
-    # helper tables (qualified only here)
-    results_table          = .qualify(params$resultsTable, tempEmulationSchema),
-    diag_table             = .qualify(params$diagTable, tempEmulationSchema),
-    restrict_visit_table   = .qualify(params$restrictVisitTable, tempEmulationSchema),
-    event_concepts_table   = .qualify(params$eventConceptsTable, tempEmulationSchema),
+    restrict_visit_table   = params$restrictVisitTable,
+    event_concepts_table   = params$eventConceptsTable,
 
     # CPI
     cpi_adjustment         = .int_flag(params$cpiAdjustment),
-    cpi_adj_table          = .qualify(params$cpiAdjTable, tempEmulationSchema)
+    cpi_adj_table          = params$cpiAdjTable
   )
 }
-
-

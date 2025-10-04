@@ -1,3 +1,18 @@
+# Copyright 2025 Observational Health Data Sciences and Informatics
+#
+# This file is part of CostUtilization
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 #' Calculate Cost of Care Analysis
 #'
 #' @description
@@ -17,7 +32,7 @@
 #' @param tempEmulationSchema Optional schema for temp table emulation (Oracle/Redshift/...).
 #' @param verbose Logical; print progress messages.
 #'
-#' @return results andromeda object 
+#' @return results andromeda object
 #' @export
 calculateCostOfCare <- function(
     connection = NULL,
@@ -40,14 +55,14 @@ calculateCostOfCare <- function(
   checkmate::assertFlag(aggregated, add = errorMessages)
   checkmate::assertFlag(verbose, add = errorMessages)
   checkmate::reportAssertions(errorMessages)
-  
+
   if (is.null(connectionDetails) && is.null(connection)) {
     rlang::abort("Provide either `connectionDetails` or an open `connection`.")
   }
   if (!is.null(connectionDetails) && !is.null(connection)) {
     rlang::abort("Provide exactly one of `connectionDetails` or `connection`, not both.")
   }
-  
+
   if (!is.null(connectionDetails)) {
     checkmate::assertClass(connectionDetails, "ConnectionDetails")
     connection <- DatabaseConnector::connect(connectionDetails)
@@ -55,41 +70,21 @@ calculateCostOfCare <- function(
   } else {
     checkmate::assertClass(connection, "DBIConnection")
   }
-  
   # --- Setup ---
   startTime <- Sys.time()
-  
-  
-  sessionPrefix <- SqlRender::translate('#', 'oracle')[[1]]
-  resultsTableName <- paste0(sessionPrefix, "_results")
-  diagTableName <- paste0(sessionPrefix, "_diag")
+  sessionPrefix <- SqlRender::translate("#", "oracle")[[1]]
   restrictVisitTableName <- NULL
   eventConceptsTableName <- NULL
   cpiAdjTableName <- NULL
-  
-  # Always attempt cleanup on exit
-  on.exit({
-      logMessage("Cleaning up temporary tables...", verbose, "INFO")
-      cleanupTempTables(
-        connection          = connection,
-        schema              = tempEmulationSchema,
-        resultsTableName,
-        diagTableName,
-        restrictVisitTableName,
-        eventConceptsTableName,
-        cpiAdjTableName
-      )
-    },  add = TRUE)
-  
   # --- CPI Adjustment: prepare adjustment factors table (if enabled) ---
   if (costOfCareSettings$cpiAdjustment) {
     logMessage("Setting up CPI adjustment...", verbose, "INFO")
     cpiAdjTableName <- paste0(sessionPrefix, "_cpi_adj")
-    
+
     # Load CPI data from explicit path; caller validated existence already
     cpiPath <- costOfCareSettings$cpiFilePath
     cpiData <- utils::read.csv(cpiPath, stringsAsFactors = FALSE)
-    
+
     if (!all(c("year", "adj_factor") %in% names(cpiData))) {
       # Backward compatibility: allow a file with `year` and `cpi` by renaming
       if (all(c("year", "cpi") %in% names(cpiData))) {
@@ -98,27 +93,27 @@ calculateCostOfCare <- function(
         cli::cli_abort("CPI data must contain columns 'year' and 'adj_factor' (or 'year' and 'cpi').")
       }
     }
-    
+
     cpiData <- cpiData[, c("year", "adj_factor")]
     checkmate::assertIntegerish(cpiData$year, lower = 1900, any.missing = FALSE)
     checkmate::assertNumeric(cpiData$adj_factor, any.missing = FALSE)
-    
-    insertTableDBI(
+
+    cpiAdjTableName <- insertTableDBI(
       connection = connection,
       tableName = cpiAdjTableName,
       data = cpiData,
       tempTable = TRUE,
       tempEmulationSchema = tempEmulationSchema,
-      camelCaseToSnakeCase = FALSE
+      camelCaseToSnakeCase = TRUE
     )
     logMessage(sprintf("Uploaded %d CPI rows to #%s", nrow(cpiData), cpiAdjTableName), verbose, "DEBUG")
   }
-  
+
   # --- Upload helper tables ---
   if (costOfCareSettings$hasVisitRestriction) {
     restrictVisitTableName <- paste0(sessionPrefix, "_visit_restr")
     visitConcepts <- dplyr::tibble(visit_concept_id = costOfCareSettings$restrictVisitConceptIds)
-    insertTableDBI(
+    restrictVisitTableName <- insertTableDBI(
       connection = connection,
       tableName = restrictVisitTableName,
       data = visitConcepts,
@@ -128,20 +123,20 @@ calculateCostOfCare <- function(
     )
     logMessage(sprintf("Uploaded %d visit concepts to #%s", nrow(visitConcepts), restrictVisitTableName), verbose, "DEBUG")
   }
-  
+
   if (costOfCareSettings$hasEventFilters) {
     eventConceptsTableName <- paste0(sessionPrefix, "_evt_concepts")
     # Build a long table: one row per concept id per filter
     eventConcepts <- purrr::map_dfr(
-        seq_along(costOfCareSettings$eventFilters), ~ dplyr::tibble(
-          filter_id    = .x,
-          filter_name  = costOfCareSettings$eventFilters[[.x]]$name,
-          domain_scope = costOfCareSettings$eventFilters[[.x]]$domain,
-          concept_id   = as.integer(costOfCareSettings$eventFilters[[.x]]$conceptIds)
-        )
+      seq_along(costOfCareSettings$eventFilters), ~ dplyr::tibble(
+        filter_id    = .x,
+        filter_name  = costOfCareSettings$eventFilters[[.x]]$name,
+        domain_scope = costOfCareSettings$eventFilters[[.x]]$domain,
+        concept_id   = as.integer(costOfCareSettings$eventFilters[[.x]]$conceptIds)
       )
-    
-    insertTableDBI(
+    )
+
+    eventConceptsTableName <- insertTableDBI(
       connection = connection,
       tableName = eventConceptsTableName,
       data = eventConcepts,
@@ -151,48 +146,45 @@ calculateCostOfCare <- function(
     )
     logMessage(sprintf("Uploaded %d event concept rows to #%s", nrow(eventConcepts), eventConceptsTableName), verbose, "DEBUG")
   }
-  
+
   params <- list(
     # core
     cdmDatabaseSchema = cdmDatabaseSchema,
     cohortDatabaseSchema = cohortDatabaseSchema,
     cohortTable = cohortTable,
     cohortId = as.integer(cohortId),
-    
+
     # output / helper tables (unqualified here)
-    resultsTable = resultsTableName,
-    diagTable = diagTableName,
     restrictVisitTable = restrictVisitTableName,
     eventConceptsTable = eventConceptsTableName,
     cpiAdjTable = cpiAdjTableName,
-    
+
     # window & anchor
     anchorOnEnd = identical(costOfCareSettings$anchorCol, "cohort_end_date"),
-    timeA = as.integer(costOfCareSettings$startOffsetDays %||% 0L),
-    timeB = as.integer(costOfCareSettings$endOffsetDays %||% 365L),
-    
+    timeA = as.integer(costOfCareSettings$startOffsetDays),
+    timeB = as.integer(costOfCareSettings$endOffsetDays),
+
     # flags & knobs (logical where appropriate; numbers as integers)
     hasVisitRestriction = costOfCareSettings$hasVisitRestriction,
     hasEventFilters = costOfCareSettings$hasEventFilters,
     nFilters = as.integer(costOfCareSettings$nFilters %||% 0L),
     microCosting = costOfCareSettings$microCosting, # pass-through (string/int as your SQL expects)
     cpiAdjustment = costOfCareSettings$cpiAdjustment,
-    
+
     # costing
     costConceptId = as.integer(costOfCareSettings$costConceptId),
     currencyConceptId = as.integer(costOfCareSettings$currencyConceptId),
-    
     aggregated = aggregated,
     # primary filter id (index in eventFilters) if named
     primaryFilterId = .findPrimaryFilterId(costOfCareSettings)
   )
 
-  
+
   # --- Fetch & return results ---
   logMessage("Fetching results from database...", verbose, "INFO")
-  
+
   .res <- .fetchResults(params, connection, tempEmulationSchema, verbose)
-  
+
   logMessage(
     sprintf("Analysis complete in %0.1fs.", as.numeric(difftime(Sys.time(), startTime, units = "secs"))),
     verbose = verbose,

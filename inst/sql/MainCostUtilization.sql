@@ -1,14 +1,23 @@
 -- ============================================================================
 -- Healthcare Cost Analysis Query (Consolidated, CDM v5.5 compliant)
 /* 0) Initialize diagnostics table */
-DROP TABLE IF EXISTS @cohort_database_schema.@diag_table;
-CREATE TABLE @cohort_database_schema.@diag_table (
+
+-- Return results and diagnostics tables to keep # consistent with other modules
+SELECT * FROM #temp_results_table;
+
+SELECT * FROM #diag_table ORDER BY step_name;
+-- Collect tables
+
+
+
+DROP TABLE IF EXISTS #diag_table;
+CREATE TABLE #diag_table (
   step_name      VARCHAR(255),
   n_persons      BIGINT,
   n_events       BIGINT
 );
 
-INSERT INTO @cohort_database_schema.@diag_table (step_name, n_persons, n_events)
+INSERT INTO #diag_table (step_name, n_persons, n_events)
 SELECT
   '00_initial_cohort',
   COUNT(DISTINCT subject_id),
@@ -95,7 +104,7 @@ FROM #analysis_window_clean
 GROUP BY person_id;
 
 -- Log diagnostics (same 3 columns as the table)
-INSERT INTO @cohort_database_schema.@diag_table (step_name, n_persons, n_events)
+INSERT INTO #diag_table (step_name, n_persons, n_events)
 VALUES
   ('01_person_subset', (SELECT COUNT(DISTINCT person_id) FROM #cohort_person), NULL),
   ('02_valid_window',  (SELECT COUNT(DISTINCT person_id) FROM #analysis_window_clean), NULL);
@@ -227,7 +236,7 @@ WHERE vo.visit_end_date   >= aw.start_date
 };
 
 -- Diagnostics
-INSERT INTO @cohort_database_schema.@diag_table (step_name, n_persons, n_events)
+INSERT INTO #diag_table (step_name, n_persons, n_events)
 SELECT
   '03_with_qualifying_visits',
   COUNT(DISTINCT person_id),
@@ -306,11 +315,11 @@ WHERE (@cost_concept_id       IS NULL OR c.cost_concept_id      = @cost_concept_
 
 {@aggregated} ? {
 {@micro_costing} ? {
-  INSERT INTO @cohort_database_schema.@diag_table (step_name, n_persons, n_events)
+  INSERT INTO #diag_table (step_name, n_persons, n_events)
   SELECT '04_with_cost', COUNT(DISTINCT person_id), COUNT(DISTINCT visit_detail_id)
   FROM #line_level_cost;
 } : {
-  INSERT INTO @cohort_database_schema.@diag_table (step_name, n_persons, n_events)
+  INSERT INTO #diag_table (step_name, n_persons, n_events)
   SELECT '04_with_cost', COUNT(DISTINCT person_id), COUNT(DISTINCT visit_occurrence_id)
   FROM #visit_level_cost;
 };
@@ -375,14 +384,14 @@ CREATE TABLE #numerators (
 };
 
 -- 4.3) Results (long format)
-DROP TABLE IF EXISTS @results_table;
-CREATE TABLE @results_table (
+DROP TABLE IF EXISTS #temp_results_table;
+CREATE TABLE #temp_results_table (
   metric_type   VARCHAR(50),
   metric_name   VARCHAR(255),
   metric_value  DECIMAL(19,4)
 );
 
-INSERT INTO @results_table
+INSERT INTO #temp_results_table
 SELECT
   n.metric_type,
   'total_person_days' AS metric_name,
@@ -480,15 +489,15 @@ SELECT
 FROM #denominator d, #numerators n;
 } : {
 -- 3.2) Aggregate cost to person level
-DROP TABLE IF EXISTS @cohort_database_schema.@results_table;
-CREATE TABLE @cohort_database_schema.@results_table (
+DROP TABLE IF EXISTS #temp_results_table;
+CREATE TABLE #temp_results_table (
     person_id       BIGINT NOT NULL PRIMARY KEY,
     cost            DECIMAL(19,4) NOT NULL
     {@cpi_adjustment} ? { , adjusted_cost DECIMAL(19,4) NOT NULL } : { }
 );
 
 {@micro_costing} ? {
-    INSERT INTO @cohort_database_schema.@results_table (person_id, cost {@cpi_adjustment} ? { , adjusted_cost } : { })
+    INSERT INTO #temp_results_table (person_id, cost {@cpi_adjustment} ? { , adjusted_cost } : { })
     SELECT
         qd.person_id,
         SUM(cr.cost)          AS cost
@@ -499,7 +508,7 @@ CREATE TABLE @cohort_database_schema.@results_table (
        AND cr.visit_detail_id = qd.visit_detail_id
     GROUP BY qd.person_id;
 } : {
-    INSERT INTO @cohort_database_schema.@results_table (person_id, cost {@cpi_adjustment} ? { , adjusted_cost } : { })
+    INSERT INTO #temp_results_table (person_id, cost {@cpi_adjustment} ? { , adjusted_cost } : { })
     SELECT
         qv.person_id,
         SUM(cr.cost)          AS cost
@@ -535,5 +544,6 @@ DROP TABLE IF EXISTS #denominator;
 DROP TABLE IF EXISTS #numerators;
 }
 -- Final diagnostic
-INSERT INTO @cohort_database_schema.@diag_table (step_name, n_persons, n_events)
+INSERT INTO #diag_table (step_name, n_persons, n_events)
 VALUES ('99_completed', NULL, NULL);
+

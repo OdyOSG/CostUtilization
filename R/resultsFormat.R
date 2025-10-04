@@ -22,11 +22,11 @@
 #'
 #' @return
 #' A `CovariateData` object (backed by an `Andromeda` database) with the following tables:
-#' - **covariates**: person-level or cohort-level cost metrics  
-#'   (`rowId`, `covariateId`, `covariateValue`)  
-#' - **covariateRef**: mapping of covariate IDs to names and concepts  
-#' - **analysisRef**: analysis-level metadata (ID, name, domain, time window)  
-#' - **timeRef**: time-window reference (always length 1 for cost analyses)  
+#' - **covariates**: person-level or cohort-level cost metrics
+#'   (`rowId`, `covariateId`, `covariateValue`)
+#' - **covariateRef**: mapping of covariate IDs to names and concepts
+#' - **analysisRef**: analysis-level metadata (ID, name, domain, time window)
+#' - **timeRef**: time-window reference (always length 1 for cost analyses)
 #'
 #' Metadata about the analysis is stored in `attr(covariateData, "metaData")`.
 #'
@@ -60,9 +60,9 @@ createCostCovariateData <- function(costResults,
   checkmate::assertCharacter(databaseId, len = 1, add = errorMessages)
   checkmate::assertIntegerish(analysisId, len = 1, add = errorMessages)
   checkmate::reportAssertions(errorMessages)
-  
+
   resultFormat <- .detectResultFormat(costResults)
-  
+
   if (identical(resultFormat, "aggregated")) {
     covariateData <- .convertAggregatedResults(
       costResults = costResults,
@@ -82,7 +82,7 @@ createCostCovariateData <- function(costResults,
   } else {
     rlang::abort("Unable to detect valid result format in `costResults`.")
   }
-  
+
   return(covariateData)
 }
 
@@ -111,28 +111,34 @@ convertToFeatureExtractionFormat <- function(costResults,
 # Internal helpers -------------------------------------------------------------
 
 .detectResultFormat <- function(costResults) {
-  if (!"results" %in% names(costResults)) return("unknown")
-  
+  if (!"results" %in% names(costResults)) {
+    return("unknown")
+  }
+
   resultsCols <- names(costResults$results)
   hasAggregated <- all(c("metric_type", "metric_name", "metric_value") %in% resultsCols)
   hasPersonLevel <- all(c("person_id", "cost") %in% resultsCols)
-  
-  if (hasAggregated) return("aggregated")
-  if (hasPersonLevel) return("person_level")
-  
+
+  if (hasAggregated) {
+    return("aggregated")
+  }
+  if (hasPersonLevel) {
+    return("person_level")
+  }
+
   "unknown"
 }
 
 .convertAggregatedResults <- function(costResults, costOfCareSettings, cohortId, databaseId, analysisId) {
   resultsData <- dplyr::collect(costResults$results)
-  
+
   covariateMapping <- .createCovariateMapping(resultsData, analysisId, costOfCareSettings)
   covariates <- .generateCovariatesFromAggregated(resultsData, covariateMapping, cohortId)
   covariateRef <- .createCovariateRef(covariateMapping, costOfCareSettings)
   analysisRef <- .createAnalysisRef(analysisId, costOfCareSettings)
   timeRef <- .createTimeRef(costOfCareSettings)
   metaData <- .createMetaData(costOfCareSettings, cohortId, databaseId, analysisId, "aggregated")
-  
+
   .assembleCovariateData(covariates, covariateRef, analysisRef, timeRef, metaData)
 }
 
@@ -163,7 +169,7 @@ convertToFeatureExtractionFormat <- function(costResults,
   resultsData <- dplyr::collect(costResults$results)
   costColNames <- purrr::map_chr(costCols, rlang::as_name)
   validCostColNames <- intersect(costColNames, names(resultsData))
-  
+
   # Step 2: Handle the edge case where no valid columns are found
   if (rlang::is_empty(validCostColNames)) {
     cli::cli_warn(c(
@@ -172,11 +178,11 @@ convertToFeatureExtractionFormat <- function(costResults,
       "i" = "Available columns: {.val {names(resultsData)}}",
       "i" = "Returning an empty CovariateData object."
     ))
-    
+
     # Construct an empty but valid CovariateData object
     emptyCovariates <- dplyr::tibble(rowId = integer(), covariateId = numeric(), covariateValue = numeric())
     emptyCovariateRef <- dplyr::tibble(covariateId = numeric(), covariateName = character(), analysisId = integer(), conceptId = integer())
-    
+
     return(
       .assembleCovariateData(
         covariates = emptyCovariates,
@@ -187,26 +193,26 @@ convertToFeatureExtractionFormat <- function(costResults,
       )
     )
   }
-  
+
   # Step 3: Generate mapping and reference tables based on valid columns
   covariateMapping <- .createPersonLevelCovariateMapping(
     costColNames = validCostColNames,
     analysisId = analysisId,
     costOfCareSettings = costOfCareSettings
   )
-  
+
   covariateRef <- .createCovariateRef(covariateMapping, costOfCareSettings)
   analysisRef <- .createAnalysisRef(analysisId, costOfCareSettings)
   timeRef <- .createTimeRef(costOfCareSettings)
   metaData <- .createMetaData(costOfCareSettings, cohortId, databaseId, analysisId, "person_level")
-  
+
   # Step 4: Generate the main 'covariates' table using the validated columns
   covariates <- .generateCovariatesFromPersonLevel(
     resultsData = resultsData,
     covariateMapping = covariateMapping,
     costColNames = validCostColNames # Pass the validated names
   )
-  
+
   # Step 5: Assemble all components into the final CovariateData object
   .assembleCovariateData(
     covariates = covariates,
@@ -256,11 +262,10 @@ convertToFeatureExtractionFormat <- function(costResults,
 .createPersonLevelCovariateMapping <- function(costColNames,
                                                analysisId,
                                                costOfCareSettings) {
- 
   purrr::imap_dfr(costColNames, ~ {
     metricName <- .x
     metricOffset <- .y
-    
+
     dplyr::tibble(
       metric_name = metricName,
       metric_offset = as.integer(metricOffset),
@@ -315,7 +320,7 @@ convertToFeatureExtractionFormat <- function(costResults,
 
 .createCovariateRef <- function(covariateMapping, costOfCareSettings) {
   conceptId <- as.integer(costOfCareSettings$costConceptId %||% 0L)
-  
+
   covariateMapping |>
     dplyr::transmute(
       covariateId = .data$covariate_id,
@@ -347,7 +352,7 @@ convertToFeatureExtractionFormat <- function(costResults,
 
 .createMetaData <- function(costOfCareSettings, cohortId, databaseId, analysisId, resultFormat) {
   pkgVer <- tryCatch(as.character(utils::packageVersion("CostUtilization")), error = function(e) "dev")
-  
+
   list(
     analysisId = analysisId,
     cohortId = cohortId,
@@ -365,18 +370,17 @@ convertToFeatureExtractionFormat <- function(costResults,
   )
 }
 .assembleCovariateData <- function(covariates, covariateRef, analysisRef, timeRef, metaData) {
- 
-   covariateData <- Andromeda::andromeda(
+  covariateData <- Andromeda::andromeda(
     covariates = covariates,
     covariateRef = covariateRef,
     analysisRef = analysisRef,
     timeRef = timeRef
   )
   attr(covariateData, "metaData") <- metaData
-  
+
   # Assign the S4 class to make it a fully compatible CovariateData object
   class(covariateData) <- "CovariateData"
-  
+
   return(covariateData)
 }
 
@@ -389,10 +393,10 @@ convertToFeatureExtractionFormat <- function(costResults,
     31976L ~ "Patient Deductible", 31979L ~ "Amount Allowed",
     .default = paste("Cost Concept", costConceptId)
   )
-  
+
   covariateName <- to_title_case_base(gsub("_", " ", metricName))
   timeWindow <- paste0("(", costOfCareSettings$startOffsetDays, " to ", costOfCareSettings$endOffsetDays, " days)")
-  
+
   paste(costType, "-", covariateName, timeWindow)
 }
 

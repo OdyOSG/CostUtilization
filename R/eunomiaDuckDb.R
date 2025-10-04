@@ -15,12 +15,12 @@
 injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
   cli::cli_alert_info("Generating synthetic payer_plan_period and wide-format cost data.")
   cli::cli_alert_info("- Step 1: Creating realistic payer_plan_period table.")
-  
+
   # Fetch observation periods and calculate start/end years
   person_obs_periods <- DBI::dbGetQuery(
     connection,
     glue::glue(
-      "SELECT person_id, observation_period_start_date, observation_period_end_date 
+      "SELECT person_id, observation_period_start_date, observation_period_end_date
        FROM {cdmDatabaseSchema}.observation_period"
     )
   ) |>
@@ -30,20 +30,20 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
       start_year = as.integer(format(.data$observation_period_start_date, "%Y")),
       end_year   = as.integer(format(.data$observation_period_end_date, "%Y"))
     )
-  
+
   set.seed(seed)
-  
+
   # Define plan options for simulation
   plan_options <- c("PPO-Low-Deductible-500", "HMO-Standard-1500", "PPO-High-Deductible-2500", "EPO-Basic-3000")
-  
+
   # Simulates plan changes on Jan 1 with a bias toward continuous enrollment
   generate_random_plans <- function(pid, start_date, end_date, start_year, end_year) {
     start_date <- as.Date(start_date)
-    end_date   <- as.Date(end_date)
-    
+    end_date <- as.Date(end_date)
+
     possible_change_years <- (start_year + 1):end_year
     n_possible_changes <- length(possible_change_years)
-    
+
     if (n_possible_changes == 0) {
       n_segments <- 1
       change_dates <- as.Date(character())
@@ -53,7 +53,7 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
       current_probs <- probs[1:(max_changes + 1)]
       current_probs <- current_probs / sum(current_probs)
       num_changes <- sample(0:max_changes, 1, prob = current_probs)
-      
+
       if (num_changes == 0) {
         n_segments <- 1
         change_dates <- as.Date(character())
@@ -63,17 +63,17 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
         change_dates <- as.Date(paste0(change_years, "-01-01"))
       }
     }
-    
+
     # Build boundaries
     starts <- c(start_date, change_dates)
-    ends   <- c(if (length(change_dates) > 0) change_dates - 1L else NULL, end_date)
-    
+    ends <- c(if (length(change_dates) > 0) change_dates - 1L else NULL, end_date)
+
     # Force Date class to avoid numeric coercion
     starts <- as.Date(starts, origin = "1970-01-01")
-    ends   <- as.Date(ends,   origin = "1970-01-01")
-    
+    ends <- as.Date(ends, origin = "1970-01-01")
+
     assigned_plans <- sample(plan_options, n_segments, replace = TRUE)
-    
+
     df <- dplyr::tibble(
       person_id = pid,
       plan_start_date = starts,
@@ -81,10 +81,10 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
       plan_name = assigned_plans
     )
     df$plan_start_date <- as.Date(df$plan_start_date)
-    df$plan_end_date   <- as.Date(df$plan_end_date)
+    df$plan_end_date <- as.Date(df$plan_end_date)
     df
   }
-  
+
   payer_plans_df_long <- person_obs_periods |>
     dplyr::select(
       .data$person_id,
@@ -94,7 +94,7 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
       .data$end_year
     ) |>
     purrr::pmap_dfr(~ generate_random_plans(..1, ..2, ..3, ..4, ..5))
-  
+
   # Final formatting of the payer_plan_period table
   payer_plans_df <- payer_plans_df_long |>
     dplyr::arrange(.data$person_id, .data$plan_start_date) |>
@@ -116,55 +116,55 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
       .data$payerSourceValue,
       .data$planSourceValue
     )
-  
+
   # --- Define Cost Structure and Fetch Event Data ---
   cli::cli_alert_info("- Step 2: Fetching clinical events and mapping to plan periods.")
   costStructure <- list(
-    "Procedure"  = c("procedure_occurrence", "procedure_occurrence_id", "person_id", "procedure_date"),
-    "Measurement"= c("measurement", "measurement_id", "person_id", "measurement_date"),
-    "Visit"      = c("visit_occurrence", "visit_occurrence_id", "person_id", "visit_start_date"),
-    "Device"     = c("device_exposure", "device_exposure_id", "person_id", "device_exposure_start_date"),
-    "Drug"       = c("drug_exposure", "drug_exposure_id", "person_id", "drug_exposure_start_date"),
-    "Observation"= c("observation", "observation_id", "person_id", "observation_date"),
-    "Condition"  = c("condition_occurrence", "condition_occurrence_id", "person_id", "condition_start_date")
+    "Procedure" = c("procedure_occurrence", "procedure_occurrence_id", "person_id", "procedure_date"),
+    "Measurement" = c("measurement", "measurement_id", "person_id", "measurement_date"),
+    "Visit" = c("visit_occurrence", "visit_occurrence_id", "person_id", "visit_start_date"),
+    "Device" = c("device_exposure", "device_exposure_id", "person_id", "device_exposure_start_date"),
+    "Drug" = c("drug_exposure", "drug_exposure_id", "person_id", "drug_exposure_start_date"),
+    "Observation" = c("observation", "observation_id", "person_id", "observation_date"),
+    "Condition" = c("condition_occurrence", "condition_occurrence_id", "person_id", "condition_start_date")
   )
-  
+
   eventTable <- purrr::map2_df(
     names(costStructure), costStructure, ~ {
       sql <- glue::glue(
-        "SELECT t1.{.y[[2]]} AS event_id, t1.{.y[[3]]} AS person_id, t1.{.y[[4]]} AS event_date 
+        "SELECT t1.{.y[[2]]} AS event_id, t1.{.y[[3]]} AS person_id, t1.{.y[[4]]} AS event_date
          FROM {cdmDatabaseSchema}.{.y[[1]]} t1"
       )
       domain_table <- DBI::dbGetQuery(connection, sql) |>
         dplyr::rename_with(tolower) |>
         dplyr::mutate(domain_id = .x, event_date = as.Date(.data$event_date))
-      
+
       domain_table |>
         dplyr::left_join(payer_plans_df, by = "person_id", relationship = "many-to-many") |>
         dplyr::filter(.data$event_date >= .data$payerPlanPeriodStartDate &
-                        .data$event_date <= .data$payerPlanPeriodEndDate)
+          .data$event_date <= .data$payerPlanPeriodEndDate)
     }
   )
-  
+
   # --- Generate and Structure the Cost Records (Wide Format) ---
   cli::cli_alert_info("- Step 3: Generating synthetic cost values.")
   n_records <- nrow(eventTable)
-  
+
   if (n_records > 0) {
     set.seed(seed)
     base_cost <- stats::runif(n_records, 23, 1500)
     total_charge <- round(base_cost * stats::runif(n_records, 1.1, 1.5), 2)
-    total_cost   <- round(base_cost * stats::runif(n_records, 0.7, 0.9), 2)
+    total_cost <- round(base_cost * stats::runif(n_records, 0.7, 0.9), 2)
     insurance_coverage <- stats::runif(n_records, 0.54, 1)
-    paid_by_payer   <- round(total_cost * insurance_coverage, 2)
+    paid_by_payer <- round(total_cost * insurance_coverage, 2)
     paid_by_patient <- round(total_cost - paid_by_payer, 2)
-    
+
     cost_records_df <- dplyr::tibble(
       costId = seq_len(n_records),
       costEventId = eventTable$event_id,
       costDomainId = eventTable$domain_id,
-      costTypeConceptId = 5032,       # Administrative cost record
-      currencyConceptId = 44818668,   # USD
+      costTypeConceptId = 5032, # Administrative cost record
+      currencyConceptId = 44818668, # USD
       totalCharge = total_charge,
       totalCost = total_cost,
       totalPaid = paid_by_payer + paid_by_patient,
@@ -172,11 +172,11 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
       paidByPatient = paid_by_patient,
       paidPatientCopay = pmin(paid_by_patient, 50),
       paidPatientCoinsurance = round(paid_by_patient * 0.7, 2),
-      paidPatientDeductible  = round(paid_by_patient * 0.3, 2),
+      paidPatientDeductible = round(paid_by_patient * 0.3, 2),
       paidByPrimary = paid_by_payer,
       paidIngredientCost = NA_real_,
-      paidDispensingFee  = NA_real_,
-      payerPlanPeriodId  = eventTable$payerPlanPeriodId,
+      paidDispensingFee = NA_real_,
+      payerPlanPeriodId = eventTable$payerPlanPeriodId,
       amountAllowed = total_cost,
       revenueCodeConceptId = 0,
       revenueCodeSourceValue = NA_character_,
@@ -187,7 +187,7 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
     cli::cli_alert_info("No clinical events found. Skipping cost generation.")
     cost_records_df <- data.frame()
   }
-  
+
   # --- Insert Tables into the Database ---
   cli::cli_alert_info("- Step 4: Inserting new tables into the database.")
 
@@ -195,13 +195,13 @@ injectCostData <- function(connection, seed = 123, cdmDatabaseSchema = "main") {
   payer_plans_to_write <- payer_plans_df
   names(payer_plans_to_write) <- SqlRender::camelCaseToSnakeCase(names(payer_plans_to_write))
   DBI::dbWriteTable(connection, name = "payer_plan_period", value = payer_plans_to_write, overwrite = TRUE)
-  
+
   if (nrow(cost_records_df) > 0) {
     cost_records_to_write <- cost_records_df
     names(cost_records_to_write) <- SqlRender::camelCaseToSnakeCase(names(cost_records_to_write))
     DBI::dbWriteTable(connection, name = "cost", value = cost_records_to_write, overwrite = TRUE)
   }
-  
+
   cli::cli_alert_info("Successfully injected synthetic payer_plan_period and wide-format cost tables.")
   return(connection)
 }
@@ -246,8 +246,8 @@ injectVisitDetailsData <- function(connection, cdmDatabaseSchema = "main") {
       visit_occurrence_id BIGINT NOT NULL
     );
   "))
-  
-  
+
+
   # 2) Build a staging of event records that should become line items in VISIT_DETAIL
   executeOne(connection, glue::glue("
   DROP TABLE IF EXISTS tmp_event_detail_stage;
@@ -362,8 +362,8 @@ injectVisitDetailsData <- function(connection, cdmDatabaseSchema = "main") {
   ) s
   WHERE s.visit_occurrence_id IS NOT NULL;  -- enforce linkage to visit
 "))
-  
-  
+
+
   executeOne(connection, glue::glue("
   WITH id_bounds AS (
   SELECT COALESCE(MAX(visit_detail_id), 0) AS id_offset
@@ -484,7 +484,7 @@ SELECT
   visit_occurrence_id
 FROM final_rows;"))
 
-return(connection)
+  return(connection)
 }
 
 
@@ -516,33 +516,32 @@ transformCostToCdmV5dot5 <- function(
     connection,
     cdmDatabaseSchema = "main",
     sourceCostTable = "cost") {
-  
   # Inject the necessary cost and visit detail data first
   connection <- injectCostData(connection, cdmDatabaseSchema = cdmDatabaseSchema)
   connection <- injectVisitDetailsData(connection, cdmDatabaseSchema = cdmDatabaseSchema)
-  
+
   cli::cli_alert_info(glue::glue("Starting transformation of wide '{sourceCostTable}' table to long format using SQL."))
-  
+
   # --- Pre-flight Checks ---
   tablesInDb <- tolower(DBI::dbListTables(connection))
   if (!tolower(sourceCostTable) %in% tablesInDb) {
     stop(glue::glue("Source cost table '{cdmDatabaseSchema}.{sourceCostTable}' not found. Please run injectCostData() first."))
   }
-  
+
   # --- Backup existing table ---
   cli::cli_alert_info("- Step 1: Backing up existing cost table.")
   backupTableName <- "cost_v5_3_backup"
-  
+
   # Drop backup if it exists, then rename current table
   if (tolower(backupTableName) %in% tablesInDb) {
     executeOne(connection, glue::glue("DROP TABLE {backupTableName};"))
   }
   executeOne(connection, glue::glue("ALTER TABLE {sourceCostTable} RENAME TO {backupTableName};"))
   cli::cli_alert_info(glue::glue("Original '{sourceCostTable}' table renamed to '{backupTableName}'."))
-  
+
   # --- Create new cost table with CDM v5.5 structure ---
   cli::cli_alert_info("- Step 2: Creating new cost table with CDM v5.5 structure.")
-  
+
   createTableSql <- glue::glue("
     CREATE TABLE {cdmDatabaseSchema}.{sourceCostTable} (
       cost_id BIGINT NOT NULL PRIMARY KEY,
@@ -564,7 +563,7 @@ transformCostToCdmV5dot5 <- function(
     );
   ")
   executeOne(connection, createTableSql)
-  
+
   # === 1) Build a reusable event -> visit/person/date map ===
   eventToVisitSql <- glue::glue("
   CREATE TEMPORARY TABLE event_to_visit_map AS
@@ -651,7 +650,7 @@ transformCostToCdmV5dot5 <- function(
   SELECT DISTINCT * FROM all_events;
 ")
   executeOne(connection, eventToVisitSql)
-  
+
   # === 2) Transform and load into the v5.5 COST table ===
   transformSql <- glue::glue("
   WITH wide_cost AS (
@@ -784,11 +783,11 @@ transformCostToCdmV5dot5 <- function(
   FROM cost_long;
 ")
   executeOne(connection, transformSql)
-  
+
   # Clean up temporary table
   executeOne(connection, "DROP TABLE IF EXISTS event_to_visit_map;")
-  
+
   cli::cli_alert_info(glue::glue("Successfully transformed '{sourceCostTable}' table to CDM v5.5 long format."))
-  
+
   return(invisible(connection))
 }

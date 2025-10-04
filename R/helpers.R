@@ -4,8 +4,10 @@ cleanupTempTables <- function(connection, schema = NULL, ...) {
     rlang::abort("`connection` is not a valid DBI connection.")
   }
   tables <- rlang::list2(...)
-  if (length(tables) == 0L) return(invisible(NULL))
-  
+  if (length(tables) == 0L) {
+    return(invisible(NULL))
+  }
+
   # Local helper: build a fully qualified, safely quoted identifier
   quoteIdent <- function(conn, tbl, schema = NULL) {
     if (!is.null(schema) && nzchar(schema %||% "")) {
@@ -15,20 +17,22 @@ cleanupTempTables <- function(connection, schema = NULL, ...) {
     }
     DBI::dbQuoteIdentifier(conn, id)
   }
-  
+
   dropWithIfExists <- function(conn, qident) {
     DBI::dbExecute(conn, DBI::SQL(glue::glue("DROP TABLE IF EXISTS {qident};")))
   }
   dropWithoutIfExists <- function(conn, qident) {
     DBI::dbExecute(conn, DBI::SQL(glue::glue("DROP TABLE {qident};")))
   }
-  
-  purrr::walk(tables, ~{
+
+  purrr::walk(tables, ~ {
     tbl <- .x
-    if (is.null(tbl) || !nzchar(tbl)) return(invisible(NULL))
-    
+    if (is.null(tbl) || !nzchar(tbl)) {
+      return(invisible(NULL))
+    }
+
     qident <- quoteIdent(connection, tbl, schema)
-    
+
     tryCatch(
       {
         tryCatch(
@@ -43,10 +47,10 @@ cleanupTempTables <- function(connection, schema = NULL, ...) {
       },
       error = function(e) invisible(NULL)
     )
-    
+
     invisible(NULL)
   })
-  
+
   invisible(NULL)
 }
 
@@ -64,16 +68,16 @@ logMessage <- function(message, verbose = TRUE, level = "INFO") {
   if (!verbose) {
     return(invisible(NULL))
   }
-  
+
   switch(level,
-         "ERROR" = cli::cli_alert_danger(message),
-         "WARNING" = cli::cli_alert_warning(message),
-         "INFO" = cli::cli_alert_info(message),
-         "DEBUG" = cli::cli_text(cli::col_grey(message)),
-         "SUCCESS" = cli::cli_alert_success(message),
-         cli::cli_alert(message)
+    "ERROR" = cli::cli_alert_danger(message),
+    "WARNING" = cli::cli_alert_warning(message),
+    "INFO" = cli::cli_alert_info(message),
+    "DEBUG" = cli::cli_text(cli::col_grey(message)),
+    "SUCCESS" = cli::cli_alert_success(message),
+    cli::cli_alert(message)
   )
-  
+
   invisible(NULL)
 }
 
@@ -90,13 +94,15 @@ logMessage <- function(message, verbose = TRUE, level = "INFO") {
 #' @noRd
 executeSqlStatements <- function(connection, sqlStatements, verbose = TRUE, quiet_db = TRUE) {
   nStatements <- length(sqlStatements)
-  if (nStatements == 0L) return(invisible(NULL))
-  
+  if (nStatements == 0L) {
+    return(invisible(NULL))
+  }
+
   previewStmt <- function(x, n = 120L) {
     x <- gsub("[\r\n]+", " ", x, perl = TRUE)
     if (nchar(x) > n) paste0(substr(x, 1L, n), "...") else x
   }
-  
+
   pbId <- NULL
   if (verbose && nStatements > 1L) {
     pbId <- cli::cli_progress_bar(
@@ -105,22 +111,25 @@ executeSqlStatements <- function(connection, sqlStatements, verbose = TRUE, quie
       clear = TRUE
     )
   }
-  
-  on.exit({
-    if (!is.null(pbId)) try(cli::cli_progress_done(id = pbId), silent = TRUE)
-  }, add = TRUE)
-  
+
+  on.exit(
+    {
+      if (!is.null(pbId)) try(cli::cli_progress_done(id = pbId), silent = TRUE)
+    },
+    add = TRUE
+  )
+
   t0 <- proc.time()[["elapsed"]]
-  
+
   for (i in seq_len(nStatements)) {
     sql <- sqlStatements[[i]]
     if (is.null(sql) || !nzchar(trimws(sql))) {
       if (!is.null(pbId)) cli::cli_progress_update(id = pbId, inc = 1)
       next
     }
-    
-    
-    
+
+
+
     if (quiet_db) {
       res <- try(executeOne(connection, sql), silent = TRUE)
     } else {
@@ -131,7 +140,7 @@ executeSqlStatements <- function(connection, sqlStatements, verbose = TRUE, quie
         if (length(res$warnings)) cli::cli_warn(res$warnings)
       }
     }
-    
+
     if (inherits(res, "try-error") || !is.null(res$error)) {
       if (!is.null(pbId)) try(cli::cli_progress_done(id = pbId), silent = TRUE)
       cli::cli_abort(
@@ -143,31 +152,23 @@ executeSqlStatements <- function(connection, sqlStatements, verbose = TRUE, quie
         .envir = rlang::env(i = i, nStatements = nStatements, sql = sql, previewStmt = previewStmt)
       )
     }
-    
+
     if (!is.null(pbId)) cli::cli_progress_update(id = pbId, inc = 1)
   }
-  
+
   total_secs <- round(proc.time()[["elapsed"]] - t0, 3)
-  
+
   if (verbose) {
     cli::cli_inform(c(
       "v" = "Executed {nStatements} SQL statement{if (nStatements != 1L) 's' else ''} in {total_secs} secs."
     ))
   }
-  
+
   invisible(NULL)
 }
 
 # Helpers (simple, focused)
 .int_flag <- function(x) as.integer(isTRUE(x))
-
-.qualify <- function(table, schema) {
-  if (!is.null(schema) && nzchar(schema %||% "") && !is.null(table) && nzchar(table %||% "")) {
-    paste(schema, table, sep = ".")
-  } else {
-    table
-  }
-}
 
 executeOne <- purrr::quietly(DBI::dbExecute)
 
@@ -190,19 +191,18 @@ insertTableDBI <- function(connection,
                            tempTable = FALSE,
                            tempEmulationSchema = NULL,
                            camelCaseToSnakeCase = FALSE) {
-
   # Optionally rename columns
   if (camelCaseToSnakeCase) {
     names(data) <- SqlRender::camelCaseToSnakeCase(names(data))
   }
-  
+
   # Handle schema vs. temp table
   if (!is.null(tempEmulationSchema) && nzchar(tempEmulationSchema)) {
     id <- DBI::Id(schema = tempEmulationSchema, table = tableName)
   } else {
     id <- DBI::Id(table = tableName)
   }
-  
+
   DBI::dbWriteTable(
     conn      = connection,
     name      = id,
@@ -210,8 +210,8 @@ insertTableDBI <- function(connection,
     temporary = tempTable,
     overwrite = TRUE
   )
-  
-  invisible(TRUE)
+
+  return(tableName)
 }
 
 to_title_case_base <- function(x) {
@@ -220,17 +220,14 @@ to_title_case_base <- function(x) {
   # split on spaces
   words <- strsplit(x, "\\s+")[[1]]
   # uppercase first letter, append rest
-  words <- paste0(toupper(substring(words, 1, 1)),
-                  substring(words, 2))
+  words <- paste0(
+    toupper(substring(words, 1, 1)),
+    substring(words, 2)
+  )
   # rejoin
   paste(words, collapse = " ")
 }
 
-
-
-
-
-# R/helpers.R (add this function)
 
 #' Find the 1-based index of the primary event filter
 #'
@@ -246,7 +243,7 @@ to_title_case_base <- function(x) {
 .findPrimaryFilterId <- function(settings) {
   primaryFilterName <- settings$primaryEventFilterName
   eventFilters <- settings$eventFilters
-  
+
   # Guard clause: If there's no name to search for or no list to search in, return 0.
   if (is.null(primaryFilterName) || rlang::is_empty(eventFilters)) {
     return(0L)
