@@ -51,8 +51,8 @@ executeSqlPlan <- function(
       tempEmulationSchema = tempEmulationSchema
     ) |>
     SqlRender::splitSql()
-
-  logMessage(sprintf("Executing %d SQL statements", length(sqlStatements)), verbose, "INFO")
+# 
+#   logMessage(sprintf("Executing %d SQL statements", length(sqlStatements)), verbose, "INFO")
   fetchSql <- sqlStatements[[1]]
   executeSqlStatements(
     connection = connection,

@@ -105,9 +105,17 @@ GROUP BY person_id;
 
 -- Log diagnostics (same 3 columns as the table)
 INSERT INTO #diag_table (step_name, n_persons, n_events)
-VALUES
-  ('01_person_subset', (SELECT COUNT(DISTINCT person_id) FROM #cohort_person), NULL),
-  ('02_valid_window',  (SELECT COUNT(DISTINCT person_id) FROM #analysis_window_clean), NULL);
+SELECT
+  '01_person_subset' AS step_name,
+  COUNT(DISTINCT person_id) AS n_persons,
+  CAST(NULL AS BIGINT) AS n_events
+FROM #cohort_person
+UNION ALL
+SELECT
+  '02_valid_window',
+  COUNT(DISTINCT person_id),
+  CAST(NULL AS BIGINT)
+FROM #analysis_window_clean;;
 /* ============================================================================
    SECTION 2: IDENTIFY QUALIFYING VISITS
    ============================================================================ */
@@ -235,12 +243,13 @@ WHERE vo.visit_end_date   >= aw.start_date
   FROM #visits_in_window;
 };
 
+
 -- Diagnostics
 INSERT INTO #diag_table (step_name, n_persons, n_events)
 SELECT
   '03_with_qualifying_visits',
-  COUNT(DISTINCT person_id),
-  COUNT(DISTINCT visit_occurrence_id)
+  COALESCE(COUNT(DISTINCT person_id), 0),
+  COALESCE(COUNT(DISTINCT visit_occurrence_id), 0)
 FROM #qualifying_visits;
 
 /* ============================================================================
