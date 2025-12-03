@@ -20,12 +20,11 @@
 #' Create a validated settings object for the `calculateCostOfCare` analysis.
 #' This is the recommended way to specify analysis parameters.
 #'
-#' @param anchorCol Character; which cohort column anchors the analysis window.
-#'   One of `"cohort_start_date"` or `"cohort_end_date"`. Default: `"cohort_start_date"`.
-#' @param startOffsetDays Integer; days to add to the anchor date for window start
-#'   (can be negative). Default: 0.
-#' @param endOffsetDays Integer; days to add to the anchor date for window end.
-#'   Must be greater than `startOffsetDays`. Default: 365.
+#' @param window                   A list containing the time window specifications:
+#'                                 - startWith: Event to use as window start (e.g., 'start')
+#'                                 - startOffset: Days to add/subtract from startWith date
+#'                                 - endWith: Event to use as window end (e.g., 'end')
+#'                                 - endOffset: Days to add/subtract from endWith date
 #' @param restrictVisitConceptIds Optional integer vector of visit concept IDs to restrict analysis.
 #'   If provided, only visits with these concept IDs are considered.
 #' @param eventFilters Optional list of event filters (see Details). Each filter defines a set of
@@ -45,9 +44,8 @@
 #' The `eventFilters` argument must be a list of lists, where each inner list has:
 #' \itemize{
 #'   \item `name`: A unique character string for the filter.
-#'   \item `domain`: The OMOP domain (one of `"All"`, `"Drug"`, `"Condition"`, `"Procedure"`,
-#'         `"Observation"`, `"Measurement"`, `"Device"`, `"Visit"`).
-#'   \item `conceptIds`: An integer vector of concept IDs (length \eqn{\ge} 1) or NULL if all domain names required.
+#'   \item `domain`: A character string specifying the OMOP domain (e.g., "Drug", "Condition", "Procedure", etc.).
+#'   \item `conceptSet`: A Circe concept set list defining the concepts to include.
 #' }
 #'
 #' **CPI adjustment**
@@ -57,20 +55,16 @@
 #' joins on the `year` extracted from cost dates. The function only validates the file path;
 #' loading/attaching the table is left to the calling workflow.
 #'
-#' @return A `CostOfCareSettings` object (list with class) containing:
-#' \itemize{
-#'   \item `anchorCol`, `startOffsetDays`, `endOffsetDays`
-#'   \item `hasVisitRestriction`, `restrictVisitConceptIds`
-#'   \item `hasEventFilters`, `eventFilters`, `nFilters`
-#'   \item `microCosting`,
-#'   \item `costConceptId`, `currencyConceptId`, `additionalCostConceptIds`
-#'   \item `cpiAdjustment`, `cpiFilePath`
-#' }
+#' @return A `covariateSettings` object (list with class) containing analysis specifications.
+#'
 #' @export
 createCostOfCareSettings <- function(
-    anchorCol = "cohort_start_date",
-    startOffsetDays = 0L,
-    endOffsetDays = 365L,
+    window = list(
+      startWith = "start",
+      startOffset = 0,
+      endWith = "end",
+      endOffset = 0
+    ),
     restrictVisitConceptIds = NULL,
     eventFilters = NULL,
     microCosting = FALSE,
@@ -82,102 +76,84 @@ createCostOfCareSettings <- function(
   # --- Input Validation with checkmate ---
   errorMessages <- checkmate::makeAssertCollection()
 
-  # anchor column
-  checkmate::assertChoice(
-    anchorCol,
-    choices = c("cohort_start_date", "cohort_end_date"),
-    add = errorMessages
-  )
+  # 1. Window validation (Structure check)
+  checkmate::assertList(window, len = 4, names = "strict", add = errorMessages)
+  if (checkmate::testList(window, len = 4, names = "strict")) {
+    valid_anchors <- c("start", "end") # Assuming start/end were placeholders
+    checkmate::assertChoice(window$startWith, choices = valid_anchors, add = errorMessages)
+    checkmate::assertChoice(window$endWith, choices = valid_anchors, add = errorMessages)
 
-  # offsets
-  checkmate::assertIntegerish(startOffsetDays, len = 1, any.missing = FALSE, add = errorMessages)
-  checkmate::assertIntegerish(endOffsetDays, len = 1, any.missing = FALSE, add = errorMessages)
+    checkmate::assertIntegerish(window$startOffset, len = 1, any.missing = FALSE, add = errorMessages)
+    checkmate::assertIntegerish(window$endOffset, len = 1, any.missing = FALSE, add = errorMessages)
+  }
 
-  # costs/currency
+  # 2. Costs/Currency validation
   checkmate::assertIntegerish(costConceptId, len = 1, lower = 1, any.missing = FALSE, add = errorMessages)
   checkmate::assertIntegerish(currencyConceptId, len = 1, lower = 1, any.missing = FALSE, add = errorMessages)
 
-  # optional additional cost concepts
+  # 3. Optional additional cost concepts
   if (!is.null(additionalCostConceptIds)) {
     checkmate::assertIntegerish(additionalCostConceptIds, lower = 1, any.missing = FALSE, unique = TRUE, add = errorMessages)
   }
 
-  # flags
+  # 4. Flags
   checkmate::assertFlag(microCosting, add = errorMessages)
   checkmate::assertFlag(cpiAdjustment, add = errorMessages)
 
-  # visit restrictions
+  # 5. Visit restrictions
   if (!is.null(restrictVisitConceptIds)) {
     checkmate::assertIntegerish(restrictVisitConceptIds, lower = 1, min.len = 1, unique = TRUE, any.missing = FALSE, add = errorMessages)
   }
 
-  # event filters (structural validation after assertions)
+  # 6. Event filters (structural check before detailed validation)
   if (!is.null(eventFilters)) {
-    # placeholder; detailed structural validation below
-    checkmate::assertList(eventFilters, add = errorMessages)
+    checkmate::assertList(eventFilters, add = errorMessages, min.len = 1)
   }
 
-  # collect assertion failures (so far)
+  # Collect assertion failures (so far)
   checkmate::reportAssertions(errorMessages)
 
-  # semantic checks
-  if (endOffsetDays <= startOffsetDays) {
-    cli::cli_abort(c(
-      "Invalid time window specification",
-      "x" = "endOffsetDays ({endOffsetDays}) must be greater than startOffsetDays ({startOffsetDays})",
-      "i" = "The analysis window must have a positive duration."
-    ))
-  }
+  # --- Detailed/Conditional Validation (Base R Error Handling) ---
 
-  # event filters detailed validation
+  # 7. Event filters detailed validation
   if (!is.null(eventFilters)) {
     validateEventFilters(eventFilters)
     nFilters <- length(eventFilters)
-    cli::cli_inform(c("i" = "Configured {nFilters} event filter{?s} for analysis"))
+    message(sprintf("Configured %d event filter(s) for analysis.", nFilters))
   } else {
     nFilters <- 0L
   }
 
-  # micro-costing constraints
-  if (microCosting) {
-    if (is.null(eventFilters)) {
-      cli::cli_abort(c(
-        "Micro-costing requires event filters",
-        "x" = "eventFilters is NULL but microCosting is TRUE",
-        "i" = "Define at least one event filter for micro-costing analysis."
-      ))
-    }
-    filterNames <- vapply(eventFilters, function(f) f$name, character(1))
+  # 8. Micro-costing constraints
+  if (isTRUE(microCosting) && is.null(eventFilters)) {
+    stop(paste(
+      "Micro-costing requires event filters. eventFilters is NULL but microCosting is TRUE.",
+      "Define at least one event filter for micro-costing analysis."
+    ))
   }
 
-  # CPI constraints
+  # 9. CPI constraints
   if (isTRUE(cpiAdjustment)) {
-    if (is.null(cpiFilePath) || !is.character(cpiFilePath) || length(cpiFilePath) != 1L || nchar(cpiFilePath) == 0L) {
-      cli::cli_abort(c(
-        "CPI adjustment enabled but no CPI file provided",
-        "x" = "cpiFilePath must be a non-empty path when cpiAdjustment = TRUE"
-      ))
-    }
+    checkmate::assertCharacter(cpiFilePath, len = 1, any.missing = FALSE, min.chars = 1, add = errorMessages)
+    checkmate::reportAssertions(errorMessages) # Re-report if path is invalid type
+
     if (!file.exists(cpiFilePath)) {
-      cli::cli_abort(c(
-        "CPI file not found",
-        "x" = "File does not exist: '{cpiFilePath}'",
-        "i" = "Provide a valid path to CPI adjustment data."
+      stop(sprintf(
+        "CPI file not found. File does not exist: '%s'. Provide a valid path to CPI adjustment data.",
+        cpiFilePath
       ))
     }
   }
 
-  # helpful notices
+  # Helpful notice for visit restrictions
   if (!is.null(restrictVisitConceptIds)) {
-    cli::cli_inform(c("i" = "Analysis will be restricted to {length(restrictVisitConceptIds)} visit concept{?s}."))
+    message(sprintf("Analysis will be restricted to %d visit concept(s).", length(restrictVisitConceptIds)))
   }
 
   # --- Create Settings Object ---
   settings <- structure(
     list(
-      anchorCol = anchorCol,
-      startOffsetDays = as.integer(startOffsetDays),
-      endOffsetDays = as.integer(endOffsetDays),
+      window = window,
       hasVisitRestriction = !is.null(restrictVisitConceptIds),
       restrictVisitConceptIds = if (is.null(restrictVisitConceptIds)) NULL else as.integer(restrictVisitConceptIds),
       hasEventFilters = !is.null(eventFilters),
@@ -205,79 +181,70 @@ createCostOfCareSettings <- function(
 #' @noRd
 validateEventFilters <- function(eventFilters) {
   if (!is.list(eventFilters)) {
-    cli::cli_abort(c(
-      "Invalid event filters format",
-      "x" = "eventFilters must be a list",
-      "i" = "Received {.cls {class(eventFilters)}}"
-    ))
+    stop(sprintf("Invalid event filters format. Expected a list, received class: %s", class(eventFilters)[1]))
   }
 
-  # Check each filter
-  purrr::walk(seq_along(eventFilters), ~ {
-    filter <- eventFilters[[.x]]
+  validDomains <- c(
+    "Drug", "Condition", "Procedure", "Observation",
+    "Measurement", "Device",  "All"
+  )
+
+  filter_names <- character(length(eventFilters))
+
+  # Iterate through filters using Base R loop
+  for (i in seq_along(eventFilters)) {
+    filter <- eventFilters[[i]]
+    filter_label <- paste("Filter at index", i)
 
     if (!is.list(filter)) {
-      cli::cli_abort(c(
-        "Invalid event filter structure",
-        "x" = "Filter {.x} is not a list",
-        "i" = "Each filter must be a list with 'name', 'domain', and 'conceptIds'"
-      ))
+      stop(sprintf("Invalid event filter structure: %s is not a list.", filter_label))
     }
 
-    # Check required fields
-    requiredFields <- c("name", "domain", "conceptIds")
+    # Check required fields (Updated to conceptSet)
+    requiredFields <- c("name", "domain", "conceptSet")
     missingFields <- setdiff(requiredFields, names(filter))
 
     if (length(missingFields) > 0) {
-      cli::cli_abort(c(
-        "Missing required fields in event filter {.x}",
-        "x" = "Missing: {.field {missingFields}}",
-        "i" = "Each filter must have: {.field {requiredFields}}"
+      stop(sprintf(
+        "Missing required fields in %s. Missing: %s. Required fields are: %s",
+        filter_label,
+        paste(missingFields, collapse = ", "),
+        paste(requiredFields, collapse = ", ")
       ))
     }
 
     # Validate name
     if (!is.character(filter$name) || length(filter$name) != 1 || nchar(filter$name) == 0) {
-      cli::cli_abort(c(
-        "Invalid filter name in event filter {.x}",
-        "x" = "name must be a non-empty character string",
-        "i" = "Received: {.val {filter$name}}"
-      ))
+      stop(sprintf("Invalid filter name in %s. Name must be a non-empty character string.", filter_label))
     }
+    filter_names[i] <- filter$name
 
     # Validate domain
-    validDomains <- c(
-      "Drug", "Condition", "Procedure", "Observation",
-      "Measurement", "Device", "Visit", "All"
-    )
-
     if (!filter$domain %in% validDomains) {
-      cli::cli_abort(c(
-        "Invalid domain in event filter {.x}",
-        "x" = "'{filter$domain}' is not a valid OMOP domain",
-        "i" = "Valid domains: {.val {validDomains}}"
+      stop(sprintf(
+        "Invalid domain in filter '%s'. '%s' is not a valid OMOP domain. Valid domains: %s",
+        filter$name,
+        filter$domain,
+        paste(validDomains, collapse = ", ")
       ))
     }
 
-    # Validate concept IDs
-    checkmate::assertIntegerish(
-      filter$conceptIds,
-      lower = 1,
-      min.len = 1,
-      any.missing = FALSE,
-      null.ok = TRUE
-    )
-  })
+    # Validate conceptSet (Must be a list structure, typical for Circe)
+    if (!is.list(filter$conceptSet)) {
+      stop(sprintf(
+        "Invalid 'conceptSet' in filter '%s'. 'conceptSet' must be a list (Circe concept set structure). Received class: %s",
+        filter$name,
+        class(filter$conceptSet)[1]
+      ))
+    }
+  }
 
   # Check for duplicate names
-  filterNames <- purrr::map_chr(eventFilters, "name")
-  duplicateNames <- filterNames[duplicated(filterNames)]
-
-  if (length(duplicateNames) > 0) {
-    cli::cli_abort(c(
-      "Duplicate filter names detected",
-      "x" = "The following names appear multiple times: {.val {unique(duplicateNames)}}",
-      "i" = "Each event filter must have a unique name"
+  duplicates <- filter_names[duplicated(filter_names)]
+  if (length(duplicates) > 0) {
+    stop(sprintf(
+      "Duplicate filter names detected: %s. Each event filter must have a unique name.",
+      paste(unique(duplicates), collapse = ", ")
     ))
   }
 

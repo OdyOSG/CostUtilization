@@ -16,18 +16,11 @@ License: Apache License (>= 2.0)
 URL: https://github.com/OHDSI/CostUtilization
 BugReports: https://github.com/OHDSI/CostUtilization/issues
 Imports: 
-    Andromeda (>= 1.1.1),
     checkmate,
-    cli,
-    DBI,
-    dplyr,
-    glue,
-    purrr,
-    SqlRender,
-    rlang,
-    tidyr,
-    methods,
+    CirceR,
     DatabaseConnector
+    dplyr,
+    SqlRender
 Suggests:
     covr,
     duckdb,
