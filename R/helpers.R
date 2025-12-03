@@ -1,45 +1,47 @@
 cleanupTempTables <- function(connection, schema = NULL, ...) {
   # Basic validation
-  if (!DBI::dbIsValid(connection)) {
-    rlang::abort("`connection` is not a valid DBI connection.")
+  if (!DatabaseConnector::isConnected(connection)) {
+    rlang::abort("`connection` is not a valid DatabaseConnector connection.")
   }
   tables <- rlang::list2(...)
   if (length(tables) == 0L) {
     return(invisible(NULL))
   }
 
-  # Local helper: build a fully qualified, safely quoted identifier
-  quoteIdent <- function(conn, tbl, schema = NULL) {
+  # Local helper: build a fully qualified table name
+  buildTableName <- function(tbl, schema = NULL) {
     if (!is.null(schema) && nzchar(schema %||% "")) {
-      id <- DBI::Id(schema = schema, table = tbl)
+      paste0(schema, ".", tbl)
     } else {
-      id <- DBI::Id(table = tbl)
+      tbl
     }
-    DBI::dbQuoteIdentifier(conn, id)
   }
 
-  dropWithIfExists <- function(conn, qident) {
-    DBI::dbExecute(conn, DBI::SQL(glue::glue("DROP TABLE IF EXISTS {qident};")))
+  dropWithIfExists <- function(conn, tableName) {
+    sql <- paste0("DROP TABLE IF EXISTS ", tableName, ";")
+    DatabaseConnector::executeSql(conn, sql)
   }
-  dropWithoutIfExists <- function(conn, qident) {
-    DBI::dbExecute(conn, DBI::SQL(glue::glue("DROP TABLE {qident};")))
+  
+  dropWithoutIfExists <- function(conn, tableName) {
+    sql <- paste0("DROP TABLE ", tableName, ";")
+    DatabaseConnector::executeSql(conn, sql)
   }
 
-  purrr::walk(tables, ~ {
-    tbl <- .x
+  for (i in seq_along(tables)) {
+    tbl <- tables[[i]]
     if (is.null(tbl) || !nzchar(tbl)) {
-      return(invisible(NULL))
+      next
     }
 
-    qident <- quoteIdent(connection, tbl, schema)
+    tableName <- buildTableName(tbl, schema)
 
     tryCatch(
       {
         tryCatch(
-          dropWithIfExists(connection, qident),
+          dropWithIfExists(connection, tableName),
           error = function(eIf) {
             tryCatch(
-              dropWithoutIfExists(connection, qident),
+              dropWithoutIfExists(connection, tableName),
               error = function(eDrop) invisible(NULL)
             )
           }
@@ -47,9 +49,7 @@ cleanupTempTables <- function(connection, schema = NULL, ...) {
       },
       error = function(e) invisible(NULL)
     )
-
-    invisible(NULL)
-  })
+  }
 
   invisible(NULL)
 }
@@ -86,7 +86,7 @@ logMessage <- function(message, verbose = TRUE, level = "INFO") {
 #' @description
 #' Executes a vector of SQL statements with progress reporting.
 #'
-#' @param connection DatabaseConnector or DBI connection
+#' @param connection DatabaseConnector connection
 #' @param sqlStatements Character vector of SQL statements
 #' @param verbose Whether to show progress
 #'
@@ -128,25 +128,20 @@ executeSqlStatements <- function(connection, sqlStatements, verbose = TRUE, quie
       next
     }
 
-
-
-    if (quiet_db) {
-      res <- try(executeOne(connection, sql), silent = TRUE)
-    } else {
-      # still use quietly, but we can print warnings/messages manually if wanted
-      res <- try(executeOne(connection, sql), silent = TRUE)
-      if (!inherits(res, "try-error")) {
-        if (length(res$messages)) cli::cli_inform(res$messages)
-        if (length(res$warnings)) cli::cli_warn(res$warnings)
+    res <- try({
+      if (quiet_db) {
+        DatabaseConnector::executeSql(connection, sql)
+      } else {
+        DatabaseConnector::executeSql(connection, sql, reportOverallTime = FALSE)
       }
-    }
+    }, silent = TRUE)
 
-    if (inherits(res, "try-error") || !is.null(res$error)) {
+    if (inherits(res, "try-error")) {
       if (!is.null(pbId)) try(cli::cli_progress_done(id = pbId), silent = TRUE)
       cli::cli_abort(
         c(
           "Error executing SQL statement {i} of {nStatements}.",
-          "x" = "{conditionMessage(if (inherits(res, 'try-error')) attr(res, 'condition') else res$error)}",
+          "x" = "{conditionMessage(attr(res, 'condition'))}",
           "i" = "Statement preview: {previewStmt(sql)}"
         ),
         .envir = rlang::env(i = i, nStatements = nStatements, sql = sql, previewStmt = previewStmt)
@@ -170,50 +165,6 @@ executeSqlStatements <- function(connection, sqlStatements, verbose = TRUE, quie
 # Helpers (simple, focused)
 .int_flag <- function(x) as.integer(isTRUE(x))
 
-executeOne <- purrr::quietly(DBI::dbExecute)
-
-
-
-
-#' Insert a data.frame into a DBI connection (replacement for DatabaseConnector::insertTable)
-#'
-#' @param connection A DBI connection.
-#' @param tableName Target table name (character).
-#' @param data A data.frame or tibble to insert.
-#' @param tempTable Logical, create a temporary table if supported.
-#' @param tempEmulationSchema Optional schema name to emulate temporary tables (e.g. for Oracle).
-#' @param camelCaseToSnakeCase Logical, convert column names before insert.
-#'
-#' @return Invisibly TRUE on success.
-insertTableDBI <- function(connection,
-                           tableName,
-                           data,
-                           tempTable = FALSE,
-                           tempEmulationSchema = NULL,
-                           camelCaseToSnakeCase = FALSE) {
-  # Optionally rename columns
-  if (camelCaseToSnakeCase) {
-    names(data) <- SqlRender::camelCaseToSnakeCase(names(data))
-  }
-
-  # Handle schema vs. temp table
-  if (!is.null(tempEmulationSchema) && nzchar(tempEmulationSchema)) {
-    id <- DBI::Id(schema = tempEmulationSchema, table = tableName)
-  } else {
-    id <- DBI::Id(table = tableName)
-  }
-
-  DBI::dbWriteTable(
-    conn      = connection,
-    name      = id,
-    value     = data,
-    temporary = tempTable,
-    overwrite = TRUE
-  )
-
-  return(tableName)
-}
-
 to_title_case_base <- function(x) {
   # force lower case
   x <- tolower(x)
@@ -227,7 +178,6 @@ to_title_case_base <- function(x) {
   # rejoin
   paste(words, collapse = " ")
 }
-
 
 #' Find the 1-based index of the primary event filter
 #'
@@ -249,8 +199,12 @@ to_title_case_base <- function(x) {
     return(0L)
   }
 
-  purrr::detect_index(
-    eventFilters, ~ identical(.x$name, primaryFilterName),
-    .default = 0L
-  )
+  # Use base R approach instead of purrr
+  for (i in seq_along(eventFilters)) {
+    if (identical(eventFilters[[i]]$name, primaryFilterName)) {
+      return(i)
+    }
+  }
+  
+  return(0L)
 }
