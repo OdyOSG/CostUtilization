@@ -5,13 +5,15 @@ Authors@R: c(
     person("Gowtham", "Rao", , "rao@ohdsi.org", role = c("aut", "cre")),
     person("Alexander", "Alexeyuk", , "alexander_aleksiayuk@epam.com", role = c("aut"))
   )
-Description: Provides a framework for executing standardized cost and
+Description: Provides a modular framework for executing standardized cost and
     healthcare utilization analyses on the OMOP Common Data Model. This
-    package computes aggregated or person-level cost and utilization
-    metrics across various domains (e.g., Drug, Visit) and temporal
-    windows relative to a cohort.  The primary output is a
-    `CostCovariateData` object, which can be summarized, plotted, and used
-    in downstream OHDSI study pipelines.
+    package features a modular SQL architecture that computes aggregated or 
+    person-level cost and utilization metrics across various domains (e.g., 
+    Drug, Visit) and temporal windows relative to a cohort. Built primarily 
+    on DatabaseConnector for robust database interactions, the framework 
+    enables scalable analysis execution across different database platforms. 
+    The primary output is a `CostCovariateData` object, which can be 
+    summarized, plotted, and used in downstream OHDSI study pipelines.
 License: Apache License (>= 2.0)
 URL: https://github.com/OHDSI/CostUtilization
 BugReports: https://github.com/OHDSI/CostUtilization/issues
@@ -19,17 +21,17 @@ Imports:
     Andromeda (>= 1.1.1),
     checkmate,
     cli,
-    DBI,
+    DatabaseConnector,
     dplyr,
     glue,
     purrr,
     SqlRender,
     rlang,
     tidyr,
-    methods,
-    DatabaseConnector
+    methods
 Suggests:
     covr,
+    DBI,
     duckdb,
     testthat (>= 3.0.0),
     withr,
