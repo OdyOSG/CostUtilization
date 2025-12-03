@@ -13,55 +13,133 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#' Execute SQL Plan for Cost Analysis
+
+#' Execute Modular SQL Plan for Cost Analysis
 #'
 #' @description
-#' Reads the SQL template, renders it with parameters, translates to the target
-#' dialect, and executes the statements.
+#' Executes the modular SQL approach using individual SQL modules instead of
+#' a single monolithic SQL file. Uses DatabaseConnector for all operations.
 #'
-#' @param connection A DatabaseConnector or DBI connection object.
+#' @param connection A DatabaseConnector connection object.
 #' @param params Named list of parameters for SQL rendering (can be camelCase or snake_case).
 #' @param targetDialect The SQL dialect to translate to.
 #' @param tempEmulationSchema Schema for temp table emulation (if needed).
 #' @param verbose Whether to output progress messages.
 #'
-#' @return NULL (invisibly)
+#' @return Character string containing the final query SQL
 #' @noRd
-# Execute SQL Plan for Cost Analysis (refactored render call; unchanged signature)
 executeSqlPlan <- function(
     connection,
     params,
     targetDialect,
     tempEmulationSchema,
     verbose = TRUE) {
-  logMessage("Starting SQL plan execution", verbose, "INFO")
-
-  sql <- system.file("sql", "MainCostUtilization.sql",
-    package = "CostUtilization", mustWork = TRUE
-  ) |>
-    SqlRender::readSql()
-
+  
+  logMessage("Starting modular SQL plan execution", verbose, "INFO")
+  
+  # Prepare parameters for SQL rendering
   renderParams <- prepareSqlRenderParams(params, tempEmulationSchema)
-
-  logMessage(sprintf("Translating SQL to %s dialect", targetDialect), verbose, "DEBUG")
-
-  sqlStatements <- do.call(SqlRender::render, c(list(sql = sql), renderParams)) |>
-    SqlRender::translate(
+  
+  # Define the SQL modules in execution order
+  sqlModules <- c(
+    "CreateTempTables.sql",
+    "BuildCohortWindow.sql",
+    "ApplyVisitRestrictions.sql",
+    "ApplyEventFilters.sql",
+    "CalculateBaseCosts.sql",
+    "ApplyCpiAdjustment.sql",
+    "AggregateResults.sql",
+    "FinalQuery.sql"
+  )
+  
+  logMessage(sprintf("Executing %d SQL modules", length(sqlModules)), verbose, "INFO")
+  
+  finalQuerySql <- NULL
+  
+  # Execute each SQL module
+  for (i in seq_along(sqlModules)) {
+    moduleName <- sqlModules[i]
+    logMessage(sprintf("Processing module %d/%d: %s", i, length(sqlModules), moduleName), verbose, "DEBUG")
+    
+    # Read the SQL module
+    sqlPath <- system.file("sql", "modules", moduleName, 
+                          package = "CostUtilization", mustWork = TRUE)
+    sql <- SqlRender::readSql(sqlPath)
+    
+    # Render and translate SQL
+    renderedSql <- do.call(SqlRender::render, c(list(sql = sql), renderParams))
+    translatedSql <- SqlRender::translate(
+      sql = renderedSql,
       targetDialect = targetDialect,
       tempEmulationSchema = tempEmulationSchema
-    ) |>
-    SqlRender::splitSql()
-# 
-#   logMessage(sprintf("Executing %d SQL statements", length(sqlStatements)), verbose, "INFO")
-  fetchSql <- sqlStatements[[1]]
-  executeSqlStatements(
-    connection = connection,
-    sqlStatements = sqlStatements[-c(1, 2)],
-    verbose = verbose
-  )
+    )
+    
+    # Split into individual statements
+    sqlStatements <- SqlRender::splitSql(translatedSql)
+    
+    # Handle the final query differently - return it instead of executing
+    if (moduleName == "FinalQuery.sql") {
+      finalQuerySql <- sqlStatements[1]
+      logMessage("Final query SQL prepared", verbose, "DEBUG")
+    } else {
+      # Execute all statements for this module
+      executeModuleStatements(
+        connection = connection,
+        sqlStatements = sqlStatements,
+        moduleName = moduleName,
+        verbose = verbose
+      )
+    }
+  }
+  
+  logMessage("Modular SQL plan execution completed", verbose, "INFO")
+  return(finalQuerySql)
+}
 
-  logMessage("SQL plan execution completed", verbose, "INFO")
-  return(fetchSql)
+#' Execute SQL Statements for a Module
+#'
+#' @description
+#' Executes all SQL statements for a given module using DatabaseConnector.
+#'
+#' @param connection DatabaseConnector connection object.
+#' @param sqlStatements Character vector of SQL statements.
+#' @param moduleName Name of the module being executed.
+#' @param verbose Whether to output progress messages.
+#'
+#' @return NULL (invisibly)
+#' @noRd
+executeModuleStatements <- function(connection, sqlStatements, moduleName, verbose = TRUE) {
+  if (length(sqlStatements) == 0) {
+    logMessage(sprintf("No statements to execute for module: %s", moduleName), verbose, "DEBUG")
+    return(invisible(NULL))
+  }
+  
+  for (i in seq_along(sqlStatements)) {
+    stmt <- sqlStatements[i]
+    if (nchar(trimws(stmt)) == 0) {
+      next
+    }
+    
+    tryCatch({
+      logMessage(sprintf("Executing statement %d/%d for module %s", 
+                        i, length(sqlStatements), moduleName), verbose, "DEBUG")
+      
+      DatabaseConnector::executeSql(
+        connection = connection,
+        sql = stmt,
+        progressBar = FALSE,
+        reportOverallTime = FALSE
+      )
+      
+    }, error = function(e) {
+      logMessage(sprintf("Error in module %s, statement %d: %s", 
+                        moduleName, i, e$message), verbose, "ERROR")
+      stop(sprintf("SQL execution failed in module %s: %s", moduleName, e$message))
+    })
+  }
+  
+  logMessage(sprintf("Module %s completed successfully", moduleName), verbose, "DEBUG")
+  invisible(NULL)
 }
 
 #' Prepare SQL Render Parameters
@@ -75,7 +153,6 @@ executeSqlPlan <- function(
 #'
 #' @return Named list ready for SQL rendering.
 #' @noRd
-#'
 prepareSqlRenderParams <- function(
     params,
     tempEmulationSchema) {
@@ -108,6 +185,67 @@ prepareSqlRenderParams <- function(
 
     # CPI
     cpi_adjustment         = .int_flag(params$cpiAdjustment),
-    cpi_adj_table          = params$cpiAdjTable
+    cpi_adj_table          = params$cpiAdjTable,
+    
+    # temp emulation
+    temp_emulation_schema  = tempEmulationSchema
   )
+}
+
+#' Validate DatabaseConnector Connection
+#'
+#' @description
+#' Validates that the provided connection is a DatabaseConnector connection object.
+#'
+#' @param connection Connection object to validate.
+#'
+#' @return TRUE if valid, throws error otherwise.
+#' @noRd
+validateDatabaseConnectorConnection <- function(connection) {
+  if (is.null(connection)) {
+    stop("Connection cannot be NULL")
+  }
+  
+  # Check if it's a DatabaseConnector connection
+  if (!inherits(connection, "DatabaseConnectorConnection")) {
+    stop("Connection must be a DatabaseConnector connection object")
+  }
+  
+  # Additional validation could be added here
+  return(TRUE)
+}
+
+#' Execute SQL with Error Handling
+#'
+#' @description
+#' Wrapper around DatabaseConnector::executeSql with enhanced error handling.
+#'
+#' @param connection DatabaseConnector connection object.
+#' @param sql SQL statement to execute.
+#' @param verbose Whether to output progress messages.
+#'
+#' @return NULL (invisibly)
+#' @noRd
+executeSqlWithErrorHandling <- function(connection, sql, verbose = TRUE) {
+  validateDatabaseConnectorConnection(connection)
+  
+  if (is.null(sql) || nchar(trimws(sql)) == 0) {
+    logMessage("Empty SQL statement provided", verbose, "WARNING")
+    return(invisible(NULL))
+  }
+  
+  tryCatch({
+    DatabaseConnector::executeSql(
+      connection = connection,
+      sql = sql,
+      progressBar = verbose,
+      reportOverallTime = verbose
+    )
+  }, error = function(e) {
+    logMessage(sprintf("SQL execution error: %s", e$message), verbose, "ERROR")
+    logMessage(sprintf("Failed SQL: %s", substr(sql, 1, 200)), verbose, "DEBUG")
+    stop(sprintf("SQL execution failed: %s", e$message))
+  })
+  
+  invisible(NULL)
 }
