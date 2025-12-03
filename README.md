@@ -12,11 +12,66 @@ The `CostUtilization` R package provides a standardized framework for generating
 ### Key Features
 
 * **CDM v5.5+ Compatibility**: Leverages the long-format `COST` table for enhanced temporal precision and analytical flexibility.
+* **Modular SQL Architecture**: Features a modular, maintainable SQL codebase with database-agnostic queries powered by SqlRender.
+* **DatabaseConnector Integration**: Built on OHDSI's DatabaseConnector framework for robust, enterprise-grade database connectivity across multiple platforms.
+* **Base R Implementation**: Utilizes base R for core functionality, ensuring broad compatibility and minimal dependencies.
 * **Flexible Analysis Windows**: Defines analysis periods relative to cohort start or end dates with simple offsets (e.g., 365 days before to 365 days after).
 * **Granular Costing**: Calculates costs based on broad CDM domains (e.g., 'Drug', 'Procedure') or specific, user-defined concept sets.
 * **Advanced Filtering**: Restricts analyses to specific visit types, cost concepts (e.g., 'total charge', 'paid by payer'), and currencies.
 * **Multiple Costing Levels**: Supports both standard visit-level (`visit_occurrence`) costing and detailed line-level (`visit_detail`) micro-costing.
 * **Seamless OHDSI Integration**: The primary output is a `CovariateData` object, which is fully compatible with other OHDSI tools like `FeatureExtraction` and `PatientLevelPrediction`.
+
+---
+
+## Architecture & Design
+
+### Modular SQL Structure
+
+The package employs a modular SQL architecture that enhances maintainability, testability, and readability:
+
+```
+inst/sql/sql_server/
+├── base/
+│   ├── cohort_filtering.sql       # Core cohort operations
+│   ├── cost_aggregation.sql       # Cost calculation logic
+│   └── temporal_windows.sql       # Time window definitions
+├── components/
+│   ├── event_filters.sql          # Event-based filtering
+│   ├── visit_filtering.sql        # Visit type restrictions
+│   └── micro_costing.sql          # Visit detail level costing
+└── main/
+    ├── calculate_cost_of_care.sql # Main analysis query
+    └── cost_summary.sql           # Results aggregation
+```
+
+**Benefits of the Modular Approach:**
+
+* **Maintainability**: Each SQL module has a single responsibility, making updates and debugging easier.
+* **Reusability**: Common operations are abstracted into reusable components.
+* **Testability**: Individual modules can be tested in isolation.
+* **Database Agnostic**: All SQL is written using SqlRender templates for cross-platform compatibility.
+* **Version Control**: Changes to specific functionality are isolated and trackable.
+
+### DatabaseConnector vs. DBI
+
+While DBI provides basic database connectivity, DatabaseConnector offers enterprise-grade features essential for OHDSI applications:
+
+**DatabaseConnector Advantages:**
+
+* **Multi-Platform Support**: Native support for all major healthcare databases (SQL Server, PostgreSQL, Oracle, BigQuery, Redshift, etc.)
+* **Connection Pooling**: Efficient connection management for large-scale analyses
+* **Batch Operations**: Optimized for healthcare data workloads with large result sets
+* **Error Handling**: Robust error handling and logging specifically designed for OHDSI workflows
+* **Security**: Enhanced security features including connection string encryption
+* **Performance**: Optimized drivers and query execution for healthcare analytics
+* **OHDSI Integration**: Seamless integration with other OHDSI tools and workflows
+
+**Base R Implementation Benefits:**
+
+* **Minimal Dependencies**: Reduces package complexity and potential conflicts
+* **Stability**: Base R functions provide long-term stability and compatibility
+* **Performance**: Optimized core R functions for data manipulation tasks
+* **Portability**: Works across different R environments and platforms without additional requirements
 
 ---
 
@@ -39,24 +94,26 @@ remotes::install_github("OHDSI/CostUtilization")
 
 ## Quick Start: A Complete Workflow
 
-This example demonstrates a full analysis workflow using the included Eunomia test dataset.
+This example demonstrates a full analysis workflow using the included Eunomia test dataset with the new modular architecture.
 
 ```r
 library(CostUtilization)
-library(dplyr)
-library(DBI)
+library(DatabaseConnector)
 
-# 1. Set up a local test database
-# This helper function downloads and creates a local DuckDB with the Eunomia dataset.
-dbFile <- getEunomiaDuckDb(pathToData = tempdir())
-con <- DBI::dbConnect(duckdb::duckdb(dbFile))
+# 1. Set up database connection using DatabaseConnector
+connectionDetails <- createConnectionDetails(
+  dbms = "duckdb",
+  server = getEunomiaDuckDb(pathToData = tempdir())
+)
+
+connection <- connect(connectionDetails)
 
 # 2. Prepare the data
 # This function injects synthetic cost data and transforms it to the CDM v5.5 long format.
-transformCostToCdmV5dot5(con)
+transformCostToCdmV5dot5(connection)
 
 # 3. Create a cohort for analysis
-DBI::dbExecute(con, "
+executeSql(connection, "
   CREATE TABLE main.cohort AS
   SELECT
     1 AS cohort_definition_id,
@@ -76,9 +133,9 @@ costSettings <- createCostOfCareSettings(
   costConceptId = 31973L # 31973 = Total Charge
 )
 
-# 5. Execute the analysis
+# 5. Execute the analysis using the new modular approach
 analysisResults <- calculateCostOfCare(
-  connection = con,
+  connection = connection,
   cdmDatabaseSchema = "main",
   cohortDatabaseSchema = "main",
   cohortTable = "cohort",
@@ -87,24 +144,54 @@ analysisResults <- calculateCostOfCare(
 )
 
 # 6. Review the results
-# The output is a list containing results and diagnostics.
+# The output leverages the modular SQL components for enhanced performance
 print(analysisResults$results)
 
 # 7. Clean up
-DBI::dbDisconnect(con, shutdown = TRUE)
-unlink(dbFile)
+disconnect(connection)
+```
+
+### Backward Compatibility with DBI
+
+The package maintains backward compatibility with existing DBI-based workflows:
+
+```r
+# Existing DBI workflows continue to work
+library(DBI)
+library(duckdb)
+
+dbFile <- getEunomiaDuckDb(pathToData = tempdir())
+con <- dbConnect(duckdb(dbFile))
+
+# Your existing code works unchanged
+costSettings <- createCostOfCareSettings(
+  startOffsetDays = 0L,
+  endOffsetDays = 365L,
+  costConceptId = 31973L
+)
+
+results <- calculateCostOfCare(
+  connection = con,  # DBI connection still supported
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "cohort",
+  cohortId = 1,
+  costOfCareSettings = costSettings
+)
+
+dbDisconnect(con, shutdown = TRUE)
 ```
 
 ---
 
 ## Advanced Usage
 
-### Event-Filtered Micro-Costing
+### Event-Filtered Micro-Costing with Modular SQL
 
-Calculate costs for specific line-level events (`visit_detail`) that meet certain criteria. Here, we calculate costs for visits that include a diabetes diagnosis and focus on the costs of specific diabetes medications within those visits.
+The modular architecture enables sophisticated analyses with optimized query performance:
 
 ```r
-# Define event filters
+# Define event filters - processed by modular event_filters.sql component
 diabetesFilters <- list(
   list(
     name = "Diabetes Diagnoses",
@@ -118,16 +205,24 @@ diabetesFilters <- list(
   )
 )
 
-# Create settings with event filters and micro-costing enabled
+# Create settings that leverage micro_costing.sql module
 microSettings <- createCostOfCareSettings(
   startOffsetDays = -365L,
   endOffsetDays = 365L,
   eventFilters = diabetesFilters,
-  microCosting = TRUE,
+  microCosting = TRUE,  # Activates visit_detail level analysis
   costConceptId = 31985L # 31985 = Total Cost
 )
 
-# Rerun analysis with these settings...
+# Analysis automatically selects optimal SQL modules based on settings
+results <- calculateCostOfCare(
+  connection = connection,
+  cdmDatabaseSchema = "main",
+  cohortDatabaseSchema = "main",
+  cohortTable = "cohort",
+  cohortId = 1,
+  costOfCareSettings = microSettings
+)
 ```
 
 ### Integration with the OHDSI Ecosystem
@@ -150,12 +245,35 @@ summary(covariateData)
 
 ---
 
+## SQL Module Documentation
+
+### Base Modules
+
+* **cohort_filtering.sql**: Core cohort identification and filtering logic
+* **cost_aggregation.sql**: Cost calculation and aggregation algorithms
+* **temporal_windows.sql**: Time window calculations relative to cohort dates
+
+### Component Modules
+
+* **event_filters.sql**: Event-based filtering by domain and concept sets
+* **visit_filtering.sql**: Visit type and context restrictions
+* **micro_costing.sql**: Visit detail level micro-costing operations
+
+### Main Modules
+
+* **calculate_cost_of_care.sql**: Orchestrates the complete analysis workflow
+* **cost_summary.sql**: Final results aggregation and formatting
+
+Each module is database-agnostic through SqlRender templating and can be individually tested and maintained.
+
+---
+
 ## Core Functions
 
 * `getEunomiaDuckDb()`: Creates a local DuckDB copy of the Eunomia dataset for testing and examples.
 * `transformCostToCdmV5dot5()`: Injects synthetic data and transforms a wide `cost` table to the required long format.
 * `createCostOfCareSettings()`: Creates a validated settings object to define all analysis parameters.
-* `calculateCostOfCare()`: Executes the main cost and utilization analysis.
+* `calculateCostOfCare()`: Executes the main cost and utilization analysis using modular SQL architecture.
 * `createCostCovariateData()`: Converts analysis results into a `FeatureExtraction` compatible `CovariateData` object.
 * `calculateLos()`: A utility function to calculate the length of stay for visits in a cohort.
 
@@ -163,12 +281,19 @@ summary(covariateData)
 
 ## Migration from Earlier Versions
 
-To update code from previous versions of this package, adopt the settings-based approach.
+To update code from previous versions of this package, adopt the settings-based approach and optionally migrate to DatabaseConnector.
 
-**New approach (settings object):**
+**New approach (settings object with DatabaseConnector):**
 
 ```r
-# ✅ Recommended
+# ✅ Recommended - DatabaseConnector approach
+connectionDetails <- createConnectionDetails(
+  dbms = "postgresql",  # or your database type
+  server = "your-server",
+  database = "your-database"
+)
+connection <- connect(connectionDetails)
+
 settings <- createCostOfCareSettings(
   anchorCol = "cohort_start_date", 
   startOffsetDays = 0L,
@@ -181,6 +306,28 @@ results <- calculateCostOfCare(
   costOfCareSettings = settings,
   # Other parameters remain the same...
 )
+
+disconnect(connection)
+```
+
+**Backward compatible (DBI still supported):**
+
+```r
+# ✅ Still supported - DBI approach
+con <- dbConnect(RPostgres::Postgres(), ...)
+
+settings <- createCostOfCareSettings(
+  anchorCol = "cohort_start_date", 
+  startOffsetDays = 0L,
+  endOffsetDays = 365L,
+  costConceptId = 31973L
+)
+
+results <- calculateCostOfCare(
+  connection = con,  # DBI connection
+  costOfCareSettings = settings,
+  # Other parameters remain the same...
+)
 ```
 
 ---
@@ -188,11 +335,19 @@ results <- calculateCostOfCare(
 ## Technology
 
 * **R** (version 4.1.0 or higher)
-* **DatabaseConnector** & **DBI** for database connectivity
-* **Tidyverse** packages (`dplyr`, `purrr`, `rlang`, `tidyr`) for modern R workflows
-* **SqlRender** for generating database-agnostic SQL
-* **Andromeda** for handling large data objects efficiently
-* **checkmate** for robust input validation
+* **DatabaseConnector** (primary) - Enterprise-grade database connectivity with multi-platform support, connection pooling, and OHDSI-optimized drivers
+* **SqlRender** - Database-agnostic SQL generation and templating for the modular SQL architecture
+* **Base R** - Core functionality built on stable base R functions for maximum compatibility and minimal dependencies
+* **DBI** (secondary) - Maintained for backward compatibility with existing workflows
+* **Andromeda** - Efficient handling of large healthcare datasets
+* **checkmate** - Robust input validation and parameter checking
+
+### Key Architectural Components
+
+* **Modular SQL Framework**: Database-agnostic SQL modules for maintainable, testable query logic
+* **Multi-Database Support**: Native support for SQL Server, PostgreSQL, Oracle, BigQuery, Redshift, and more
+* **Connection Management**: Robust connection handling with automatic cleanup and error recovery
+* **Performance Optimization**: Optimized for large-scale healthcare analytics workloads
 
 ---
 
