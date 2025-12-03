@@ -20,7 +20,7 @@
 #' `CostOfCareSettings` object. Creates temp helper tables as needed
 #' (visit restrictions, event filters, CPI) and executes the SQL plan.
 #'
-#' @param connection A live `DatabaseConnector` or `DBI` connection object.
+#' @param connection A live `DatabaseConnector` connection object.
 #' @param connectionDetails Optional `ConnectionDetails` to create a connection
 #'   if `connection` is not supplied (provide exactly one of the two).
 #' @param cdmDatabaseSchema Schema (or database) that contains CDM tables.
@@ -63,19 +63,62 @@ calculateCostOfCare <- function(
     rlang::abort("Provide exactly one of `connectionDetails` or `connection`, not both.")
   }
 
+  connectionOwner <- FALSE
   if (!is.null(connectionDetails)) {
     checkmate::assertClass(connectionDetails, "ConnectionDetails")
     connection <- DatabaseConnector::connect(connectionDetails)
-    on.exit(DatabaseConnector::disconnect(connection), add = TRUE)
+    connectionOwner <- TRUE
+    on.exit({
+      if (connectionOwner && !is.null(connection)) {
+        tryCatch({
+          DatabaseConnector::disconnect(connection)
+        }, error = function(e) {
+          logMessage(paste("Warning: Error disconnecting:", e$message), verbose, "WARN")
+        })
+      }
+    }, add = TRUE)
   } else {
-    checkmate::assertClass(connection, "DBIConnection")
+    # Validate that connection is a DatabaseConnector connection
+    if (!inherits(connection, "DatabaseConnectorConnection")) {
+      rlang::abort("Connection must be a DatabaseConnector connection object.")
+    }
   }
+  
   # --- Setup ---
   startTime <- Sys.time()
-  sessionPrefix <- SqlRender::translate("#", "oracle")[[1]]
+  dbms <- DatabaseConnector::dbms(connection)
+  sessionPrefix <- getSessionTempTablePrefix(dbms)
   restrictVisitTableName <- NULL
   eventConceptsTableName <- NULL
   cpiAdjTableName <- NULL
+  
+  # Cleanup function for temporary tables
+  cleanupTables <- function() {
+    if (!is.null(restrictVisitTableName)) {
+      tryCatch({
+        dropTempTable(connection, restrictVisitTableName, tempEmulationSchema)
+      }, error = function(e) {
+        logMessage(paste("Warning: Could not drop temp table", restrictVisitTableName, ":", e$message), verbose, "WARN")
+      })
+    }
+    if (!is.null(eventConceptsTableName)) {
+      tryCatch({
+        dropTempTable(connection, eventConceptsTableName, tempEmulationSchema)
+      }, error = function(e) {
+        logMessage(paste("Warning: Could not drop temp table", eventConceptsTableName, ":", e$message), verbose, "WARN")
+      })
+    }
+    if (!is.null(cpiAdjTableName)) {
+      tryCatch({
+        dropTempTable(connection, cpiAdjTableName, tempEmulationSchema)
+      }, error = function(e) {
+        logMessage(paste("Warning: Could not drop temp table", cpiAdjTableName, ":", e$message), verbose, "WARN")
+      })
+    }
+  }
+  
+  on.exit(cleanupTables(), add = TRUE)
+
   # --- CPI Adjustment: prepare adjustment factors table (if enabled) ---
   if (costOfCareSettings$cpiAdjustment) {
     logMessage("Setting up CPI adjustment...", verbose, "INFO")
@@ -90,61 +133,77 @@ calculateCostOfCare <- function(
       if (all(c("year", "cpi") %in% names(cpiData))) {
         cpiData$adj_factor <- cpiData$cpi
       } else {
-        cli::cli_abort("CPI data must contain columns 'year' and 'adj_factor' (or 'year' and 'cpi').")
+        rlang::abort("CPI data must contain columns 'year' and 'adj_factor' (or 'year' and 'cpi').")
       }
     }
 
-    cpiData <- cpiData[, c("year", "adj_factor")]
+    cpiData <- cpiData[, c("year", "adj_factor"), drop = FALSE]
     checkmate::assertIntegerish(cpiData$year, lower = 1900, any.missing = FALSE)
     checkmate::assertNumeric(cpiData$adj_factor, any.missing = FALSE)
 
-    cpiAdjTableName <- insertTableDBI(
-      connection = connection,
-      tableName = cpiAdjTableName,
-      data = cpiData,
-      tempTable = TRUE,
-      tempEmulationSchema = tempEmulationSchema,
-      camelCaseToSnakeCase = TRUE
-    )
-    logMessage(sprintf("Uploaded %d CPI rows to #%s", nrow(cpiData), cpiAdjTableName), verbose, "DEBUG")
+    tryCatch({
+      cpiAdjTableName <- insertTempTable(
+        connection = connection,
+        tableName = cpiAdjTableName,
+        data = cpiData,
+        tempEmulationSchema = tempEmulationSchema
+      )
+      logMessage(sprintf("Uploaded %d CPI rows to %s", nrow(cpiData), cpiAdjTableName), verbose, "DEBUG")
+    }, error = function(e) {
+      rlang::abort(sprintf("Failed to create CPI adjustment table: %s", e$message))
+    })
   }
 
   # --- Upload helper tables ---
   if (costOfCareSettings$hasVisitRestriction) {
     restrictVisitTableName <- paste0(sessionPrefix, "_visit_restr")
-    visitConcepts <- dplyr::tibble(visit_concept_id = costOfCareSettings$restrictVisitConceptIds)
-    restrictVisitTableName <- insertTableDBI(
-      connection = connection,
-      tableName = restrictVisitTableName,
-      data = visitConcepts,
-      tempTable = TRUE,
-      tempEmulationSchema = tempEmulationSchema,
-      camelCaseToSnakeCase = TRUE
-    )
-    logMessage(sprintf("Uploaded %d visit concepts to #%s", nrow(visitConcepts), restrictVisitTableName), verbose, "DEBUG")
+    visitConcepts <- data.frame(visit_concept_id = costOfCareSettings$restrictVisitConceptIds)
+    
+    tryCatch({
+      restrictVisitTableName <- insertTempTable(
+        connection = connection,
+        tableName = restrictVisitTableName,
+        data = visitConcepts,
+        tempEmulationSchema = tempEmulationSchema
+      )
+      logMessage(sprintf("Uploaded %d visit concepts to %s", nrow(visitConcepts), restrictVisitTableName), verbose, "DEBUG")
+    }, error = function(e) {
+      rlang::abort(sprintf("Failed to create visit restriction table: %s", e$message))
+    })
   }
 
   if (costOfCareSettings$hasEventFilters) {
     eventConceptsTableName <- paste0(sessionPrefix, "_evt_concepts")
-    # Build a long table: one row per concept id per filter
-    eventConcepts <- purrr::map_dfr(
-      seq_along(costOfCareSettings$eventFilters), ~ dplyr::tibble(
-        filter_id    = .x,
-        filter_name  = costOfCareSettings$eventFilters[[.x]]$name,
-        domain_scope = costOfCareSettings$eventFilters[[.x]]$domain,
-        concept_id   = as.integer(costOfCareSettings$eventFilters[[.x]]$conceptIds)
+    
+    # Build event concepts table using base R
+    eventConcepts <- NULL
+    for (i in seq_along(costOfCareSettings$eventFilters)) {
+      filter <- costOfCareSettings$eventFilters[[i]]
+      filterData <- data.frame(
+        filter_id = i,
+        filter_name = filter$name,
+        domain_scope = filter$domain,
+        concept_id = as.integer(filter$conceptIds),
+        stringsAsFactors = FALSE
       )
-    )
+      if (is.null(eventConcepts)) {
+        eventConcepts <- filterData
+      } else {
+        eventConcepts <- rbind(eventConcepts, filterData)
+      }
+    }
 
-    eventConceptsTableName <- insertTableDBI(
-      connection = connection,
-      tableName = eventConceptsTableName,
-      data = eventConcepts,
-      tempTable = TRUE,
-      tempEmulationSchema = tempEmulationSchema,
-      camelCaseToSnakeCase = TRUE
-    )
-    logMessage(sprintf("Uploaded %d event concept rows to #%s", nrow(eventConcepts), eventConceptsTableName), verbose, "DEBUG")
+    tryCatch({
+      eventConceptsTableName <- insertTempTable(
+        connection = connection,
+        tableName = eventConceptsTableName,
+        data = eventConcepts,
+        tempEmulationSchema = tempEmulationSchema
+      )
+      logMessage(sprintf("Uploaded %d event concept rows to %s", nrow(eventConcepts), eventConceptsTableName), verbose, "DEBUG")
+    }, error = function(e) {
+      rlang::abort(sprintf("Failed to create event concepts table: %s", e$message))
+    })
   }
 
   params <- list(
@@ -167,7 +226,7 @@ calculateCostOfCare <- function(
     # flags & knobs (logical where appropriate; numbers as integers)
     hasVisitRestriction = costOfCareSettings$hasVisitRestriction,
     hasEventFilters = costOfCareSettings$hasEventFilters,
-    nFilters = as.integer(costOfCareSettings$nFilters %||% 0L),
+    nFilters = as.integer(if (is.null(costOfCareSettings$nFilters)) 0L else costOfCareSettings$nFilters),
     microCosting = costOfCareSettings$microCosting, # pass-through (string/int as your SQL expects)
     cpiAdjustment = costOfCareSettings$cpiAdjustment,
 
@@ -179,16 +238,20 @@ calculateCostOfCare <- function(
     primaryFilterId = .findPrimaryFilterId(costOfCareSettings)
   )
 
-
   # --- Fetch & return results ---
-  logMessage("Fetching results from database...", verbose, "INFO")
+  logMessage("Executing cost of care analysis...", verbose, "INFO")
 
-  .res <- .fetchResults(params, connection, tempEmulationSchema, verbose)
+  tryCatch({
+    results <- .fetchResults(params, connection, tempEmulationSchema, verbose)
+  }, error = function(e) {
+    rlang::abort(sprintf("Failed to execute cost of care analysis: %s", e$message))
+  })
 
   logMessage(
     sprintf("Analysis complete in %0.1fs.", as.numeric(difftime(Sys.time(), startTime, units = "secs"))),
     verbose = verbose,
     level = "SUCCESS"
   )
-  return(.res)
+  
+  return(results)
 }
