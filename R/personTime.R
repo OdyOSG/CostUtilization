@@ -17,7 +17,7 @@
 ) {
   sql <- SqlRender::loadRenderTranslateSql(
     sqlFilename = "CalculatePersonTime.sql",
-    packageName = "CostModule",
+    packageName = "CostUtilization",
     dbms = attr(connection, "dbms"),
     tempEmulationSchema = tempEmulationSchema
   )

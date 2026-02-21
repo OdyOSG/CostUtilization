@@ -1,43 +1,48 @@
 cleanupTempTables <- function(connection, schema = NULL, ...) {
-  # Basic validation
+  # Basic validation: Replaced rlang::abort with stop
   if (!DBI::dbIsValid(connection)) {
-    rlang::abort("`connection` is not a valid DBI connection.")
+    stop("`connection` is not a valid DBI connection.", call. = FALSE)
   }
-  tables <- rlang::list2(...)
+  
+  # Capture dots: Replaced rlang::list2 with list
+  tables <- list(...)
   if (length(tables) == 0L) {
     return(invisible(NULL))
   }
-
-  # Local helper: build a fully qualified, safely quoted identifier
+  
+  # Local helper: Replaced %||% logic with is.null check
   quoteIdent <- function(conn, tbl, schema = NULL) {
-    if (!is.null(schema) && nzchar(schema %||% "")) {
+    if (!is.null(schema) && nzchar(schema)) {
       id <- DBI::Id(schema = schema, table = tbl)
     } else {
       id <- DBI::Id(table = tbl)
     }
     DBI::dbQuoteIdentifier(conn, id)
   }
-
+  
+  # Helpers: Replaced glue with paste0/sprintf
   dropWithIfExists <- function(conn, qident) {
-    DBI::dbExecute(conn, DBI::SQL(glue::glue("DROP TABLE IF EXISTS {qident};")))
+    DBI::dbExecute(conn, DBI::SQL(paste0("DROP TABLE IF EXISTS ", qident, ";")))
   }
   dropWithoutIfExists <- function(conn, qident) {
-    DBI::dbExecute(conn, DBI::SQL(glue::glue("DROP TABLE {qident};")))
+    DBI::dbExecute(conn, DBI::SQL(paste0("DROP TABLE ", qident, ";")))
   }
-
-  purrr::walk(tables, ~ {
-    tbl <- .x
+  
+  # Replaced purrr::walk with a standard for loop
+  for (tbl in tables) {
     if (is.null(tbl) || !nzchar(tbl)) {
-      return(invisible(NULL))
+      next
     }
-
+    
     qident <- quoteIdent(connection, tbl, schema)
-
+    
+    # Nested error handling to attempt "IF EXISTS" then fallback to standard "DROP"
     tryCatch(
       {
         tryCatch(
           dropWithIfExists(connection, qident),
           error = function(eIf) {
+            # Some DBs don't support IF EXISTS, attempt a direct drop
             tryCatch(
               dropWithoutIfExists(connection, qident),
               error = function(eDrop) invisible(NULL)
@@ -47,13 +52,10 @@ cleanupTempTables <- function(connection, schema = NULL, ...) {
       },
       error = function(e) invisible(NULL)
     )
-
-    invisible(NULL)
-  })
-
+  }
+  
   invisible(NULL)
 }
-
 #' Log messages with appropriate styling
 #'
 #' @description
@@ -68,16 +70,20 @@ logMessage <- function(message, verbose = TRUE, level = "INFO") {
   if (!verbose) {
     return(invisible(NULL))
   }
-
+  
+  # Format the prefix based on the level
+  prefix <- paste0("[", level, "] ")
+  
+  # Logic for different output behaviors
   switch(level,
-    "ERROR" = cli::cli_alert_danger(message),
-    "WARNING" = cli::cli_alert_warning(message),
-    "INFO" = cli::cli_alert_info(message),
-    "DEBUG" = cli::cli_text(cli::col_grey(message)),
-    "SUCCESS" = cli::cli_alert_success(message),
-    cli::cli_alert(message)
+         "ERROR"   = message(paste0("✖ ", prefix, message)),
+         "WARNING" = warning(message, call. = FALSE),
+         "INFO"    = message(paste0("ℹ ", prefix, message)),
+         "DEBUG"   = cat(paste0("# ", message, "\n")),
+         "SUCCESS" = message(paste0("✔ ", prefix, message)),
+         message(paste0("> ", message))
   )
-
+  
   invisible(NULL)
 }
 
@@ -97,82 +103,103 @@ executeSqlStatements <- function(connection, sqlStatements, verbose = TRUE, quie
   if (nStatements == 0L) {
     return(invisible(NULL))
   }
-
+  
   previewStmt <- function(x, n = 120L) {
     x <- gsub("[\r\n]+", " ", x, perl = TRUE)
     if (nchar(x) > n) paste0(substr(x, 1L, n), "...") else x
   }
-
-  pbId <- NULL
+  
+  pb <- NULL
   if (verbose && nStatements > 1L) {
-    pbId <- cli::cli_progress_bar(
-      "Executing SQL statements",
-      total = nStatements,
-      clear = TRUE
-    )
+    # Base R Progress Bar
+    pb <- txtProgressBar(min = 0, max = nStatements, style = 3)
   }
-
-  on.exit(
-    {
-      if (!is.null(pbId)) try(cli::cli_progress_done(id = pbId), silent = TRUE)
-    },
-    add = TRUE
-  )
-
+  
+  on.exit({
+    if (!is.null(pb)) close(pb)
+  }, add = TRUE)
+  
   t0 <- proc.time()[["elapsed"]]
-
+  
   for (i in seq_len(nStatements)) {
     sql <- sqlStatements[[i]]
+    
+    # Skip empty/whitespace statements
     if (is.null(sql) || !nzchar(trimws(sql))) {
-      if (!is.null(pbId)) cli::cli_progress_update(id = pbId, inc = 1)
+      if (!is.null(pb)) setTxtProgressBar(pb, i)
       next
     }
-
-
-
-    if (quiet_db) {
-      res <- try(executeOne(connection, sql), silent = TRUE)
-    } else {
-      # still use quietly, but we can print warnings/messages manually if wanted
-      res <- try(executeOne(connection, sql), silent = TRUE)
-      if (!inherits(res, "try-error")) {
-        if (length(res$messages)) cli::cli_inform(res$messages)
-        if (length(res$warnings)) cli::cli_warn(res$warnings)
-      }
-    }
-
-    if (inherits(res, "try-error") || !is.null(res$error)) {
-      if (!is.null(pbId)) try(cli::cli_progress_done(id = pbId), silent = TRUE)
-      cli::cli_abort(
-        c(
-          "Error executing SQL statement {i} of {nStatements}.",
-          "x" = "{conditionMessage(if (inherits(res, 'try-error')) attr(res, 'condition') else res$error)}",
-          "i" = "Statement preview: {previewStmt(sql)}"
-        ),
-        .envir = rlang::env(i = i, nStatements = nStatements, sql = sql, previewStmt = previewStmt)
+    
+    # Execution logic
+    # Assumes executeOne returns a list(result, output, warnings, messages)
+    res <- tryCatch({
+      executeOne(connection, sql)
+    }, error = function(e) e)
+    
+    # Handle errors
+    if (inherits(res, "error")) {
+      if (!is.null(pb)) close(pb) # Close PB before throwing error to keep console clean
+      
+      msg <- sprintf(
+        "Error executing SQL statement %d of %d.\nReason: %s\nStatement preview: %s",
+        i, nStatements, conditionMessage(res), previewStmt(sql)
       )
+      stop(msg, call. = FALSE)
     }
-
-    if (!is.null(pbId)) cli::cli_progress_update(id = pbId, inc = 1)
+    
+    # Handle warnings/messages if not quiet
+    if (!quiet_db) {
+      if (length(res$messages) > 0) lapply(res$messages, message)
+      if (length(res$warnings) > 0) lapply(res$warnings, warning, call. = FALSE)
+    }
+    
+    if (!is.null(pb)) setTxtProgressBar(pb, i)
   }
-
+  
   total_secs <- round(proc.time()[["elapsed"]] - t0, 3)
-
+  
   if (verbose) {
-    cli::cli_inform(c(
-      "v" = "Executed {nStatements} SQL statement{if (nStatements != 1L) 's' else ''} in {total_secs} secs."
+    cat(sprintf(
+      "\n✔ Executed %d SQL statement%s in %0.3f secs.\n",
+      nStatements, if (nStatements != 1L) "s" else "", total_secs
     ))
   }
-
+  
   invisible(NULL)
 }
 
 # Helpers (simple, focused)
 .int_flag <- function(x) as.integer(isTRUE(x))
 
-executeOne <- purrr::quietly(DBI::dbExecute)
-
-
+executeOne <- function(conn, statement, ...) {
+  output <- list(result = NULL, output = "", warnings = character(), messages = character())
+  
+  # Capture printed output
+  output$output <- capture.output({
+    tryCatch({
+      # Capture messages and warnings
+      withCallingHandlers(
+        {
+          output$result <- DBI::dbExecute(conn, statement, ...)
+        },
+        warning = function(w) {
+          output$warnings <<- c(output$warnings, w$message)
+          invokeRestart("muffleWarning")
+        },
+        message = function(m) {
+          output$messages <<- c(output$messages, m$message)
+          invokeRestart("muffleMessage")
+        }
+      )
+    }, error = function(e) {
+      # purrr::quietly doesn't usually catch errors (purrr::safely does)
+      # but we stop here to mimic standard R behavior or you can return it in the list
+      stop(e)
+    })
+  })
+  
+  return(output)
+}
 
 
 #' Insert a data.frame into a DBI connection (replacement for DatabaseConnector::insertTable)
@@ -243,14 +270,11 @@ to_title_case_base <- function(x) {
 .findPrimaryFilterId <- function(settings) {
   primaryFilterName <- settings$primaryEventFilterName
   eventFilters <- settings$eventFilters
-
-  # Guard clause: If there's no name to search for or no list to search in, return 0.
-  if (is.null(primaryFilterName) || rlang::is_empty(eventFilters)) {
+  
+  # Guard clause: Check for NULL or length 0 (replaces rlang::is_empty)
+  if (is.null(primaryFilterName) || length(eventFilters) == 0) {
     return(0L)
   }
-
-  purrr::detect_index(
-    eventFilters, ~ identical(.x$name, primaryFilterName),
-    .default = 0L
-  )
+  idx <- Position(function(x) identical(x$name, primaryFilterName), eventFilters)
+  if (is.na(idx)) 0L else idx
 }

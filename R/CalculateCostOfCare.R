@@ -45,6 +45,7 @@ calculateCostOfCare <- function(
     aggregated = TRUE,
     tempEmulationSchema = NULL,
     verbose = TRUE) {
+  
   # --- Validation / connection management ---
   errorMessages <- checkmate::makeAssertCollection()
   checkmate::assertClass(costOfCareSettings, "CostOfCareSettings", add = errorMessages)
@@ -55,14 +56,14 @@ calculateCostOfCare <- function(
   checkmate::assertFlag(aggregated, add = errorMessages)
   checkmate::assertFlag(verbose, add = errorMessages)
   checkmate::reportAssertions(errorMessages)
-
+  
   if (is.null(connectionDetails) && is.null(connection)) {
-    rlang::abort("Provide either `connectionDetails` or an open `connection`.")
+    stop("Provide either `connectionDetails` or an open `connection`.", call. = FALSE)
   }
   if (!is.null(connectionDetails) && !is.null(connection)) {
-    rlang::abort("Provide exactly one of `connectionDetails` or `connection`, not both.")
+    stop("Provide exactly one of `connectionDetails` or `connection`, not both.", call. = FALSE)
   }
-
+  
   if (!is.null(connectionDetails)) {
     checkmate::assertClass(connectionDetails, "ConnectionDetails")
     connection <- DatabaseConnector::connect(connectionDetails)
@@ -70,34 +71,35 @@ calculateCostOfCare <- function(
   } else {
     checkmate::assertClass(connection, "DBIConnection")
   }
+  
   # --- Setup ---
   startTime <- Sys.time()
+  # SqlRender returns a vector; taking first element
   sessionPrefix <- SqlRender::translate("#", "oracle")[[1]]
   restrictVisitTableName <- NULL
   eventConceptsTableName <- NULL
   cpiAdjTableName <- NULL
-  # --- CPI Adjustment: prepare adjustment factors table (if enabled) ---
+  
+  # --- CPI Adjustment ---
   if (costOfCareSettings$cpiAdjustment) {
     logMessage("Setting up CPI adjustment...", verbose, "INFO")
-    cpiAdjTableName <- paste0(sessionPrefix, "_cpi_adj")
-
-    # Load CPI data from explicit path; caller validated existence already
+    
     cpiPath <- costOfCareSettings$cpiFilePath
     cpiData <- utils::read.csv(cpiPath, stringsAsFactors = FALSE)
-
+    
     if (!all(c("year", "adj_factor") %in% names(cpiData))) {
-      # Backward compatibility: allow a file with `year` and `cpi` by renaming
       if (all(c("year", "cpi") %in% names(cpiData))) {
         cpiData$adj_factor <- cpiData$cpi
       } else {
-        cli::cli_abort("CPI data must contain columns 'year' and 'adj_factor' (or 'year' and 'cpi').")
+        stop("CPI data must contain columns 'year' and 'adj_factor' (or 'year' and 'cpi').", call. = FALSE)
       }
     }
-
+    
     cpiData <- cpiData[, c("year", "adj_factor")]
     checkmate::assertIntegerish(cpiData$year, lower = 1900, any.missing = FALSE)
     checkmate::assertNumeric(cpiData$adj_factor, any.missing = FALSE)
-
+    
+    cpiAdjTableName <- paste0(sessionPrefix, "_cpi_adj")
     cpiAdjTableName <- insertTableDBI(
       connection = connection,
       tableName = cpiAdjTableName,
@@ -108,11 +110,15 @@ calculateCostOfCare <- function(
     )
     logMessage(sprintf("Uploaded %d CPI rows to #%s", nrow(cpiData), cpiAdjTableName), verbose, "DEBUG")
   }
-
+  
   # --- Upload helper tables ---
   if (costOfCareSettings$hasVisitRestriction) {
     restrictVisitTableName <- paste0(sessionPrefix, "_visit_restr")
-    visitConcepts <- dplyr::tibble(visit_concept_id = costOfCareSettings$restrictVisitConceptIds)
+    # Base R alternative to tibble
+    visitConcepts <- data.frame(
+      visit_concept_id = costOfCareSettings$restrictVisitConceptIds,
+      stringsAsFactors = FALSE
+    )
     restrictVisitTableName <- insertTableDBI(
       connection = connection,
       tableName = restrictVisitTableName,
@@ -123,19 +129,23 @@ calculateCostOfCare <- function(
     )
     logMessage(sprintf("Uploaded %d visit concepts to #%s", nrow(visitConcepts), restrictVisitTableName), verbose, "DEBUG")
   }
-
+  
   if (costOfCareSettings$hasEventFilters) {
     eventConceptsTableName <- paste0(sessionPrefix, "_evt_concepts")
-    # Build a long table: one row per concept id per filter
-    eventConcepts <- purrr::map_dfr(
-      seq_along(costOfCareSettings$eventFilters), ~ dplyr::tibble(
-        filter_id    = .x,
-        filter_name  = costOfCareSettings$eventFilters[[.x]]$name,
-        domain_scope = costOfCareSettings$eventFilters[[.x]]$domain,
-        concept_id   = as.integer(costOfCareSettings$eventFilters[[.x]]$conceptIds)
+    
+    # Base R alternative to purrr::map_dfr
+    eventList <- lapply(seq_along(costOfCareSettings$eventFilters), function(i) {
+      filter <- costOfCareSettings$eventFilters[[i]]
+      data.frame(
+        filter_id    = i,
+        filter_name  = filter$name,
+        domain_scope = filter$domain,
+        concept_id   = as.integer(filter$conceptIds),
+        stringsAsFactors = FALSE
       )
-    )
-
+    })
+    eventConcepts <- do.call(rbind, eventList)
+    
     eventConceptsTableName <- insertTableDBI(
       connection = connection,
       tableName = eventConceptsTableName,
@@ -146,45 +156,37 @@ calculateCostOfCare <- function(
     )
     logMessage(sprintf("Uploaded %d event concept rows to #%s", nrow(eventConcepts), eventConceptsTableName), verbose, "DEBUG")
   }
-
+  
+  # --- Prepare Params ---
+  # Replaced %||% with logic check
+  nFiltersVal <- if (is.null(costOfCareSettings$nFilters)) 0L else as.integer(costOfCareSettings$nFilters)
+  
   params <- list(
-    # core
     cdmDatabaseSchema = cdmDatabaseSchema,
     cohortDatabaseSchema = cohortDatabaseSchema,
     cohortTable = cohortTable,
     cohortId = as.integer(cohortId),
-
-    # output / helper tables (unqualified here)
     restrictVisitTable = restrictVisitTableName,
     eventConceptsTable = eventConceptsTableName,
     cpiAdjTable = cpiAdjTableName,
-
-    # window & anchor
     anchorOnEnd = identical(costOfCareSettings$anchorCol, "cohort_end_date"),
     timeA = as.integer(costOfCareSettings$startOffsetDays),
     timeB = as.integer(costOfCareSettings$endOffsetDays),
-
-    # flags & knobs (logical where appropriate; numbers as integers)
     hasVisitRestriction = costOfCareSettings$hasVisitRestriction,
     hasEventFilters = costOfCareSettings$hasEventFilters,
-    nFilters = as.integer(costOfCareSettings$nFilters %||% 0L),
-    microCosting = costOfCareSettings$microCosting, # pass-through (string/int as your SQL expects)
+    nFilters = nFiltersVal,
+    microCosting = costOfCareSettings$microCosting,
     cpiAdjustment = costOfCareSettings$cpiAdjustment,
-
-    # costing
     costConceptId = as.integer(costOfCareSettings$costConceptId),
     currencyConceptId = as.integer(costOfCareSettings$currencyConceptId),
     aggregated = aggregated,
-    # primary filter id (index in eventFilters) if named
     primaryFilterId = .findPrimaryFilterId(costOfCareSettings)
   )
-
-
+  
   # --- Fetch & return results ---
   logMessage("Fetching results from database...", verbose, "INFO")
-
   .res <- .fetchResults(params, connection, tempEmulationSchema, verbose)
-
+  
   logMessage(
     sprintf("Analysis complete in %0.1fs.", as.numeric(difftime(Sys.time(), startTime, units = "secs"))),
     verbose = verbose,

@@ -44,7 +44,6 @@
 #' The `eventFilters` argument must be a list of lists, where each inner list has:
 #' \itemize{
 #'   \item `name`: A unique character string for the filter.
-#'   \item `domain`: A character string specifying the OMOP domain (e.g., "Drug", "Condition", "Procedure", etc.).
 #'   \item `conceptSet`: A Circe concept set list defining the concepts to include.
 #' }
 #'

@@ -28,6 +28,9 @@ FROM @cdm_database_schema.cost c
   LEFT JOIN @cpi_adj_table cpi
     ON cpi.year = YEAR(COALESCE(c.incurred_date, c.paid_date, c.billed_date, c.effective_date))
 }
+JOIN #qualifying_visits qv
+ON  c.visit_occurrence_id = qv.visit_occurrence_id
+AND (c.visit_detail_id = #qualifying_visits.visit_detail_id
 WHERE (@cost_concept_id       IS NULL OR c.cost_concept_id      = @cost_concept_id)
   AND (@currency_concept_id   IS NULL OR c.currency_concept_id  = @currency_concept_id)
   AND c.cost IS NOT NULL;

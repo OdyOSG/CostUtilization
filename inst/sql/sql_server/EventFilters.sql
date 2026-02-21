@@ -1,7 +1,5 @@
 -- 2.2) Optional event filters -> qualifying visits
 {@has_event_filters} ? {
-
-  DROP TABLE IF EXISTS #events_by_filter;
   CREATE TABLE #events_by_filter (
     filter_id          INT          NOT NULL,
     filter_name        VARCHAR(255) NULL,
@@ -51,7 +49,6 @@
    AND ec.domain_scope IN ('All','Observation')
   ;
   
-  DROP TABLE IF EXISTS #event_visits;
   CREATE TABLE #event_visits (
     cohort_definition_id BIGINT       NULL,
     person_id           BIGINT NOT NULL,
@@ -59,10 +56,11 @@
   );
 
   INSERT INTO #event_visits
-  SELECT cohort_definition_id,  person_id, visit_occurrence_id
+  SELECT --cohort_definition_id,  
+  person_id, visit_occurrence_id
   FROM #events_by_filter
   WHERE visit_occurrence_id IS NOT NULL
-  GROUP BY cohort_definition_id, person_id, visit_occurrence_id
+  GROUP BY  person_id, visit_occurrence_id
   HAVING COUNT(DISTINCT filter_id) >= @n_filters;
 
   DROP TABLE IF EXISTS #qualifying_visits;
@@ -74,8 +72,8 @@
    AND ev.visit_occurrence_id = v.visit_occurrence_id;
 
   {@micro_costing} ? {
-    DROP TABLE IF EXISTS #primary_filter_details;
     CREATE TABLE #primary_filter_details (
+      cohort_definition_id BIGINT       NULL,
       person_id           BIGINT NOT NULL,
       visit_occurrence_id BIGINT NOT NULL,
       visit_detail_id     BIGINT NOT NULL
@@ -89,7 +87,6 @@
   }
 
 } : {
-  DROP TABLE IF EXISTS #qualifying_visits;
   SELECT *
   INTO #qualifying_visits
   FROM #visits_in_window;

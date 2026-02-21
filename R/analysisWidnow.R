@@ -29,7 +29,7 @@
   # Render SQL to create analysis windows
   sql <- SqlRender::loadRenderTranslateSql(
     sqlFilename = "CreateAnalysisWindows.sql",
-    packageName = "CostModule",
+    packageName = "CostUtilization",
     dbms = attr(connection, "dbms"),
     cdm_database_schema = cdmDatabaseSchema,
     cohort_table = cohortTable,
